@@ -2,15 +2,15 @@
   "name": "zammad-remote-mcp-monorepo",
   "version": "1.0.0",
   "private": true,
-  "description": "Remote MCP server for Zammad — a runtime-agnostic core with thin Node.js and Cloudflare Workers packages.",
+  "description": "Remote MCP server for Zammad \u2014 a runtime-agnostic core with thin Node.js and Cloudflare Workers packages.",
   "license": "MIT",
   "type": "module",
   "workspaces": [
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build --workspaces --if-present",
-    "typecheck": "npm run typecheck --workspaces --if-present",
+    "build": "npm run build:core && npm run build --workspace @zammad-mcp/node && npm run build --workspace @zammad-mcp/cloudflare",
+    "typecheck": "npm run build:core && npm run typecheck --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "lint": "biome lint .",
     "format": "biome format --write .",
@@ -18,7 +18,8 @@
     "check:fix": "biome check --write .",
     "dev": "npm run dev --workspace @zammad-mcp/node",
     "dev:cf": "npm run dev --workspace @zammad-mcp/cloudflare",
-    "verify": "npm run check && npm run typecheck && npm test"
+    "verify": "npm run check && npm run typecheck && npm test",
+    "build:core": "npm run build --workspace @zammad-mcp/core"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.5",
