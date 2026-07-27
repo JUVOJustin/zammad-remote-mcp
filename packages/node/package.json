@@ -1,0 +1,29 @@
+{
+  "name": "@zammad-mcp/node",
+  "version": "1.0.0",
+  "description": "Node.js host for the Zammad remote MCP server.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "bin": {
+    "zammad-remote-mcp": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    ".env.example"
+  ],
+  "engines": {
+    "node": ">=20.12"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "test": "node --test --import tsx \"test/*.test.ts\""
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.19.9",
+    "@zammad-mcp/core": "1.0.0"
+  }
+}
