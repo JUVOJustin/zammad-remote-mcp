@@ -1,0 +1,45 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "zammad-remote-mcp",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-01",
+
+  // Not required by the core — it uses only WebCrypto, fetch, TextEncoder and
+  // atob/btoa. Kept on because Hono and the MCP SDK transport benefit from the
+  // fuller standard library, and it costs nothing.
+  "compatibility_flags": ["nodejs_compat"],
+
+  "observability": { "enabled": true },
+
+  // Lookup cache. Optional — without it each isolate caches in its own memory
+  // and re-reads the instance's states, priorities and groups on every cold
+  // start. Create one, then paste its id here:
+  //   npx wrangler kv namespace create LOOKUP_CACHE
+  "kv_namespaces": [
+    {
+      "binding": "LOOKUP_CACHE",
+      "id": "<run: npx wrangler kv namespace create LOOKUP_CACHE>"
+    }
+  ],
+
+  // Non-secret configuration. The names are identical to the Node package's,
+  // because both hosts hand the same record to the same `loadConfig`.
+  "vars": {
+    // Must match the URL clients actually dial: it forms the OAuth issuer, the
+    // callback URL and the `resource` identifier.
+    "PUBLIC_URL": "https://zammad-remote-mcp.workers.dev",
+    "ZAMMAD_URL": "https://support.example.com",
+    "ZAMMAD_AUTH_MODE": "oauth",
+    "MCP_PATH": "/mcp",
+    "LOG_LEVEL": "info",
+
+    // How long states, priorities, groups and resolved users stay cached. With
+    // the KV binding above this is shared across isolates, so the lists are read
+    // from Zammad roughly once per TTL for the whole deployment. Set to 0 to
+    // disable caching and never serve a lookup older than the current request.
+    "METADATA_CACHE_TTL_SECONDS": "300"
+  }
+
+  // Secrets are NOT set here — see .dev.vars.example. Locally they go in
+  // .dev.vars; in production push them with `wrangler secret put <NAME>`.
+}

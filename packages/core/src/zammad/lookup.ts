@@ -1,4 +1,6 @@
 import type { Config } from '../config.js';
+import type { CacheStore } from '../util/cache.js';
+import { createMemoryCacheStore, JsonCache } from '../util/cache.js';
 import { ToolInputError } from '../util/errors.js';
 import type { ZammadClient } from './client.js';
 
@@ -14,36 +16,20 @@ import type { ZammadClient } from './client.js';
  * stays horizontally scalable and effectively stateless.
  */
 
-interface CacheEntry {
-  expiresAt: number;
-  value: Promise<unknown>;
-}
+/**
+ * The cache backend. Defaults to an in-process store; a host can install a
+ * shared one — the Cloudflare package installs Workers KV, because each isolate
+ * would otherwise start cold and re-read the same lists.
+ */
+let store: CacheStore = createMemoryCacheStore();
 
-const cache = new Map<string, CacheEntry>();
-
-function cached<T>(key: string, ttlSeconds: number, load: () => Promise<T>): Promise<T> {
-  if (ttlSeconds <= 0) return load();
-
-  const now = Date.now();
-  const hit = cache.get(key);
-  if (hit && hit.expiresAt > now) return hit.value as Promise<T>;
-
-  const value = load().catch((error) => {
-    cache.delete(key);
-    throw error;
-  });
-  cache.set(key, { expiresAt: now + ttlSeconds * 1000, value });
-
-  // Opportunistic eviction — keeps the map from growing without a timer.
-  if (cache.size > 500) {
-    for (const [k, entry] of cache) if (entry.expiresAt <= now) cache.delete(k);
-  }
-  return value;
+export function setLookupCacheStore(next: CacheStore): void {
+  store = next;
 }
 
 /** Exposed for tests and for the `zammad_refresh_metadata_cache` tool. */
-export function clearLookupCache(): void {
-  cache.clear();
+export function clearLookupCache(): Promise<void> {
+  return store.clear();
 }
 
 export interface TicketState {
@@ -114,35 +100,35 @@ export class LookupService {
     private readonly config: Config,
   ) {}
 
+  private get cache(): JsonCache {
+    return new JsonCache(store, this.config.METADATA_CACHE_TTL_SECONDS);
+  }
+
   private key(name: string): string {
     return `${this.client.baseUrl}|${this.client.fingerprint}|${name}`;
   }
 
-  private get ttl(): number {
-    return this.config.METADATA_CACHE_TTL_SECONDS;
-  }
-
   states(): Promise<TicketState[]> {
-    return cached(this.key('ticket_states'), this.ttl, () =>
+    return this.cache.read(this.key('ticket_states'), () =>
       // `expand=true` swaps `state_type_id` for the readable `state_type` name.
       this.client.get<TicketState[]>('/api/v1/ticket_states', { expand: true, per_page: 200 }),
     );
   }
 
   priorities(): Promise<TicketPriority[]> {
-    return cached(this.key('ticket_priorities'), this.ttl, () =>
+    return this.cache.read(this.key('ticket_priorities'), () =>
       this.client.get<TicketPriority[]>('/api/v1/ticket_priorities', { per_page: 200 }),
     );
   }
 
   groups(): Promise<Group[]> {
-    return cached(this.key('groups'), this.ttl, () =>
+    return this.cache.read(this.key('groups'), () =>
       this.client.get<Group[]>('/api/v1/groups', { per_page: 500 }),
     );
   }
 
   macros(): Promise<Macro[]> {
-    return cached(this.key('macros'), this.ttl, () =>
+    return this.cache.read(this.key('macros'), () =>
       this.client.get<Macro[]>('/api/v1/macros', { per_page: 200 }),
     );
   }
@@ -160,7 +146,7 @@ export class LookupService {
   }
 
   me(): Promise<ZammadUser> {
-    return cached(this.key('me'), this.ttl, () => this.client.get<ZammadUser>('/api/v1/users/me'));
+    return this.cache.read(this.key('me'), () => this.client.get<ZammadUser>('/api/v1/users/me'));
   }
 
   // ------------------------------------------------------------- resolution
@@ -248,7 +234,7 @@ export class LookupService {
 
   private async resolveOneUser(term: string): Promise<number> {
     const key = this.key(`user:${term.toLowerCase()}`);
-    return cached(key, this.ttl, async () => {
+    return this.cache.read(key, async () => {
       const users = await this.client.get<ZammadUser[]>('/api/v1/users/search', {
         query: term,
         limit: 25,
@@ -298,7 +284,7 @@ export class LookupService {
   }
 
   private async resolveOneOrganization(term: string): Promise<number> {
-    return cached(this.key(`org:${term.toLowerCase()}`), this.ttl, async () => {
+    return this.cache.read(this.key(`org:${term.toLowerCase()}`), async () => {
       const orgs = await this.client.get<Organization[]>('/api/v1/organizations/search', {
         query: term,
         limit: 25,

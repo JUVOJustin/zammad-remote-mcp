@@ -12,11 +12,13 @@ export { createApp } from './app.js';
 export type { Config, Env, EnvSource, OAuthMode } from './config.js';
 export { loadConfig } from './config.js';
 export { createMcpServer } from './mcp/server.js';
+export type { CacheStore } from './util/cache.js';
+export { createMemoryCacheStore, JsonCache } from './util/cache.js';
 export { describeError, MissingCredentialError, ToolInputError, ZammadApiError } from './util/errors.js';
 export type { Logger, LogSink } from './util/logger.js';
 export { createLogger } from './util/logger.js';
 export type { Credential } from './zammad/client.js';
-export { clearLookupCache } from './zammad/lookup.js';
+export { clearLookupCache, setLookupCacheStore } from './zammad/lookup.js';
 
 /**
  * Convenience wrapper for a host that just wants a `fetch` handler.
@@ -26,13 +28,22 @@ export { clearLookupCache } from './zammad/lookup.js';
  */
 import { createApp } from './app.js';
 import { type Config, loadConfig } from './config.js';
+import type { CacheStore } from './util/cache.js';
 import { createLogger, type LogSink } from './util/logger.js';
+import { setLookupCacheStore } from './zammad/lookup.js';
 
 export interface BootstrapOptions {
   /** Environment source: `process.env` on Node, the `env` binding on Workers. */
   env: Record<string, string | undefined>;
   /** Override where log lines go. Defaults to `console.error`. */
   sink?: LogSink;
+  /**
+   * Backend for the lookup cache. Defaults to an in-process store, which suits a
+   * long-lived process. Hosts whose instances are short-lived — a Worker isolate,
+   * a serverless function — should pass a shared one so every cold start does not
+   * re-read the same states, priorities and groups from Zammad.
+   */
+  cache?: CacheStore;
 }
 
 export interface Bootstrapped {
@@ -41,6 +52,7 @@ export interface Bootstrapped {
 }
 
 export function bootstrap(options: BootstrapOptions): Bootstrapped {
+  if (options.cache) setLookupCacheStore(options.cache);
   const config = loadConfig(options.env);
   const logger = createLogger(config.LOG_LEVEL, { service: 'zammad-remote-mcp' }, options.sink);
   const app = createApp(config, logger);

@@ -60,7 +60,7 @@ cp .dev.vars.example .dev.vars   # fill in the secrets
 npx wrangler dev
 ```
 
-Edit `vars` in [`wrangler.toml`](packages/cloudflare/wrangler.toml) — at minimum `ZAMMAD_URL` and
+Edit `vars` in [`wrangler.jsonc`](packages/cloudflare/wrangler.jsonc) — at minimum `ZAMMAD_URL` and
 `PUBLIC_URL`, which must match the URL clients actually dial. Then push the secrets and deploy:
 
 ```bash
@@ -72,30 +72,6 @@ npx wrangler deploy
 
 `OAUTH_STATE_SECRET` must be stable across deployments — rotating it invalidates registered clients
 and in-flight logins. Generate one with `openssl rand -base64 48`.
-
-### Deploy to Cloudflare button
-
-A one-click button is possible, but **not from this repository as laid out**. Cloudflare's deploy
-service requires the Worker to be *fully isolated within its subdirectory, including its
-dependencies* — and `packages/cloudflare` depends on the workspace-local `@zammad-mcp/core`, which
-sits outside it. The button would clone the repo and fail to resolve that dependency.
-
-Two ways to make it work:
-
-1. **Publish the core to npm.** Once `@zammad-mcp/core` resolves from the registry rather than the
-   workspace, `packages/cloudflare` is self-contained and the button works against this repo.
-2. **Mirror `packages/cloudflare` into its own public repository**, with `@zammad-mcp/core` as a
-   normal dependency.
-
-Either way the snippet is:
-
-```md
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/<owner>/<repo>)
-```
-
-The button reads `wrangler.toml` for the variable defaults and `.dev.vars.example` for the list of
-secrets to prompt for — both are already in place. Note the service supports **public GitHub and
-GitLab repositories only**.
 
 ### What differs between the two runtimes
 
@@ -511,7 +487,8 @@ packages/
 
   cloudflare/                @zammad-mcp/cloudflare
     src/index.ts             export default { fetch }
-    wrangler.toml            vars + compatibility flags
+    src/kv-cache.ts          Workers KV as the lookup cache
+    wrangler.jsonc           vars, KV binding, compatibility flags
     .dev.vars.example        secrets the deploy flow prompts for
 ```
 

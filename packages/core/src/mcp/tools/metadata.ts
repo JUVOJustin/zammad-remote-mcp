@@ -216,7 +216,7 @@ export function registerMetadataTools(server: McpServer, base: ToolContext): voi
       },
     },
     guard(async () => {
-      clearLookupCache();
+      await clearLookupCache();
       return textResult('Metadata cache cleared. Subsequent lookups will re-fetch from Zammad.');
     }),
   );

@@ -2,7 +2,7 @@
 # In production push the same names with `wrangler secret put <NAME>`.
 # "Deploy to Cloudflare" reads this file to prompt for each value.
 
-# --- ZAMMAD_AUTH_MODE=oauth (the default in wrangler.toml) -------------------
+# --- ZAMMAD_AUTH_MODE=oauth (the default in wrangler.jsonc) -------------------
 # Register the application in Zammad: admin panel → System → API → Applications.
 # Callback URL: <PUBLIC_URL>/oauth/callback
 ZAMMAD_OAUTH_CLIENT_ID = ""
@@ -14,6 +14,6 @@ ZAMMAD_OAUTH_CLIENT_SECRET = ""
 OAUTH_STATE_SECRET = ""
 
 # --- ZAMMAD_AUTH_MODE=token (single-tenant instead) --------------------------
-# Set ZAMMAD_AUTH_MODE=token in wrangler.toml and supply a Zammad access token
+# Set ZAMMAD_AUTH_MODE=token in wrangler.jsonc and supply a Zammad access token
 # instead of the three values above. OAuth then switches itself off.
 # ZAMMAD_API_TOKEN = ""
