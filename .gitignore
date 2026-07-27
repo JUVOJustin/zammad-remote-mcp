@@ -12,3 +12,7 @@ coverage/
 !.dev.vars.example
 .wrangler/
 packages/*/dist/
+
+# TypeScript incremental build state — committing it makes a fresh clone
+# believe it is already built and emit nothing.
+*.tsbuildinfo
