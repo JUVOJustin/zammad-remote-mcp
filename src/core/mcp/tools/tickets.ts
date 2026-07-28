@@ -301,7 +301,11 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
   // --------------------------------------------------------------- create ---
   const createTicketInput = z.object({
     title: z.string().min(1),
-    group: z.string().optional(),
+    // The vocabulary-backed field, as everywhere else. A bare string here left
+    // the one tool that *requires* a group as the only one not naming which
+    // groups exist, so a wrong guess came back as a 422 from Zammad instead of
+    // a schema the caller could have read first.
+    group: attributesWithVocabulary.group,
     group_id: z.number().int().positive().optional(),
     customer: z
       .string()

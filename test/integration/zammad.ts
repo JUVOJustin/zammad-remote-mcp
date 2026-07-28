@@ -122,3 +122,27 @@ export async function notificationsFor(email: string): Promise<OnlineNotificatio
   const result = await api<OnlineNotification[]>('/api/v1/online_notifications', { asUser: email });
   return Array.isArray(result) ? result : [];
 }
+
+/**
+ * Waits until a fulltext search can see the seeded tickets.
+ *
+ * Returns immediately on this stack, which searches the database. It exists for
+ * the moment Elasticsearch is added back: indexing is asynchronous there, and
+ * an assertion made straight after seeding would fail on timing rather than on
+ * behaviour — the most misleading kind of red.
+ */
+export async function waitForIndex(marker: string, expected: number, attempts = 40): Promise<void> {
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      const hits = await api<{ id: number }[]>(
+        `/api/v1/tickets/search?query=${encodeURIComponent(marker)}&limit=100`,
+      );
+      const count = Array.isArray(hits) ? hits.length : 0;
+      if (count >= expected) return;
+    } catch {
+      // The index may not exist yet on a fresh instance.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+  }
+  throw new Error(`Elasticsearch never indexed ${expected} tickets matching "${marker}"`);
+}

@@ -41,7 +41,19 @@ to be deleted.
 
 ## Trimmed on purpose
 
-No Elasticsearch (a gigabyte of JVM for search these tests reach through the
-database anyway), no websocket, no backup. The **scheduler stays**: notification
-jobs run there, and a mention that never notifies is the exact failure this
-suite exists to catch.
+No websocket, no backup, and **no Elasticsearch** — a JVM plus an index rebuild
+is more than a CI runner should carry on every push.
+
+The **scheduler stays**: notification jobs run there, and a mention that never
+notifies is the exact failure this suite exists to catch.
+
+### What dropping Elasticsearch costs
+
+Zammad answers searches from the database without it, so every selector these
+tests build is still executed and checked against real results. The gap is
+narrower than it sounds but real: `strategy: "fulltext"` is exercised end to end,
+yet Zammad parses the query itself rather than handing it to Elasticsearch. A
+query string that Zammad accepts and Elasticsearch rejects would pass here.
+
+Production runs with Elasticsearch. To close the gap locally, add the service
+back and set `ELASTICSEARCH_ENABLED: "true"`.

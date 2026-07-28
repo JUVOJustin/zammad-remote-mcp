@@ -57,6 +57,42 @@ jobs:
       - name: Test
         run: npm test
 
+  integration:
+    # The suite that talks to a real Zammad. Unit tests prove we send what we
+    # meant to; only this proves Zammad agrees — selector operators, name
+    # resolution, and the mention callback that the @@ rewrite depends on.
+    needs: quality
+    runs-on: ubuntu-latest
+    # A first boot migrates and seeds the database, so this is minutes rather
+    # than seconds. The default 360 would fail the job on a slow runner.
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Start Zammad
+        run: ./test/integration/up.sh
+
+      - name: Integration tests
+        run: npm run test:integration
+
+      - name: Container logs on failure
+        if: failure()
+        run: docker compose -f test/integration/docker-compose.yml logs --tail 100
+
+      - name: Tear down
+        if: always()
+        run: ./test/integration/down.sh
+
   docker:
     # The image is a deployment artefact like the Worker: if it stops building
     # or stops starting, that is only visible here.

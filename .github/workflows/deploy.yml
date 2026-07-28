@@ -8,6 +8,7 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     permissions:
       contents: write
       # Trusted publishing: npm authenticates this workflow over OIDC instead of
@@ -62,6 +63,22 @@ jobs:
 
       - name: Test
         run: npm test
+
+      - name: Start Zammad for the integration suite
+        run: ./test/integration/up.sh
+
+      - name: Integration tests
+        # Publishing is irreversible, so the tests that talk to a real Zammad
+        # run before it rather than only on push.
+        run: npm run test:integration
+
+      - name: Container logs on failure
+        if: failure()
+        run: docker compose -f test/integration/docker-compose.yml logs --tail 100
+
+      - name: Tear down Zammad
+        if: always()
+        run: ./test/integration/down.sh
 
       - name: Build the Cloudflare Worker
         # The core claims to run unchanged on the edge. A Node built-in creeping

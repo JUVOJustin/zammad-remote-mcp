@@ -1,10 +1,14 @@
 # A throwaway Zammad for integration tests.
 #
 # Derived from zammad/zammad-docker-compose, trimmed to what a test run needs.
-# Dropped: elasticsearch (a gigabyte of JVM for search we exercise through the
-# database anyway), websocket (no browser here) and backup. The scheduler stays
-# because notification jobs run there, and a mention that never notifies is
-# exactly the failure these tests exist to catch.
+# Dropped: websocket (no browser here), backup, and Elasticsearch — a JVM plus
+# an index rebuild is more than a CI runner should carry on every push. Zammad
+# answers searches from the database without it, so the suite still covers the
+# selectors we build; what it no longer covers is Elasticsearch's own dialect
+# for the fulltext strategy. See README.md.
+#
+# The scheduler stays, because notification jobs run there and a mention that
+# never notifies is a failure this suite exists to catch.
 #
 # Start it with ./up.sh, not `docker compose up` — a bare Zammad comes up sitting
 # in its setup wizard. up.sh seeds the admin the tests authenticate as.
@@ -44,6 +48,13 @@ services:
     command: ["zammad-init"]
     restart: on-failure
     user: 0:0
+    depends_on:
+      zammad-memcached:
+        condition: service_healthy
+      zammad-postgresql:
+        condition: service_healthy
+      zammad-redis:
+        condition: service_healthy
 
   zammad-railsserver:
     <<: *zammad-service
