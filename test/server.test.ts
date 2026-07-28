@@ -285,7 +285,24 @@ describe('dynamic client registration', () => {
     );
   });
 
-  it('refuses a redirect URI outside the allowlist', async () => {
+  it('registers a hosted MCP client, not only loopback ones', async () => {
+    // Claude and other hosted clients complete the flow on their own domain.
+    // With a loopback-only allowlist this came back as an opaque 500.
+    const response = await fetch(`http://127.0.0.1:${appPort}/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        client_name: 'Claude',
+        redirect_uris: ['https://claude.ai/api/mcp/auth_callback'],
+        token_endpoint_auth_method: 'none',
+      }),
+    });
+
+    assert.equal(response.status, 201);
+    assert.match((await response.json()).client_id, /^zmcp_/);
+  });
+
+  it('refuses a redirect URI outside the allowlist with an actionable 400', async () => {
     const response = await fetch(`http://127.0.0.1:${appPort}/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -295,7 +312,15 @@ describe('dynamic client registration', () => {
         token_endpoint_auth_method: 'none',
       }),
     });
-    assert.notEqual(response.status, 201);
+
+    // A plain Error here would surface as 500 "Internal Server Error", which
+    // tells the operator nothing about what to change.
+    assert.equal(response.status, 400);
+
+    const body = await response.json();
+    assert.equal(body.error, 'invalid_client_metadata');
+    assert.match(body.error_description, /attacker\.example/);
+    assert.match(body.error_description, /OAUTH_ALLOWED_REDIRECT_HOSTS/);
   });
 
   it('rejects a tampered state on the callback', async () => {

@@ -112,10 +112,16 @@ const EnvSchema = z
     OAUTH_STATE_TTL_SECONDS: z.coerce.number().int().positive().default(600),
     /**
      * Hosts accepted as OAuth client redirect targets in proxy mode. Guards
-     * against the proxy being used as an open redirector. `localhost` and
-     * `127.0.0.1` cover the usual desktop MCP clients.
+     * against the proxy being used as an open redirector, which is a real risk
+     * here: anyone may register a client, so an unrestricted redirect would let
+     * an attacker collect a victim's authorization code.
+     *
+     * Loopback covers MCP clients that run on the user's machine and listen on
+     * an ephemeral port. The hosted clients complete the flow on their own
+     * domain instead and are listed so the server works without configuration;
+     * remove them if you only ever connect local clients.
      */
-    OAUTH_ALLOWED_REDIRECT_HOSTS: csv.default(['localhost', '127.0.0.1', '[::1]']),
+    OAUTH_ALLOWED_REDIRECT_HOSTS: csv.default(['localhost', '127.0.0.1', '[::1]', 'claude.ai', 'claude.com']),
     /** Also allow custom-scheme redirects such as `vscode://` or `cursor://`. */
     OAUTH_ALLOWED_REDIRECT_SCHEMES: csv.default(['http', 'https', 'vscode', 'cursor', 'claude']),
 

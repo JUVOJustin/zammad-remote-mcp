@@ -16,6 +16,14 @@ import type { Credential } from './zammad/client.js';
  * written. No session IDs are issued, so a client may hit any replica on any
  * request without sticky routing.
  */
+function safeHost(url: string): string | undefined {
+  try {
+    return new URL(url).host.toLowerCase();
+  } catch {
+    return undefined;
+  }
+}
+
 export function createApp(config: Config, logger: Logger): Hono {
   const app = new Hono();
 
@@ -36,8 +44,28 @@ export function createApp(config: Config, logger: Logger): Hono {
     }),
   );
 
+  // PUBLIC_URL forms the OAuth issuer, the callback URL and the resource
+  // identifier. If it does not match the host clients actually dial, discovery
+  // and the whole authorization flow point somewhere that does not exist — and
+  // nothing about the symptom says so. Warn once per host seen.
+  const warnedHosts = new Set<string>();
+  const expectedHost = safeHost(config.publicUrl);
+
   app.use('*', async (c, next) => {
     const started = Date.now();
+
+    const actualHost = safeHost(c.req.url);
+    if (expectedHost && actualHost && actualHost !== expectedHost && !warnedHosts.has(actualHost)) {
+      warnedHosts.add(actualHost);
+      logger.warn('PUBLIC_URL does not match the host this request arrived on', {
+        public_url: config.publicUrl,
+        request_host: actualHost,
+        consequence:
+          'OAuth discovery, the callback URL and the resource identifier all point at ' +
+          `${expectedHost}. Set PUBLIC_URL to the URL clients actually dial.`,
+      });
+    }
+
     await next();
     // stderr only — stdout stays clean.
     logger.debug('request', {

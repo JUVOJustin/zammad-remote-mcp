@@ -1,5 +1,6 @@
 import { mcpAuthRouter, ProxyOAuthServerProvider } from '@hono/mcp/auth';
 import type { OAuthRegisteredClientsStore } from '@modelcontextprotocol/sdk/server/auth/clients.js';
+import { InvalidClientMetadataError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
 import type { AuthorizationParams } from '@modelcontextprotocol/sdk/server/auth/provider.js';
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
 import type { OAuthClientInformationFull, OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js';
@@ -301,23 +302,31 @@ async function resolveClient(
 }
 
 /**
- * Guard against the proxy being turned into an open redirector: a registered
- * redirect URI has to use an allowed scheme, and http(s) URIs have to point at
- * an allowed host (loopback by default).
+ * Guard against the proxy being turned into an open redirector.
+ *
+ * The allowlist is the only thing standing between this endpoint and a real
+ * attack: anyone may register a client, so an unrestricted redirect URI would
+ * let an attacker register one pointing at themselves, walk a victim through a
+ * genuine Zammad login, and receive the victim's authorization code — which
+ * they can exchange, because they created the PKCE challenge.
+ *
+ * Failures are reported as `InvalidClientMetadataError`, which the SDK's
+ * registration handler renders as a 400 naming the offending value. A plain
+ * `Error` here becomes an opaque 500 that tells the operator nothing.
  */
 function assertRedirectAllowed(config: Config, raw: string): void {
   let url: URL;
   try {
     url = new URL(raw);
   } catch {
-    throw new Error(`redirect_uri "${raw}" is not a valid absolute URI`);
+    throw new InvalidClientMetadataError(`redirect_uri "${raw}" is not a valid absolute URI`);
   }
 
   const scheme = url.protocol.replace(/:$/, '').toLowerCase();
   if (!config.OAUTH_ALLOWED_REDIRECT_SCHEMES.includes(scheme)) {
-    throw new Error(
-      `redirect_uri scheme "${scheme}" is not allowed. Permitted schemes: ${config.OAUTH_ALLOWED_REDIRECT_SCHEMES.join(', ')} ` +
-        '(configure with OAUTH_ALLOWED_REDIRECT_SCHEMES).',
+    throw new InvalidClientMetadataError(
+      `redirect_uri scheme "${scheme}" is not allowed. Permitted schemes: ${config.OAUTH_ALLOWED_REDIRECT_SCHEMES.join(', ')}. ` +
+        'Add it to OAUTH_ALLOWED_REDIRECT_SCHEMES if this client is trusted.',
     );
   }
 
@@ -325,9 +334,9 @@ function assertRedirectAllowed(config: Config, raw: string): void {
     const host = url.hostname.toLowerCase();
     const allowed = config.OAUTH_ALLOWED_REDIRECT_HOSTS.map((h) => h.toLowerCase().replace(/^\[|\]$/g, ''));
     if (!allowed.includes(host)) {
-      throw new Error(
-        `redirect_uri host "${host}" is not allowed. Permitted hosts: ${config.OAUTH_ALLOWED_REDIRECT_HOSTS.join(', ')} ` +
-          '(configure with OAUTH_ALLOWED_REDIRECT_HOSTS).',
+      throw new InvalidClientMetadataError(
+        `redirect_uri host "${host}" is not allowed. Permitted hosts: ${config.OAUTH_ALLOWED_REDIRECT_HOSTS.join(', ')}. ` +
+          `Add "${host}" to OAUTH_ALLOWED_REDIRECT_HOSTS if this client is trusted.`,
       );
     }
   }
