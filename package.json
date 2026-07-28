@@ -1,30 +1,91 @@
 {
-  "name": "zammad-remote-mcp-monorepo",
+  "name": "zammad-remote-mcp",
   "version": "1.0.0",
-  "private": true,
-  "description": "Remote MCP server for Zammad \u2014 a runtime-agnostic core with thin Node.js and Cloudflare Workers packages.",
+  "description": "Stateless remote MCP server for Zammad — full ticket operations, an intelligent search layer and OAuth 2.1, running on Node.js or Cloudflare Workers from one codebase.",
   "license": "MIT",
   "type": "module",
-  "workspaces": [
-    "packages/*"
+  "engines": {
+    "node": ">=20.12"
+  },
+  "keywords": [
+    "zammad",
+    "mcp",
+    "model-context-protocol",
+    "helpdesk",
+    "ticketing",
+    "ai",
+    "llm",
+    "hono",
+    "cloudflare-workers",
+    "edge"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JUVOJustin/zammad-remote-mcp.git"
+  },
+  "homepage": "https://github.com/JUVOJustin/zammad-remote-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/JUVOJustin/zammad-remote-mcp/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "sideEffects": false,
+  "bin": {
+    "zammad-remote-mcp": "./dist/node/index.js"
+  },
+  "main": "./dist/core/index.js",
+  "types": "./dist/core/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/core/index.d.ts",
+      "import": "./dist/core/index.js"
+    },
+    "./node": {
+      "types": "./dist/node/index.d.ts",
+      "import": "./dist/node/index.js"
+    },
+    "./cloudflare": {
+      "types": "./dist/cloudflare/index.d.ts",
+      "import": "./dist/cloudflare/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    ".env.example"
   ],
   "scripts": {
-    "build": "npm run build:core && npm run build --workspace @zammad-mcp/node && npm run build --workspace @zammad-mcp/cloudflare",
-    "typecheck": "npm run build:core && npm run typecheck --workspaces --if-present",
-    "test": "npm run test --workspaces --if-present",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "tsx watch src/node/index.ts",
+    "dev:cf": "wrangler dev",
+    "start": "node dist/node/index.js",
+    "deploy": "wrangler deploy",
+    "build:worker": "wrangler deploy --dry-run --outdir .wrangler/dry-run",
     "lint": "biome lint .",
     "format": "biome format --write .",
     "check": "biome check .",
     "check:fix": "biome check --write .",
-    "dev": "npm run dev --workspace @zammad-mcp/node",
-    "dev:cf": "npm run dev --workspace @zammad-mcp/cloudflare",
-    "verify": "npm run check && npm run typecheck && npm test",
-    "build:core": "npm run build --workspace @zammad-mcp/core"
+    "test": "node --test --import tsx \"test/*.test.ts\"",
+    "verify": "npm run check && npm run typecheck && npm test && npm run build:worker",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "@cfworker/json-schema": "^4.1.1",
+    "@hono/mcp": "^0.3.1",
+    "@hono/node-server": "^1.19.9",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "hono": "^4.12.32",
+    "hono-rate-limiter": "^0.5.3",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.5",
     "@types/node": "^22.15.0",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.3"
+    "typescript": "^5.7.3",
+    "wrangler": "^4.0.0"
   }
 }

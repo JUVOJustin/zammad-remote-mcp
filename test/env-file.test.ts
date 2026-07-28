@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
-import { loadEnvFile } from '../src/env-file.js';
+import { loadEnvFile } from '../src/node/env-file.js';
 
 let dir: string;
 const touched: string[] = [];

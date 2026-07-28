@@ -1,4 +1,4 @@
-import type { CacheStore } from '@zammad-mcp/core';
+import type { CacheStore } from '../core/index.js';
 
 /**
  * Workers KV as the lookup cache.

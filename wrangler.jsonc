@@ -1,7 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "zammad-remote-mcp",
-  "main": "src/index.ts",
+  "main": "src/cloudflare/index.ts",
   "compatibility_date": "2026-07-01",
 
   // Not required by the core — it uses only WebCrypto, fetch, TextEncoder and

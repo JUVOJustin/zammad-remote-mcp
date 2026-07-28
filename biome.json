@@ -6,7 +6,7 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["packages/*/src/**/*.ts", "packages/*/test/**/*.ts", "*.json", "packages/*/*.json"]
+    "includes": ["src/**/*.ts", "test/**/*.ts", "*.json"]
   },
   "formatter": {
     "enabled": true,
@@ -74,7 +74,7 @@
   },
   "overrides": [
     {
-      "includes": ["packages/*/test/**/*.ts"],
+      "includes": ["test/**/*.ts"],
       "linter": {
         "rules": {
           "suspicious": {
@@ -87,7 +87,7 @@
       }
     },
     {
-      "includes": ["packages/node/src/**/*.ts"],
+      "includes": ["src/node/**/*.ts"],
       "linter": {
         "rules": {
           "suspicious": {

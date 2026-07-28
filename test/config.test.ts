@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { loadConfig } from '../src/config.js';
+import { loadConfig } from '../src/core/config.js';
 
 const base = { ZAMMAD_URL: 'https://support.example.com' } as NodeJS.ProcessEnv;
 

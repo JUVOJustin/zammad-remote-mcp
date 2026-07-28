@@ -58,8 +58,8 @@ jobs:
 
   worker:
     # The core claims to run unchanged on the edge; this is what keeps that
-    # honest. A Node built-in creeping back into the core fails here, not in
-    # production.
+    # honest. A Node built-in creeping back into src/core fails here, not in a
+    # deployment.
     needs: quality
     runs-on: ubuntu-latest
     steps:
@@ -76,4 +76,4 @@ jobs:
         run: npm ci
 
       - name: Build the Cloudflare Worker
-        run: npm run build
+        run: npm run build:worker

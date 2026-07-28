@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      # Required for npm provenance, which both published packages request via
+      # Required for npm provenance, which the package requests via
       # publishConfig.provenance.
       id-token: write
 
@@ -40,27 +40,7 @@ jobs:
           fi
 
       - name: Update package.json version
-        run: |
-          npm version ${{ steps.version.outputs.VERSION }} \
-            --workspaces --include-workspace-root \
-            --no-git-tag-version --allow-same-version
-
-      - name: Pin the cross-package dependency to this version
-        # `npm version --workspaces` bumps each package but leaves dependency
-        # ranges alone. Without this, a major release would publish a node
-        # package still asking for the previous major of the core.
-        run: |
-          node -e '
-            const fs = require("node:fs");
-            const version = process.argv[1];
-            for (const pkg of ["node", "cloudflare"]) {
-              const path = `packages/${pkg}/package.json`;
-              const manifest = JSON.parse(fs.readFileSync(path, "utf8"));
-              manifest.dependencies["@zammad-mcp/core"] = `^${version}`;
-              fs.writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`);
-            }
-          ' ${{ steps.version.outputs.VERSION }}
-          npm install --package-lock-only
+        run: npm version ${{ steps.version.outputs.VERSION }} --no-git-tag-version --allow-same-version
 
       - name: Install dependencies
         run: npm ci
@@ -68,11 +48,19 @@ jobs:
       - name: Check formatting and lint
         run: npm run check
 
+      - name: Typecheck
+        run: npm run typecheck
+
       - name: Build
         run: npm run build
 
       - name: Test
         run: npm test
+
+      - name: Build the Cloudflare Worker
+        # The core claims to run unchanged on the edge. A Node built-in creeping
+        # into it fails here rather than in a deployment.
+        run: npm run build:worker
 
       - name: Commit version update
         uses: test-room-7/action-update-file@v1
@@ -80,23 +68,11 @@ jobs:
           file-path: |
             package.json
             package-lock.json
-            packages/core/package.json
-            packages/node/package.json
-            packages/cloudflare/package.json
           commit-msg: "chore: update package.json version to ${{ steps.version.outputs.VERSION }}"
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      # Published in dependency order: @zammad-mcp/node declares a dependency on
-      # @zammad-mcp/core at this exact version, so the core has to exist on the
-      # registry first or an install of the node package resolves to nothing.
-      # packages/cloudflare is private and is deployed from the repo instead.
-      - name: Publish @zammad-mcp/core
-        run: npm publish --workspace @zammad-mcp/core --tag ${{ steps.version.outputs.NPM_TAG }}
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Publish @zammad-mcp/node
-        run: npm publish --workspace @zammad-mcp/node --tag ${{ steps.version.outputs.NPM_TAG }}
+      - name: Publish to npm
+        run: npm publish --tag ${{ steps.version.outputs.NPM_TAG }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 

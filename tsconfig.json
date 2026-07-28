@@ -3,6 +3,14 @@
     "target": "ES2023",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
+    // DOM supplies the WebCrypto, fetch and TextEncoder types the runtime-agnostic
+    // core is written against; "node" covers the Node host's process/fs use.
+    // Everything under src/core must nevertheless stay free of Node built-ins —
+    // `npm run build:worker` is what enforces that, not the compiler.
+    "lib": ["ES2023", "DOM"],
+    "types": ["node"],
+    "rootDir": "src",
+    "outDir": "dist",
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
@@ -10,10 +18,10 @@
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
-    "composite": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
     "resolveJsonModule": true
-  }
+  },
+  "include": ["src/**/*.ts"]
 }

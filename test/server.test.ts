@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import { createServer, type Server } from 'node:http';
 import { after, before, describe, it } from 'node:test';
 import { serve } from '@hono/node-server';
-import { createApp } from '../src/app.js';
-import { loadConfig } from '../src/config.js';
-import { createLogger } from '../src/util/logger.js';
+import { createApp } from '../src/core/app.js';
+import { loadConfig } from '../src/core/config.js';
+import { createLogger } from '../src/core/util/logger.js';
 
 /**
  * End-to-end coverage: a stub Zammad, the real Hono app, and MCP traffic over

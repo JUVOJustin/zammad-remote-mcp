@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { serve } from '@hono/node-server';
-import { bootstrap } from '@zammad-mcp/core';
+import { bootstrap } from '../core/index.js';
 import { loadEnvFile } from './env-file.js';
 
 /**

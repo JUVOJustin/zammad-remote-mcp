@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { CacheStore } from '../src/util/cache.js';
-import { createMemoryCacheStore, JsonCache } from '../src/util/cache.js';
+import type { CacheStore } from '../src/core/util/cache.js';
+import { createMemoryCacheStore, JsonCache } from '../src/core/util/cache.js';
 
 describe('memory cache store', () => {
   it('round-trips a value', async () => {

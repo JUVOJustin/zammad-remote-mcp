@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { type Config, loadConfig } from '../src/config.js';
-import type { ZammadClient } from '../src/zammad/client.js';
-import { clearLookupCache, LookupService } from '../src/zammad/lookup.js';
+import { type Config, loadConfig } from '../src/core/config.js';
+import type { ZammadClient } from '../src/core/zammad/client.js';
+import { clearLookupCache, LookupService } from '../src/core/zammad/lookup.js';
 import {
   buildOrganizationSearch,
   buildTicketSearch,
@@ -10,14 +10,14 @@ import {
   dateConditions,
   parseRelativeSpan,
   stringConditions,
-} from '../src/zammad/search/builder.js';
-import * as L from '../src/zammad/search/lucene.js';
+} from '../src/core/zammad/search/builder.js';
+import * as L from '../src/core/zammad/search/lucene.js';
 import {
   searchOrganizationsInputSchema,
   searchTicketsInputSchema,
   searchUsersInputSchema,
-} from '../src/zammad/search/schema.js';
-import { type Condition, type ConditionLeaf, isBlock } from '../src/zammad/selector.js';
+} from '../src/core/zammad/search/schema.js';
+import { type Condition, type ConditionLeaf, isBlock } from '../src/core/zammad/selector.js';
 
 const config: Config = loadConfig({
   ZAMMAD_URL: 'https://support.example.com',

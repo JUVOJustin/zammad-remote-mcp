@@ -4,8 +4,8 @@ A remote [MCP](https://modelcontextprotocol.io) server for [Zammad](https://zamm
 [Hono](https://hono.dev) and deployable to **Node.js or Cloudflare Workers from one codebase**.
 
 - **Stateless.** No sessions, no token store, no sticky routing — see [below](#is-the-server-stateless).
-- **Runtime-agnostic core.** All the logic lives in `@zammad-mcp/core`, which imports no Node built-ins.
-  The two host packages differ only in where the environment comes from and how the app is served.
+- **Runtime-agnostic core.** All the logic lives in `src/core`, which imports no Node built-ins. The two
+  hosts differ only in where the environment comes from and how the app is served.
 - **OAuth 2.1 against Zammad.** Zammad's own Doorkeeper provider is the authorization server; this
   server proxies the flow and adds the dynamic client registration Doorkeeper lacks.
 - **Full ticket coverage.** Create, read, update, delete, merge, mass-update, macros, articles,
@@ -14,17 +14,21 @@ A remote [MCP](https://modelcontextprotocol.io) server for [Zammad](https://zamm
   are read live from your instance.
 - **Zod everywhere.** Environment, tool inputs and selector structures are all schema-validated.
 
-## Packages
+## One package, three entry points
 
-| Package | What it is |
+Everything lives in `zammad-remote-mcp`. The source keeps the runtimes apart, but there is a single
+version and a single publish.
+
+| Import | What it is |
 |---|---|
-| `packages/core` — `@zammad-mcp/core` | Everything: Hono app, MCP server, 39 tools, Zammad client, search builder, OAuth proxy. Uses only WebCrypto, `fetch`, `TextEncoder` and `atob`/`btoa`. |
-| `packages/node` — `@zammad-mcp/node` | Node host: `.env` loading, socket binding, signal handling. ~100 lines. |
-| `packages/cloudflare` — `@zammad-mcp/cloudflare` | Workers host: `env` binding instead of `process.env`, `fetch` export instead of a listener. ~40 lines. |
+| `zammad-remote-mcp` | the runtime-agnostic core: Hono app, MCP server, 39 tools, Zammad client, search builder, OAuth proxy. Uses only WebCrypto, `fetch`, `TextEncoder` and `atob`/`btoa`. |
+| `zammad-remote-mcp/node` | Node host: `.env` loading, socket binding, signal handling |
+| `zammad-remote-mcp/cloudflare` | Workers host: `env` binding instead of `process.env`, KV-backed lookup cache, `fetch` export |
+| `npx zammad-remote-mcp` | the CLI — the Node host with a shebang |
 
-Both hosts call the same `bootstrap({ env })` and serve the same `fetch` handler. Anything
-runtime-specific that could not be avoided — reading a file from disk, binding a port — lives in the
-host package and nowhere else.
+Both hosts call the same `bootstrap({ env, cache })` and serve the same `fetch` handler. Anything
+runtime-specific that could not be avoided — reading a file from disk, binding a port — lives in
+`src/node` or `src/cloudflare` and nowhere else.
 
 ## Quick start — Node.js
 
@@ -55,19 +59,18 @@ authorization server on its own.
 ## Quick start — Cloudflare Workers
 
 ```bash
-cd packages/cloudflare
 cp .dev.vars.example .dev.vars   # fill in the secrets
-npx wrangler dev
+npm run dev:cf
 ```
 
-Edit `vars` in [`wrangler.jsonc`](packages/cloudflare/wrangler.jsonc) — at minimum `ZAMMAD_URL` and
+Edit `vars` in [`wrangler.jsonc`](wrangler.jsonc) — at minimum `ZAMMAD_URL` and
 `PUBLIC_URL`, which must match the URL clients actually dial. Then push the secrets and deploy:
 
 ```bash
 npx wrangler secret put ZAMMAD_OAUTH_CLIENT_ID
 npx wrangler secret put ZAMMAD_OAUTH_CLIENT_SECRET
 npx wrangler secret put OAUTH_STATE_SECRET
-npx wrangler deploy
+npm run deploy
 ```
 
 `OAUTH_STATE_SECRET` must be stable across deployments — rotating it invalidates registered clients
@@ -454,43 +457,45 @@ callback round trip and the MCP handshake. It needs no network and no Zammad ins
 ### Layout
 
 ```
-packages/
-  core/                      @zammad-mcp/core — no Node built-ins
-    src/
-      index.ts               public surface: bootstrap(), createApp(), loadConfig()
-      config.ts              Zod-validated environment
-      app.ts                 Hono app: CORS, auth extraction, MCP endpoint
-      auth/
-        oauth.ts             stateless OAuth proxy over Zammad's Doorkeeper
-        signing.ts           HMAC-signed compact payloads (WebCrypto)
-      util/
-        base64.ts            base64/base64url on atob/btoa, no Buffer
-        logger.ts            structured logging to an injectable sink
-        errors.ts            Zammad error mapping
-      zammad/
-        client.ts            REST client: retries, error mapping, credentials
-        lookup.ts            name → ID resolution with a TTL cache
-        vocabulary.ts        instance value sets folded into tool schemas
-        selector.ts          Zammad's selector language, typed
-        search/              schema.ts · builder.ts · lucene.ts
-      mcp/
-        server.ts            per-request McpServer assembly
-        context.ts           per-request tool context
-        result.ts            result formatting and summarisation
-        tools/               search · tickets · articles · metadata · enrich
-    test/                    config · search-builder · server (end-to-end)
+src/
+  core/                      runtime-agnostic — no Node built-ins
+    index.ts                 public surface: bootstrap(), createApp(), loadConfig()
+    config.ts                Zod-validated environment
+    app.ts                   Hono app: CORS, auth extraction, MCP endpoint
+    auth/
+      oauth.ts               stateless OAuth proxy over Zammad's Doorkeeper
+      signing.ts             HMAC-signed compact payloads (WebCrypto)
+    util/
+      base64.ts              base64/base64url on atob/btoa, no Buffer
+      cache.ts               CacheStore interface + in-process implementation
+      logger.ts              structured logging to an injectable sink
+      errors.ts              Zammad error mapping
+    zammad/
+      client.ts              REST client: retries, error mapping, credentials
+      lookup.ts              name → ID resolution, cached
+      vocabulary.ts          instance value sets folded into tool schemas
+      selector.ts            Zammad's selector language, typed
+      search/                schema.ts · builder.ts · lucene.ts
+    mcp/
+      server.ts              per-request McpServer assembly
+      context.ts             per-request tool context
+      result.ts              result formatting and summarisation
+      tools/                 search · tickets · articles · metadata · enrich
 
-  node/                      @zammad-mcp/node
-    src/index.ts             serve(), signals, EADDRINUSE handling
-    src/env-file.ts          .env via process.loadEnvFile
-    test/env-file.test.ts
+  node/                      Node host
+    index.ts                 serve(), signals, EADDRINUSE handling
+    env-file.ts              .env via process.loadEnvFile
 
-  cloudflare/                @zammad-mcp/cloudflare
-    src/index.ts             export default { fetch }
-    src/kv-cache.ts          Workers KV as the lookup cache
-    wrangler.jsonc           vars, KV binding, compatibility flags
-    .dev.vars.example        secrets the deploy flow prompts for
+  cloudflare/                Workers host
+    index.ts                 export default { fetch }
+    kv-cache.ts              Workers KV as the lookup cache
+
+test/                        config · cache · search-builder · server · env-file
+wrangler.jsonc               vars, KV binding, compatibility flags
 ```
+
+`src/core` must stay free of Node built-ins. `npm run build:worker` is what enforces that — it is a
+wrangler dry-run against the workerd target, and it runs in CI on every push.
 
 ### Why the core has no Node built-ins
 
@@ -513,30 +518,16 @@ Two further changes made one build valid on both runtimes:
 
 ## Releasing
 
-Two packages go to npm; `packages/cloudflare` stays private because it is a deploy target, not
-something anyone installs.
-
-| Package | npm |
-|---|---|
-| `@zammad-mcp/core` | the runtime-agnostic server, for embedding in your own host |
-| `@zammad-mcp/node` | the CLI: `npx @zammad-mcp/node` |
-| `@zammad-mcp/cloudflare` | not published — fork or copy the directory |
+One package, one publish. The name is unscoped, so **no npm organisation is needed** — it belongs to
+whoever publishes it first.
 
 ### One-time setup
 
-Both names are scoped, so the `zammad-mcp` organisation has to exist before anything can be
-published. Create it at **[npmjs.com/org/create](https://www.npmjs.com/org/create)** and pick the
-free plan — it covers unlimited public packages. There is no CLI equivalent: `npm org` only manages
-members of an organisation that already exists.
-
-Then sign in locally, which is what `npm pack`/`npm publish --dry-run` need:
-
 ```bash
 npm login
-npm whoami && npm org ls zammad-mcp
 ```
 
-Finally add an npm **automation** token as the `NPM_TOKEN` repository secret
+Then add an npm **automation** token as the `NPM_TOKEN` repository secret
 (npmjs.com → Access Tokens → Generate → Automation). Classic tokens prompt for 2FA on every publish,
 which fails an unattended CI job.
 
@@ -548,28 +539,22 @@ Push a tag. `.github/workflows/deploy.yml` does the rest:
 git tag v1.1.0 && git push origin v1.1.0
 ```
 
-The workflow bumps every package to the tag's version, re-pins the `@zammad-mcp/core` dependency in
-the dependent packages, runs lint/build/test, commits the version bump back to `main`, publishes
-**core before node** (node's dependency has to resolve), and opens a GitHub release. A tag with a
+The workflow bumps the version to match the tag, runs lint/typecheck/build/test, builds the Worker,
+commits the version bump back to `main`, publishes to npm and opens a GitHub release. A tag with a
 prerelease suffix (`v1.1.0-rc.1`) publishes under the `next` dist-tag instead of `latest`.
 
-Both packages request [npm provenance](https://docs.npmjs.com/generating-provenance-statements),
+The package requests [npm provenance](https://docs.npmjs.com/generating-provenance-statements),
 which is why the job needs `id-token: write`.
-
-The version bump and the dependency pin are separate steps on purpose: `npm version --workspaces`
-updates each package's own version but leaves cross-package dependency *ranges* untouched, so
-without the pin a major release would publish a node package still asking for the previous major of
-the core.
 
 ### Checking a release before tagging
 
 ```bash
-npm run build
-npm pack --workspace @zammad-mcp/core --workspace @zammad-mcp/node
+npm run verify
+npm pack --dry-run
 ```
 
-Inspect the tarballs (`tar tzf …`) — they should contain `dist`, `README.md`, `LICENSE` and nothing
-else. No `src`, no tests, no `.tsbuildinfo`.
+The tarball should contain `dist`, `.env.example`, `README.md` and `LICENSE` — no `src`, no tests,
+no `.tsbuildinfo`.
 
 ## License
 

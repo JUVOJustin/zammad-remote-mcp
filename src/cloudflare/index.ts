@@ -1,5 +1,9 @@
-import { bootstrap } from '@zammad-mcp/core';
+import { bootstrap } from '../core/index.js';
 import { createKvCacheStore, type KvNamespaceLike } from './kv-cache.js';
+
+// Re-exported so a hand-written Worker can reuse the KV store without reaching
+// into a subpath that is not part of the package's public exports.
+export { createKvCacheStore, type KvNamespaceLike };
 
 /**
  * Cloudflare Workers host.
