@@ -12,44 +12,15 @@ import { registerTicketTools } from './tools/tickets.js';
 
 const INSTRUCTIONS = `Tools for a Zammad helpdesk.
 
-Getting oriented
-  • The valid states, priorities, groups and macros of *this* instance are already listed in the tool schemas —
-    read the enum on \`state\`, \`priority\` or \`group\` rather than asking for them. Other names and numeric IDs
-    are still accepted, and a wrong value comes back with the valid options.
-  • \`zammad_whoami\` shows whose credential is in play. Agents and customers see very different ticket sets.
-  • Tags are open-ended and are not in the schemas — \`zammad_list_tags\` checks a spelling before you use it.
-  • \`zammad_list_custom_attributes\` reveals Object Manager fields, but needs an admin credential; with an agent
-    token it returns 403 and custom fields have to be addressed by name via \`custom\` / \`custom_fields\`.
-
-Searching
-  • \`zammad_search_tickets\` is the main entry point. Express filters as arguments — state, priority, group,
-    owner, customer, organization, tags, date ranges, article content — rather than fetching tickets and
-    filtering them yourself; Zammad evaluates the whole query server-side.
-  • Names resolve automatically: \`state: ["open"]\`, \`group: ["1st Level"]\`, \`owner: ["jane@acme.com"]\`.
-    \`owner: ["me"]\` and \`customer: ["me"]\` mean the authenticated user; \`organization: ["mine"]\` means their
-    organization.
-  • Start with \`output: "count"\` when a query might match thousands of tickets, then page with
-    \`page\`/\`per_page\`.
-  • The response echoes the generated query and selector under \`search\`. Read it when a result looks wrong —
-    it shows exactly what Zammad was asked.
-
-Writing
-  • Articles default to \`type: "note"\` and \`internal: true\`, which records text without contacting anyone.
-    Setting \`type: "email"\` with \`internal: false\` sends real mail to the customer, so only do that when the
-    intent is to reply.
-  • Closing a ticket is \`zammad_update_ticket\` with \`state: "closed"\`. \`zammad_delete_ticket\` is permanent
-    and is rarely what is wanted.
-  • Moving a ticket to a pending state requires \`pending_time\`.
-
-Mentioning a colleague in an internal note
-  • \`@@\` is the *editor* trigger in the Zammad UI: typing it opens a name picker, and what gets stored is a
-    link. Writing \`@@Jane\` through this API produces the literal characters "@@Jane" and reaches nobody.
-  • A mention is an anchor carrying \`data-mention-user-id\`, so the article has to be
-    \`content_type: "text/html"\`:
-      <a href="<zammad-url>/#user/profile/42" data-mention-user-id="42">Jane Doe</a> please take a look
-    Get the numeric id from \`zammad_search_users\`; the link text is just the display name.
-  • Mention someone only when the note is \`internal: true\`. In a customer-visible article the link is shown
-    to the customer as well.`;
+  • Valid states, priorities, groups and macros for *this* instance are in the tool schemas — read the enums
+    instead of asking. A wrong value comes back with the valid options.
+  • \`zammad_search_tickets\` is the main entry point: express filters as arguments rather than fetching
+    tickets and filtering yourself. Names resolve on their own (\`owner: ["me"]\`, \`group: ["1st Level"]\`),
+    \`output: "count"\` sizes a broad query, and the response echoes the generated selector under \`search\`.
+  • \`zammad_whoami\` shows whose credential is in play; agents and customers see different tickets.
+  • Tags are not in the schemas — \`zammad_list_tags\` checks a spelling.
+  • Articles default to an internal note. \`type: "email"\` with \`internal: false\` sends real mail.
+  • \`zammad_delete_ticket\` is permanent and rarely what is wanted; closing is \`state: "closed"\`.`;
 
 export interface CreateServerOptions {
   config: Config;

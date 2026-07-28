@@ -1,6 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { bytesToBase64, textFromBytes } from '../../util/base64.js';
+import { rewriteMentions } from '../../zammad/mentions.js';
 import type { ToolContext } from '../context.js';
 import { withOnBehalfOf } from '../context.js';
 import { guard, jsonResult, summarizeArticle, textResult } from '../result.js';
@@ -105,10 +106,7 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
       .describe(
         'true keeps the article hidden from the customer. Defaults to true so nothing is published by accident.',
       ),
-    content_type: z
-      .enum(['text/plain', 'text/html'])
-      .default('text/plain')
-      .describe('Must be `text/html` to mention a colleague — see the description for the markup.'),
+    content_type: z.enum(['text/plain', 'text/html']).default('text/plain'),
     to: z.string().optional().describe('Recipients — required for outbound email articles.'),
     cc: z.string().optional(),
     in_reply_to: z.string().optional(),
@@ -134,12 +132,8 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
         'Append a note, reply or logged phone call to a ticket. An article with `type: "email"` and ' +
         '`internal: false` is actually delivered to the addresses in `to`/`cc`; the defaults (`note`, internal) ' +
         'record text without notifying anyone.\n\n' +
-        'To mention a colleague in an internal note, do not type `@@Name` — that is the UI autocomplete ' +
-        'trigger and survives into the body as plain characters that reach no one. Send ' +
-        '`content_type: "text/html"` and link the user instead:\n' +
-        '  <a href="<zammad-url>/#user/profile/42" data-mention-user-id="42">Jane Doe</a> can you check this?\n' +
-        'The numeric id comes from `zammad_search_users`. Keep such a note `internal: true`, or the customer ' +
-        'sees the mention too.',
+        'Mention a colleague by writing `@@jane@acme.com`, `@@jdoe` or `@@"Jane Doe"` in the body — they are ' +
+        'linked and notified. Keep such a note `internal: true`, or the customer sees the mention too.',
       inputSchema: createInput.shape,
       annotations: {
         readOnlyHint: false,
@@ -152,13 +146,21 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
       const input = createInput.parse(rawInput);
       const context = withOnBehalfOf(base, input.on_behalf_of);
 
+      // `@@name` is rewritten into the anchor Zammad recognises; its own
+      // create-callback turns that into the mention and the notification.
+      const mentions = await rewriteMentions(input.body, input.content_type, {
+        client: context.client,
+        lookup: context.lookup,
+        zammadUrl: base.config.ZAMMAD_URL,
+      });
+
       const body: Record<string, unknown> = {
         ticket_id: input.ticket_id,
-        body: input.body,
+        body: mentions.body,
         type: input.type,
         sender: input.sender,
         internal: input.internal,
-        content_type: input.content_type,
+        content_type: mentions.content_type,
       };
       for (const key of ['subject', 'to', 'cc', 'in_reply_to', 'time_unit', 'origin_by'] as const) {
         if (input[key] !== undefined) body[key] = input[key];
@@ -166,7 +168,11 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
       if (input.attachments?.length) body.attachments = input.attachments;
 
       const article = await context.client.post<Record<string, unknown>>('/api/v1/ticket_articles', body);
-      return jsonResult({ created: true, article: summarizeArticle(article) });
+      return jsonResult({
+        created: true,
+        article: summarizeArticle(article),
+        ...(mentions.mentioned.length > 0 ? { mentioned: mentions.mentioned } : {}),
+      });
     }),
   );
 
