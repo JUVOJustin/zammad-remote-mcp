@@ -84,9 +84,17 @@ const ticketAttributes = {
       'Replaces the tag list on create; on update, prefer zammad_add_ticket_tags / zammad_remove_ticket_tags.',
     ),
   custom_fields: z
-    .record(z.string(), z.unknown())
+    // Not z.unknown(): that emits an empty `{}` sub-schema, which tells a model
+    // nothing and is rejected by the stricter tool-schema validators.
+    .record(
+      z.string(),
+      z.union([z.string(), z.number(), z.boolean(), z.null(), z.array(z.union([z.string(), z.number()]))]),
+    )
     .optional()
-    .describe('Object Manager attributes, keyed by their internal name.'),
+    .describe(
+      'Object Manager attributes, keyed by their internal name. Discover the names with ' +
+        'zammad_list_custom_attributes.',
+    ),
 } as const;
 
 /** Merge the shared attribute block into a Zammad payload. */
@@ -687,7 +695,9 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
     'zammad_get_recent_tickets',
     {
       title: 'Get recently viewed Zammad tickets',
-      description: 'The tickets the authenticated user touched most recently.',
+      description:
+        'The tickets the authenticated user opened most recently, newest first. A quick way to answer ' +
+        '"what was I just working on" without a search.',
       inputSchema: { limit: z.number().int().positive().max(50).default(10) },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
@@ -736,7 +746,9 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
     'zammad_remove_ticket_tags',
     {
       title: 'Remove tags from a Zammad ticket',
-      description: 'Detach one or more tags from a ticket.',
+      description:
+        'Detach one or more tags from a ticket. Tags not present on the ticket are ignored, so this is safe to ' +
+        'call speculatively. Returns the remaining tag list.',
       inputSchema: tagInput.shape,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
@@ -794,7 +806,9 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
     'zammad_unlink_tickets',
     {
       title: 'Remove a link between two Zammad tickets',
-      description: 'Delete an existing link between two tickets.',
+      description:
+        'Remove an existing link between two tickets. The tickets themselves are untouched; only the ' +
+        'relationship is deleted.',
       inputSchema: linkInput.shape,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
@@ -816,7 +830,9 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
     'zammad_list_ticket_links',
     {
       title: "List a Zammad ticket's links",
-      description: 'Show the tickets linked to a ticket, grouped by link type.',
+      description:
+        'Show the tickets linked to a ticket, grouped by link type (normal, parent, child). Useful for ' +
+        'following a chain of related incidents.',
       inputSchema: { ticket_id: z.number().int().positive() },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
@@ -835,7 +851,9 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
     'zammad_list_time_accounting',
     {
       title: 'List time entries on a Zammad ticket',
-      description: 'All recorded time units for a ticket.',
+      description:
+        'All recorded time units booked against a ticket, with who logged them and when. Use it to check ' +
+        'billable effort before invoicing or closing.',
       inputSchema: { ticket_id: z.number().int().positive() },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
