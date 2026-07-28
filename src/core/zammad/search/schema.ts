@@ -16,37 +16,42 @@ import { BLOCK_OPERATORS, CONDITION_OPERATORS, RELATIVE_RANGES } from '../select
 const ref = z.union([z.string().min(1), z.number().int().positive()]);
 const refs = z.union([ref, z.array(ref).min(1)]).transform((v) => (Array.isArray(v) ? v : [v]));
 
+/**
+ * A relative span, as shorthand only.
+ *
+ * There used to be a `{value, unit}` alternative. It said nothing the string
+ * could not, and each alternative multiplies the property count of every date
+ * field that uses it — `zammad_search_tickets` carries nine of those.
+ */
 export const relativeSpanSchema = z
-  .union([
-    z
-      .string()
-      .regex(
-        /^\s*(\d+)\s*(m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days|w|wk|week|weeks|mo|month|months|y|yr|year|years)\s*$/i,
-        'Use a span like "30m", "24h", "7d", "2 weeks" or "3 months".',
-      )
-      .describe('Shorthand span, e.g. "30m", "24h", "7d", "2 weeks", "3 months".'),
-    z.object({
-      value: z.number().int().positive(),
-      unit: z.enum(RELATIVE_RANGES),
-    }),
-  ])
-  .describe('A relative time span, either as shorthand ("7d") or as {value, unit}.');
+  .string()
+  .min(2)
+  .describe('Relative span: "30m", "24h", "7d", "2 weeks", "3 months".');
 
 export type RelativeSpan = z.infer<typeof relativeSpanSchema>;
 
-/** ISO-8601 timestamp or date. Zammad accepts both. */
+/**
+ * ISO-8601 date or timestamp. Zammad accepts both.
+ *
+ * Deliberately not a `.regex()`: zod renders that as JSON Schema `pattern`,
+ * which is outside the subset strict clients accept — and a client that rejects
+ * one keyword discards the entire tool, silently. The format is enforced in
+ * `parseTimestamp` instead, where a wrong value produces a message the model can
+ * act on rather than a schema violation it never sees.
+ */
 const timestamp = z
   .string()
-  .regex(
-    /^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2})?(\.\d+)?(Z|[+-]\d{2}:?\d{2})?)?$/,
-    'Use an ISO-8601 date ("2026-01-31") or timestamp ("2026-01-31T09:00:00Z").',
-  );
+  .min(8)
+  .describe('ISO-8601 date ("2026-01-31") or timestamp ("2026-01-31T09:00:00Z").');
 
 export const dateFilterSchema = z
   .object({
     after: timestamp.optional().describe('Strictly after this absolute timestamp.'),
     before: timestamp.optional().describe('Strictly before this absolute timestamp.'),
-    between: z.tuple([timestamp, timestamp]).optional().describe('Inclusive [from, to] range.'),
+    // An object, not z.tuple: a tuple emits `items` as an array, which JSON
+    // Schema 2020-12 does not allow (that is `prefixItems`) and which makes
+    // strict clients discard the whole tool.
+    between: z.object({ from: timestamp, to: timestamp }).strict().optional().describe('Inclusive range.'),
     within_last: relativeSpanSchema.optional().describe('Within the last N units, e.g. "7d".'),
     within_next: relativeSpanSchema
       .optional()
@@ -76,9 +81,6 @@ export const stringFilterSchema = z
         contains_not: z.string().optional(),
         starts_with: z.union([z.string(), z.array(z.string()).min(1)]).optional(),
         ends_with: z.union([z.string(), z.array(z.string()).min(1)]).optional(),
-        regex: z.string().optional().describe('Regular expression (SQL backend only).'),
-        not_regex: z.string().optional(),
-        is_set: z.boolean().optional(),
       })
       .strict(),
   ])
@@ -136,8 +138,7 @@ export const articleFilterSchema = z
     body: stringFilterSchema.optional().describe('Match against article bodies.'),
     subject: stringFilterSchema.optional(),
     from: stringFilterSchema.optional().describe('Sender address/name of an article.'),
-    to: stringFilterSchema.optional(),
-    cc: stringFilterSchema.optional(),
+    // `article.to` and `article.cc` go through `custom`, for the same reason.
     type: z.array(z.enum(ARTICLE_TYPES)).min(1).optional().describe('Article channel type.'),
     sender: z
       .array(z.enum(['Agent', 'Customer', 'System']))
@@ -297,9 +298,9 @@ export const searchTicketsInputSchema = z
     pending_time: dateFilterSchema.optional().describe('When a pending ticket is due to come back.'),
     escalation_at: dateFilterSchema.optional(),
     last_contact_at: dateFilterSchema.optional(),
-    last_contact_agent_at: dateFilterSchema.optional(),
-    last_contact_customer_at: dateFilterSchema.optional(),
-    first_response_at: dateFilterSchema.optional(),
+    // last_contact_agent_at, last_contact_customer_at and first_response_at are
+    // reachable through `custom` — each named date field repeats the whole
+    // filter shape, and these three are rarely what anyone searches by.
 
     escalated: z
       .boolean()

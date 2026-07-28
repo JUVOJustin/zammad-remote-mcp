@@ -113,7 +113,9 @@ describe('dateConditions', () => {
   });
 
   it('emits a two-element array for "in range"', () => {
-    const [range] = dateConditions('ticket.created_at', { between: ['2026-01-01', '2026-02-01'] });
+    const [range] = dateConditions('ticket.created_at', {
+      between: { from: '2026-01-01', to: '2026-02-01' },
+    });
     assert.equal(range!.operator, 'in range');
     assert.deepEqual(range!.value, ['2026-01-01', '2026-02-01']);
   });

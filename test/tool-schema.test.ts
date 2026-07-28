@@ -186,6 +186,78 @@ describe('tool input schemas stay portable across MCP clients', () => {
     }
   });
 
+  it('avoids the keywords observed to get a tool dropped', () => {
+    // A denylist, not an allowlist, and every entry is grounded:
+    //
+    //  $ref/definitions/$defs/allOf — the three search tools vanished from Codex
+    //    while z.lazy() emitted `allOf: [{$ref: '#/definitions/…'}]`.
+    //  pattern — after that was fixed zammad_search_tickets was still missing,
+    //    and `pattern` was the only remaining keyword present in it and absent
+    //    from the two search tools Codex did accept.
+    //  oneOf — never observed, listed with allOf because zod has no reason to
+    //    emit it and its appearance would mean something unexpected changed.
+    //
+    // Keywords the accepted tools demonstrably use — propertyNames, const,
+    // maxItems, minItems, minLength, enum, anyOf — are deliberately not here.
+    const denied = ['$ref', 'definitions', '$defs', 'allOf', 'oneOf', 'pattern'];
+
+    for (const tool of tools) {
+      const hits = findKeys(tool.inputSchema, denied);
+      assert.deepEqual(hits, [], `${tool.name} uses ${hits.join(', ')}`);
+    }
+  });
+
+  it('never renders items as an array', () => {
+    // z.tuple() emits `items: [schema, schema]`, which is invalid in JSON Schema
+    // 2020-12 — that is `prefixItems` — and gets the tool discarded.
+    for (const tool of tools) {
+      const offenders: string[] = [];
+      const walk = (node: unknown, path: string) => {
+        if (!node || typeof node !== 'object') return;
+        if (Array.isArray(node)) {
+          node.forEach((item, i) => {
+            walk(item, `${path}[${i}]`);
+          });
+          return;
+        }
+        for (const [key, value] of Object.entries(node)) {
+          if (key === 'items' && Array.isArray(value)) offenders.push(`${path}.items`);
+          walk(value, `${path}.${key}`);
+        }
+      };
+      walk(tool.inputSchema, '$');
+      assert.deepEqual(offenders, [], `${tool.name} has tuple-form items at ${offenders.join(', ')}`);
+    }
+  });
+
+  it('keeps the property count within reach of the tools clients accept', () => {
+    // No published limit to cite, but zammad_search_users (75 properties) is
+    // accepted where the far larger ticket search was not, so runaway growth is
+    // a plausible second cause and worth bounding.
+    const countProperties = (node: unknown): number => {
+      if (!node || typeof node !== 'object') return 0;
+      if (Array.isArray(node)) return node.reduce<number>((sum, item) => sum + countProperties(item), 0);
+
+      const schema = node as Record<string, unknown>;
+      let total = 0;
+      if (schema.properties && typeof schema.properties === 'object') {
+        const properties = schema.properties as Record<string, unknown>;
+        total += Object.keys(properties).length;
+        for (const value of Object.values(properties)) total += countProperties(value);
+      }
+      if (schema.items) total += countProperties(schema.items);
+      for (const key of ['anyOf', 'oneOf']) {
+        if (Array.isArray(schema[key])) total += countProperties(schema[key]);
+      }
+      return total;
+    };
+
+    for (const tool of tools) {
+      const total = countProperties(tool.inputSchema);
+      assert.ok(total <= 200, `${tool.name} declares ${total} properties`);
+    }
+  });
+
   it('constrains every sub-schema', () => {
     // z.unknown() / z.any() produce `{}`, which means "anything".
     for (const tool of tools) {

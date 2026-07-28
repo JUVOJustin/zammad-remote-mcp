@@ -113,12 +113,38 @@ function asArray<T>(value: T | T[]): T[] {
 
 // ------------------------------------------------------------ selector builders
 
+const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2})?(\.\d+)?(Z|[+-]\d{2}:?\d{2})?)?$/;
+
+/**
+ * Validates an absolute timestamp here rather than in the schema.
+ *
+ * A `pattern` in the published schema makes strict MCP clients drop the whole
+ * tool, so the check lives at the point of use — where a bad value yields a
+ * message the model can correct.
+ */
+function assertTimestamp(field: string, value: string): string {
+  if (!ISO_TIMESTAMP.test(value.trim())) {
+    throw new ToolInputError(
+      `"${value}" is not a valid timestamp for ${field}. Use an ISO-8601 date ("2026-01-31") ` +
+        'or timestamp ("2026-01-31T09:00:00Z").',
+    );
+  }
+  return value;
+}
+
 export function dateConditions(field: string, filter: DateFilter): ConditionLeaf[] {
   const conditions: ConditionLeaf[] = [];
 
-  if (filter.after) conditions.push(leaf(field, 'after (absolute)', filter.after));
-  if (filter.before) conditions.push(leaf(field, 'before (absolute)', filter.before));
-  if (filter.between) conditions.push(leaf(field, 'in range', [filter.between[0], filter.between[1]]));
+  if (filter.after) conditions.push(leaf(field, 'after (absolute)', assertTimestamp(field, filter.after)));
+  if (filter.before) conditions.push(leaf(field, 'before (absolute)', assertTimestamp(field, filter.before)));
+  if (filter.between) {
+    conditions.push(
+      leaf(field, 'in range', [
+        assertTimestamp(field, filter.between.from),
+        assertTimestamp(field, filter.between.to),
+      ]),
+    );
+  }
 
   if (filter.within_last) {
     const { value, unit } = parseRelativeSpan(filter.within_last);
@@ -162,13 +188,10 @@ export function stringConditions(field: string, raw: StringFilter): ConditionLea
     conditions.push(leaf(field, 'starts with one of', asArray(filter.starts_with)));
   if (filter.ends_with !== undefined)
     conditions.push(leaf(field, 'ends with one of', asArray(filter.ends_with)));
-  if (filter.regex !== undefined) conditions.push(leaf(field, 'matches regex', filter.regex));
-  if (filter.not_regex !== undefined) conditions.push(leaf(field, 'does not match regex', filter.not_regex));
-  if (filter.is_set !== undefined) conditions.push(leaf(field, filter.is_set ? 'is set' : 'not set'));
-
   if (conditions.length === 0) {
     throw new ToolInputError(
-      `Text filter on "${field}" is empty — provide at least one of is/is_not/contains/contains_not/starts_with/ends_with/regex/is_set.`,
+      `Text filter on "${field}" is empty — provide at least one of is/is_not/contains/contains_not/starts_with/ends_with. ` +
+        'Regular expressions and is-set checks are available through `custom`.',
     );
   }
   return conditions;
@@ -211,13 +234,10 @@ const TICKET_DATE_FIELDS = [
   { input: 'pending_time', column: 'pending_time' },
   { input: 'escalation_at', column: 'escalation_at' },
   { input: 'last_contact_at', column: 'last_contact_at' },
-  { input: 'last_contact_agent_at', column: 'last_contact_agent_at' },
-  { input: 'last_contact_customer_at', column: 'last_contact_customer_at' },
-  { input: 'first_response_at', column: 'first_response_at' },
 ] as const satisfies ReadonlyArray<{ input: keyof SearchTicketsInput; column: string }>;
 
 /** Article sub-filters that are plain text matches, and their selector paths. */
-const ARTICLE_TEXT_FIELDS = ['body', 'subject', 'from', 'to', 'cc'] as const;
+const ARTICLE_TEXT_FIELDS = ['body', 'subject', 'from'] as const;
 
 // -------------------------------------------------------------- ticket search
 
@@ -695,7 +715,6 @@ function luceneStringClause(field: string, raw: StringFilter): string | undefine
       ),
     );
   }
-  if (filter.is_set !== undefined) clauses.push(filter.is_set ? L.exists(field) : L.negate(L.exists(field)));
 
   return L.combine('AND', clauses);
 }
@@ -705,7 +724,7 @@ function luceneDateClause(field: string, filter: DateFilter): string | undefined
 
   if (filter.after) clauses.push(L.range(field, filter.after, '*', { excludeLower: true }));
   if (filter.before) clauses.push(L.range(field, '*', filter.before, { excludeUpper: true }));
-  if (filter.between) clauses.push(L.range(field, filter.between[0], filter.between[1]));
+  if (filter.between) clauses.push(L.range(field, filter.between.from, filter.between.to));
 
   if (filter.within_last) {
     const { value, unit } = parseRelativeSpan(filter.within_last);
