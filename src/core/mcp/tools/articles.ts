@@ -105,7 +105,10 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
       .describe(
         'true keeps the article hidden from the customer. Defaults to true so nothing is published by accident.',
       ),
-    content_type: z.enum(['text/plain', 'text/html']).default('text/plain'),
+    content_type: z
+      .enum(['text/plain', 'text/html'])
+      .default('text/plain')
+      .describe('Must be `text/html` to mention a colleague — see the description for the markup.'),
     to: z.string().optional().describe('Recipients — required for outbound email articles.'),
     cc: z.string().optional(),
     in_reply_to: z.string().optional(),
@@ -130,7 +133,13 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
       description:
         'Append a note, reply or logged phone call to a ticket. An article with `type: "email"` and ' +
         '`internal: false` is actually delivered to the addresses in `to`/`cc`; the defaults (`note`, internal) ' +
-        'record text without notifying anyone.',
+        'record text without notifying anyone.\n\n' +
+        'To mention a colleague in an internal note, do not type `@@Name` — that is the UI autocomplete ' +
+        'trigger and survives into the body as plain characters that reach no one. Send ' +
+        '`content_type: "text/html"` and link the user instead:\n' +
+        '  <a href="<zammad-url>/#user/profile/42" data-mention-user-id="42">Jane Doe</a> can you check this?\n' +
+        'The numeric id comes from `zammad_search_users`. Keep such a note `internal: true`, or the customer ' +
+        'sees the mention too.',
       inputSchema: createInput.shape,
       annotations: {
         readOnlyHint: false,

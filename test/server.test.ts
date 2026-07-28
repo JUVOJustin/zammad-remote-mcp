@@ -102,6 +102,12 @@ function startZammad(): Promise<void> {
           if (req.method === 'POST')
             return send(201, { id: 202, number: '67002', title: 'New ticket', state: 'new' });
           return send(200, []);
+        case '/api/v1/tickets/101':
+          return send(200, { id: 101, number: '67001', title: 'Printer offline' });
+        case '/api/v1/links/add':
+          return send(201, { id: 1 });
+        case '/api/v1/links/remove':
+          return send(201, {});
         default:
           return send(404, { error: `stub has no route for ${url.pathname}` });
       }
@@ -535,5 +541,52 @@ describe('mcp endpoint', () => {
     assert.equal(body.group, '1st Level', 'association names go through untouched');
     assert.equal(body.article.internal, true, 'articles must default to internal');
     assert.equal(body.article.type, 'note', 'articles must default to a note, not an email');
+  });
+
+  it('links tickets with Zammad’s required ticket number and ID pair', async () => {
+    requests.length = 0;
+
+    const response = await mcp('tools/call', {
+      name: 'zammad_link_tickets',
+      arguments: { ticket_id: 101, target_ticket_id: 102, type: 'child' },
+    });
+
+    assert.equal(response.body.result.isError, undefined);
+    const source = requests.find(
+      (request) => request.method === 'GET' && request.url === '/api/v1/tickets/101',
+    );
+    assert.ok(source, 'expected the source ticket number lookup');
+
+    const link = requests.find((request) => request.method === 'POST' && request.url === '/api/v1/links/add');
+    assert.ok(link, 'expected a link request');
+    assert.deepEqual(link.body, {
+      link_type: 'child',
+      link_object_source: 'Ticket',
+      link_object_source_number: '67001',
+      link_object_target: 'Ticket',
+      link_object_target_value: 102,
+    });
+  });
+
+  it('unlinks tickets using their internal IDs', async () => {
+    requests.length = 0;
+
+    const response = await mcp('tools/call', {
+      name: 'zammad_unlink_tickets',
+      arguments: { ticket_id: 101, target_ticket_id: 102, type: 'child' },
+    });
+
+    assert.equal(response.body.result.isError, undefined);
+    const unlink = requests.find(
+      (request) => request.method === 'DELETE' && request.url === '/api/v1/links/remove',
+    );
+    assert.ok(unlink, 'expected an unlink request');
+    assert.deepEqual(unlink.body, {
+      link_type: 'child',
+      link_object_source: 'Ticket',
+      link_object_source_value: 101,
+      link_object_target: 'Ticket',
+      link_object_target_value: 102,
+    });
   });
 });

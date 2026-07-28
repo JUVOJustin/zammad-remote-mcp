@@ -772,9 +772,22 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
 
   // ----------------------------------------------------------------- links ---
   const linkInput = z.object({
-    ticket_id: z.number().int().positive(),
-    target_ticket_id: z.number().int().positive(),
-    type: z.enum(['normal', 'parent', 'child']).default('normal'),
+    ticket_id: z
+      .number()
+      .int()
+      .positive()
+      .describe('Source ticket ID. The relationship is created from this ticket to target_ticket_id.'),
+    target_ticket_id: z
+      .number()
+      .int()
+      .positive()
+      .describe('Target ticket ID. Its relationship to ticket_id is defined by type.'),
+    type: z
+      .enum(['normal', 'parent', 'child'])
+      .default('normal')
+      .describe(
+        'Target role relative to ticket_id: normal = peer, parent = target is the parent, child = target is the child.',
+      ),
     on_behalf_of: onBehalfOf,
   });
 
@@ -791,12 +804,18 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
     guard(async (rawInput) => {
       const input = linkInput.parse(rawInput);
       const context = withOnBehalfOf(base, input.on_behalf_of);
+      const sourceTicket = await context.client.get<{ number?: string }>(
+        `/api/v1/tickets/${input.ticket_id}`,
+      );
+      if (!sourceTicket.number) {
+        throw new ToolInputError(`Ticket ${input.ticket_id} has no ticket number and cannot be linked.`);
+      }
       const result = await context.client.post<unknown>('/api/v1/links/add', {
         link_type: input.type,
         link_object_source: 'Ticket',
-        link_object_source_number: input.target_ticket_id,
+        link_object_source_number: sourceTicket.number,
         link_object_target: 'Ticket',
-        link_object_target_value: input.ticket_id,
+        link_object_target_value: input.target_ticket_id,
       });
       return jsonResult({ linked: true, result });
     }),
@@ -818,9 +837,9 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       const result = await context.client.delete<unknown>('/api/v1/links/remove', undefined, {
         link_type: input.type,
         link_object_source: 'Ticket',
-        link_object_source_value: input.target_ticket_id,
+        link_object_source_value: input.ticket_id,
         link_object_target: 'Ticket',
-        link_object_target_value: input.ticket_id,
+        link_object_target_value: input.target_ticket_id,
       });
       return jsonResult({ unlinked: true, result });
     }),

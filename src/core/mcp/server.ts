@@ -39,7 +39,17 @@ Writing
     intent is to reply.
   • Closing a ticket is \`zammad_update_ticket\` with \`state: "closed"\`. \`zammad_delete_ticket\` is permanent
     and is rarely what is wanted.
-  • Moving a ticket to a pending state requires \`pending_time\`.`;
+  • Moving a ticket to a pending state requires \`pending_time\`.
+
+Mentioning a colleague in an internal note
+  • \`@@\` is the *editor* trigger in the Zammad UI: typing it opens a name picker, and what gets stored is a
+    link. Writing \`@@Jane\` through this API produces the literal characters "@@Jane" and reaches nobody.
+  • A mention is an anchor carrying \`data-mention-user-id\`, so the article has to be
+    \`content_type: "text/html"\`:
+      <a href="<zammad-url>/#user/profile/42" data-mention-user-id="42">Jane Doe</a> please take a look
+    Get the numeric id from \`zammad_search_users\`; the link text is just the display name.
+  • Mention someone only when the note is \`internal: true\`. In a customer-visible article the link is shown
+    to the customer as well.`;
 
 export interface CreateServerOptions {
   config: Config;
