@@ -3,6 +3,8 @@
 A remote [MCP](https://modelcontextprotocol.io) server for [Zammad](https://zammad.org), built on
 [Hono](https://hono.dev) and deployable to **Node.js or Cloudflare Workers from one codebase**.
 
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/JUVOJustin/zammad-remote-mcp)
+
 - **Stateless.** No sessions, no token store, no sticky routing — see [below](#is-the-server-stateless).
 - **Runtime-agnostic core.** All the logic lives in `src/core`, which imports no Node built-ins. The two
   hosts differ only in where the environment comes from and how the app is served.
@@ -75,6 +77,17 @@ npm run deploy
 
 `OAUTH_STATE_SECRET` must be stable across deployments — rotating it invalidates registered clients
 and in-flight logins. Generate one with `openssl rand -base64 48`.
+
+### One-click deploy
+
+The button at the top of this README clones the repository into your own Cloudflare account,
+**provisions the KV namespace** for the lookup cache, prompts for the secrets listed in
+`.dev.vars.example`, and deploys. The `id` committed in `wrangler.jsonc` is a placeholder and is
+rewritten with the newly created namespace.
+
+You still have to set `ZAMMAD_URL` and `PUBLIC_URL` afterwards — `PUBLIC_URL` cannot be known before
+the Worker has a hostname, and it must match what clients dial, since it forms the OAuth issuer and
+the callback URL. Set both under the Worker's **Settings → Variables**, then redeploy.
 
 ### What differs between the two runtimes
 

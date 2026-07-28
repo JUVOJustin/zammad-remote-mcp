@@ -11,14 +11,17 @@
 
   "observability": { "enabled": true },
 
-  // Lookup cache. Optional — without it each isolate caches in its own memory
-  // and re-reads the instance's states, priorities and groups on every cold
-  // start. Create one, then paste its id here:
+  // Lookup cache. Without it each isolate caches in its own memory and re-reads
+  // the instance's states, priorities and groups on every cold start.
+  //
+  // The id below is a placeholder. "Deploy to Cloudflare" provisions a fresh
+  // namespace and rewrites it automatically; deploying by hand means creating
+  // one first and pasting its id here:
   //   npx wrangler kv namespace create LOOKUP_CACHE
   "kv_namespaces": [
     {
       "binding": "LOOKUP_CACHE",
-      "id": "<run: npx wrangler kv namespace create LOOKUP_CACHE>"
+      "id": "0f9c1d7ab34e4f2b8c6d5e0a1b2c3d4e"
     }
   ],
 
