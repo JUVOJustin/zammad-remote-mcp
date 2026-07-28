@@ -521,15 +521,36 @@ Two further changes made one build valid on both runtimes:
 One package, one publish. The name is unscoped, so **no npm organisation is needed** — it belongs to
 whoever publishes it first.
 
-### One-time setup
+### One-time setup: trusted publishing
+
+Releases authenticate over OIDC, so there is no npm token anywhere — not in the repository secrets,
+not in the workflow. npm exchanges a short-lived GitHub-signed token for publish rights at the moment
+of publishing.
+
+There is one ordering constraint: **npm can only accept a trusted publisher for a package that
+already exists.** (PyPI allows pre-registering a name; npm does not.) So the very first version is
+published by hand, and every release after that runs unattended:
 
 ```bash
 npm login
+npm publish          # once, to create the package
 ```
 
-Then add an npm **automation** token as the `NPM_TOKEN` repository secret
-(npmjs.com → Access Tokens → Generate → Automation). Classic tokens prompt for 2FA on every publish,
-which fails an unattended CI job.
+Then on npmjs.com → the package → **Settings → Trusted Publisher**, add a GitHub Actions publisher:
+
+| Field | Value |
+|---|---|
+| Organization or user | `JUVOJustin` |
+| Repository | `zammad-remote-mcp` |
+| Workflow filename | `deploy.yml` |
+| Environment | *(leave empty)* |
+
+From then on `NPM_TOKEN` is not needed and should not exist. The workflow already declares
+`id-token: write`, which is what makes the exchange possible, and npm generates
+[provenance](https://docs.npmjs.com/generating-provenance-statements) automatically for public
+repositories — which is why `publishConfig` deliberately does *not* set `provenance: true`. Setting
+it explicitly would additionally break any publish outside a CI OIDC environment, including the
+first manual one.
 
 ### Cutting a release
 
@@ -540,11 +561,8 @@ git tag v1.1.0 && git push origin v1.1.0
 ```
 
 The workflow bumps the version to match the tag, runs lint/typecheck/build/test, builds the Worker,
-commits the version bump back to `main`, publishes to npm and opens a GitHub release. A tag with a
-prerelease suffix (`v1.1.0-rc.1`) publishes under the `next` dist-tag instead of `latest`.
-
-The package requests [npm provenance](https://docs.npmjs.com/generating-provenance-statements),
-which is why the job needs `id-token: write`.
+commits the version bump back to `main`, publishes to npm over OIDC and opens a GitHub release. A tag
+with a prerelease suffix (`v1.1.0-rc.1`) publishes under the `next` dist-tag instead of `latest`.
 
 ### Checking a release before tagging
 

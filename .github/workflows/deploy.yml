@@ -10,8 +10,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      # Required for npm provenance, which the package requests via
-      # publishConfig.provenance.
+      # Trusted publishing: npm authenticates this workflow over OIDC instead of
+      # a long-lived token, and generates provenance automatically because the
+      # repository is public.
       id-token: write
 
     steps:
@@ -23,6 +24,11 @@ jobs:
         with:
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'
+
+      - name: Ensure an npm that speaks OIDC
+        # Trusted publishing needs npm >= 11.5.1. Which npm ships with Node 24
+        # moves over time, so pin the floor rather than hope.
+        run: npm install -g npm@^11.5.1
 
       - name: Extract tag version
         id: version
@@ -72,9 +78,9 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish to npm
+        # No NODE_AUTH_TOKEN: the npm CLI detects the OIDC environment and
+        # exchanges the short-lived GitHub token for publish rights itself.
         run: npm publish --tag ${{ steps.version.outputs.NPM_TAG }}
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
