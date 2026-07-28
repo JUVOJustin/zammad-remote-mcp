@@ -34,9 +34,10 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        # 20.12 is the floor: below it there is no process.loadEnvFile and the
-        # Node host cannot read a .env file.
-        node-version: [20, 22, 24]
+        # Node 20 reached end of life in April 2026. `engines` still allows
+        # >=20.12 because nothing in the shipped code needs more than
+        # process.loadEnvFile, but it is no longer exercised here.
+        node-version: [22, 24]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
