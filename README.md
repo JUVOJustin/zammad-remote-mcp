@@ -524,15 +524,21 @@ something anyone installs.
 
 ### One-time setup
 
-Both names are scoped, so the npm organisation has to exist first (free for public packages):
+Both names are scoped, so the `zammad-mcp` organisation has to exist before anything can be
+published. Create it at **[npmjs.com/org/create](https://www.npmjs.com/org/create)** and pick the
+free plan — it covers unlimited public packages. There is no CLI equivalent: `npm org` only manages
+members of an organisation that already exists.
+
+Then sign in locally, which is what `npm pack`/`npm publish --dry-run` need:
 
 ```bash
 npm login
-npm org create zammad-mcp
+npm whoami && npm org ls zammad-mcp
 ```
 
-Then add an **automation** npm token as the `NPM_TOKEN` repository secret. Automation tokens bypass
-2FA, which a CI publish needs.
+Finally add an npm **automation** token as the `NPM_TOKEN` repository secret
+(npmjs.com → Access Tokens → Generate → Automation). Classic tokens prompt for 2FA on every publish,
+which fails an unattended CI job.
 
 ### Cutting a release
 
