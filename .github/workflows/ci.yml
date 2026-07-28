@@ -77,4 +77,6 @@ jobs:
         run: npm ci
 
       - name: Build the Cloudflare Worker
+        # build:worker links this checkout into the example before building, so
+        # the job exercises the code in the PR rather than the last release.
         run: npm run build:worker

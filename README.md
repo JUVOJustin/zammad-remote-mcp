@@ -3,7 +3,7 @@
 A remote [MCP](https://modelcontextprotocol.io) server for [Zammad](https://zammad.org), built on
 [Hono](https://hono.dev) and deployable to **Node.js or Cloudflare Workers from one codebase**.
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/JUVOJustin/zammad-remote-mcp)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/JUVOJustin/zammad-remote-mcp/tree/main/examples/cloudflare)
 
 - **Stateless.** No sessions, no token store, no sticky routing — see [below](#is-the-server-stateless).
 - **Runtime-agnostic core.** All the logic lives in `src/core`, which imports no Node built-ins. The two
@@ -25,7 +25,7 @@ version and a single publish.
 |---|---|
 | `zammad-remote-mcp` | the runtime-agnostic core: Hono app, MCP server, 39 tools, Zammad client, search builder, OAuth proxy. Uses only WebCrypto, `fetch`, `TextEncoder` and `atob`/`btoa`. |
 | `zammad-remote-mcp/node` | Node host: `.env` loading, socket binding, signal handling |
-| `zammad-remote-mcp/cloudflare` | Workers host: `env` binding instead of `process.env`, KV-backed lookup cache, `fetch` export |
+| `examples/cloudflare` | a deployable Workers host, ~60 lines, consuming the package like any other dependency |
 | `npx zammad-remote-mcp` | the CLI — the Node host with a shebang |
 
 Both hosts call the same `bootstrap({ env, cache })` and serve the same `fetch` handler. Anything
@@ -475,40 +475,30 @@ src/
     index.ts                 public surface: bootstrap(), createApp(), loadConfig()
     config.ts                Zod-validated environment
     app.ts                   Hono app: CORS, auth extraction, MCP endpoint
-    auth/
-      oauth.ts               stateless OAuth proxy over Zammad's Doorkeeper
-      signing.ts             HMAC-signed compact payloads (WebCrypto)
-    util/
-      base64.ts              base64/base64url on atob/btoa, no Buffer
-      cache.ts               CacheStore interface + in-process implementation
-      logger.ts              structured logging to an injectable sink
-      errors.ts              Zammad error mapping
-    zammad/
-      client.ts              REST client: retries, error mapping, credentials
-      lookup.ts              name → ID resolution, cached
-      vocabulary.ts          instance value sets folded into tool schemas
-      selector.ts            Zammad's selector language, typed
-      search/                schema.ts · builder.ts · lucene.ts
-    mcp/
-      server.ts              per-request McpServer assembly
-      context.ts             per-request tool context
-      result.ts              result formatting and summarisation
-      tools/                 search · tickets · articles · metadata · enrich
+    auth/                    oauth.ts (stateless proxy) · signing.ts (WebCrypto HMAC)
+    util/                    base64 · cache · logger · errors
+    zammad/                  client · lookup · vocabulary · selector · search/
+    mcp/                     server · context · result · tools/
+  node/                      Node host: serve(), signals, .env
 
-  node/                      Node host
-    index.ts                 serve(), signals, EADDRINUSE handling
-    env-file.ts              .env via process.loadEnvFile
+test/                        config · cache · search-builder · server · env-file · tool-schema
 
-  cloudflare/                Workers host
-    index.ts                 export default { fetch }
-    kv-cache.ts              Workers KV as the lookup cache
-
-test/                        config · cache · search-builder · server · env-file
-wrangler.jsonc               vars, KV binding, compatibility flags
+examples/
+  cloudflare/                a deployable Worker consuming the published package
+    src/index.ts             export default { fetch }
+    src/kv-cache.ts          Workers KV behind the library's CacheStore
+    wrangler.jsonc           vars, KV binding, compatibility flags
+    package.json             depends on zammad-remote-mcp like any consumer
 ```
 
-`src/core` must stay free of Node built-ins. `npm run build:worker` is what enforces that — it is a
-wrangler dry-run against the workerd target, and it runs in CI on every push.
+The Cloudflare host lives in `examples/` rather than in the package. It is a *deployment*, not
+something anyone installs from npm — and keeping it as an ordinary consumer of the published package
+means the example proves the public API is usable, instead of reaching into internals a real user
+could not reach.
+
+`src/core` must stay free of Node built-ins. `npm run build:worker` is what enforces that — it links
+this checkout into the example and runs a wrangler dry-run against the workerd target. CI runs it on
+every push.
 
 ### Why the core has no Node built-ins
 

@@ -1,4 +1,4 @@
-import type { CacheStore } from '../core/index.js';
+import type { CacheStore } from 'zammad-remote-mcp';
 
 /**
  * Workers KV as the lookup cache.

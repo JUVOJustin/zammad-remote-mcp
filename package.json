@@ -45,10 +45,6 @@
       "types": "./dist/node/index.d.ts",
       "import": "./dist/node/index.js"
     },
-    "./cloudflare": {
-      "types": "./dist/cloudflare/index.d.ts",
-      "import": "./dist/cloudflare/index.js"
-    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -56,13 +52,11 @@
     ".env.example"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "dev": "tsx watch src/node/index.ts",
-    "dev:cf": "wrangler dev",
     "start": "node dist/node/index.js",
-    "deploy": "wrangler deploy",
-    "build:worker": "wrangler deploy --dry-run --outdir .wrangler/dry-run",
+    "build:worker": "npm run build && cd examples/cloudflare && npm install ../.. --no-save --silent && npm run build",
     "lint": "biome lint .",
     "format": "biome format --write .",
     "check": "biome check .",
@@ -84,7 +78,6 @@
     "@biomejs/biome": "2.5.5",
     "@types/node": "^22.15.0",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.3",
-    "wrangler": "^4.0.0"
+    "typescript": "^5.7.3"
   }
 }

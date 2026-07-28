@@ -1,4 +1,4 @@
-import { bootstrap } from '../core/index.js';
+import { bootstrap } from 'zammad-remote-mcp';
 import { createKvCacheStore, type KvNamespaceLike } from './kv-cache.js';
 
 // Re-exported so a hand-written Worker can reuse the KV store without reaching
