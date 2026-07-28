@@ -24,6 +24,30 @@
   },
   "dependencies": {
     "@hono/node-server": "^1.19.9",
-    "@zammad-mcp/core": "1.0.0"
+    "@zammad-mcp/core": "^1.0.0"
+  },
+  "keywords": [
+    "zammad",
+    "mcp",
+    "model-context-protocol",
+    "helpdesk",
+    "ticketing",
+    "ai",
+    "llm",
+    "cli",
+    "server"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JUVOJustin/zammad-remote-mcp.git",
+    "directory": "packages/node"
+  },
+  "homepage": "https://github.com/JUVOJustin/zammad-remote-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/JUVOJustin/zammad-remote-mcp/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   }
 }

@@ -27,5 +27,34 @@
     "hono": "^4.12.32",
     "hono-rate-limiter": "^0.5.3",
     "zod": "^4.4.3"
-  }
+  },
+  "keywords": [
+    "zammad",
+    "mcp",
+    "model-context-protocol",
+    "helpdesk",
+    "ticketing",
+    "ai",
+    "llm",
+    "hono",
+    "cloudflare-workers",
+    "edge"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JUVOJustin/zammad-remote-mcp.git",
+    "directory": "packages/core"
+  },
+  "homepage": "https://github.com/JUVOJustin/zammad-remote-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/JUVOJustin/zammad-remote-mcp/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "engines": {
+    "node": ">=20.12"
+  },
+  "sideEffects": false
 }

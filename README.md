@@ -511,6 +511,60 @@ Two further changes made one build valid on both runtimes:
   runtimes forbid. The validator is only consulted for elicitation responses, which a stateless
   server never issues.
 
+## Releasing
+
+Two packages go to npm; `packages/cloudflare` stays private because it is a deploy target, not
+something anyone installs.
+
+| Package | npm |
+|---|---|
+| `@zammad-mcp/core` | the runtime-agnostic server, for embedding in your own host |
+| `@zammad-mcp/node` | the CLI: `npx @zammad-mcp/node` |
+| `@zammad-mcp/cloudflare` | not published — fork or copy the directory |
+
+### One-time setup
+
+Both names are scoped, so the npm organisation has to exist first (free for public packages):
+
+```bash
+npm login
+npm org create zammad-mcp
+```
+
+Then add an **automation** npm token as the `NPM_TOKEN` repository secret. Automation tokens bypass
+2FA, which a CI publish needs.
+
+### Cutting a release
+
+Push a tag. `.github/workflows/deploy.yml` does the rest:
+
+```bash
+git tag v1.1.0 && git push origin v1.1.0
+```
+
+The workflow bumps every package to the tag's version, re-pins the `@zammad-mcp/core` dependency in
+the dependent packages, runs lint/build/test, commits the version bump back to `main`, publishes
+**core before node** (node's dependency has to resolve), and opens a GitHub release. A tag with a
+prerelease suffix (`v1.1.0-rc.1`) publishes under the `next` dist-tag instead of `latest`.
+
+Both packages request [npm provenance](https://docs.npmjs.com/generating-provenance-statements),
+which is why the job needs `id-token: write`.
+
+The version bump and the dependency pin are separate steps on purpose: `npm version --workspaces`
+updates each package's own version but leaves cross-package dependency *ranges* untouched, so
+without the pin a major release would publish a node package still asking for the previous major of
+the core.
+
+### Checking a release before tagging
+
+```bash
+npm run build
+npm pack --workspace @zammad-mcp/core --workspace @zammad-mcp/node
+```
+
+Inspect the tarballs (`tar tzf …`) — they should contain `dist`, `README.md`, `LICENSE` and nothing
+else. No `src`, no tests, no `.tsbuildinfo`.
+
 ## License
 
 MIT

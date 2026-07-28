@@ -1,0 +1,108 @@
+name: Deploy
+
+on:
+  push:
+    tags:
+      - '*'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      # Required for npm provenance, which both published packages request via
+      # publishConfig.provenance.
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Extract tag version
+        id: version
+        run: |
+          RAW="${GITHUB_REF#refs/tags/}"
+          CLEAN="${RAW#v}"
+          echo "RAW=$RAW" >> $GITHUB_OUTPUT
+          echo "VERSION=$CLEAN" >> $GITHUB_OUTPUT
+          if [[ "$CLEAN" =~ -[A-Za-z0-9]+ ]]; then
+            echo "NPM_TAG=next" >> $GITHUB_OUTPUT
+            echo "IS_PRERELEASE=true" >> $GITHUB_OUTPUT
+          else
+            echo "NPM_TAG=latest" >> $GITHUB_OUTPUT
+            echo "IS_PRERELEASE=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Update package.json version
+        run: |
+          npm version ${{ steps.version.outputs.VERSION }} \
+            --workspaces --include-workspace-root \
+            --no-git-tag-version --allow-same-version
+
+      - name: Pin the cross-package dependency to this version
+        # `npm version --workspaces` bumps each package but leaves dependency
+        # ranges alone. Without this, a major release would publish a node
+        # package still asking for the previous major of the core.
+        run: |
+          node -e '
+            const fs = require("node:fs");
+            const version = process.argv[1];
+            for (const pkg of ["node", "cloudflare"]) {
+              const path = `packages/${pkg}/package.json`;
+              const manifest = JSON.parse(fs.readFileSync(path, "utf8"));
+              manifest.dependencies["@zammad-mcp/core"] = `^${version}`;
+              fs.writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`);
+            }
+          ' ${{ steps.version.outputs.VERSION }}
+          npm install --package-lock-only
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check formatting and lint
+        run: npm run check
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test
+
+      - name: Commit version update
+        uses: test-room-7/action-update-file@v1
+        with:
+          file-path: |
+            package.json
+            package-lock.json
+            packages/core/package.json
+            packages/node/package.json
+            packages/cloudflare/package.json
+          commit-msg: "chore: update package.json version to ${{ steps.version.outputs.VERSION }}"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Published in dependency order: @zammad-mcp/node declares a dependency on
+      # @zammad-mcp/core at this exact version, so the core has to exist on the
+      # registry first or an install of the node package resolves to nothing.
+      # packages/cloudflare is private and is deployed from the repo instead.
+      - name: Publish @zammad-mcp/core
+        run: npm publish --workspace @zammad-mcp/core --tag ${{ steps.version.outputs.NPM_TAG }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish @zammad-mcp/node
+        run: npm publish --workspace @zammad-mcp/node --tag ${{ steps.version.outputs.NPM_TAG }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.RAW }}
+          generate_release_notes: true
+          prerelease: ${{ steps.version.outputs.IS_PRERELEASE == 'true' }}
