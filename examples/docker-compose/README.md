@@ -47,15 +47,71 @@ attributed to that single user. Set `ZAMMAD_AUTH_MODE=token` and
 `ZAMMAD_API_TOKEN`; `ZAMMAD_PUBLIC_URL` is then unused, because no browser is
 involved.
 
-## Fronting it
+## Routing
 
-Nothing here terminates TLS. Put your usual reverse proxy in front of the
-`zammad-mcp` port, and — if people also use the Zammad web UI on this host —
-publish `zammad-nginx` as well and point `ZAMMAD_PUBLIC_URL` at it.
+Caddy is included and does this for you: `MCP_DOMAIN` reaches the MCP server,
+`ZAMMAD_DOMAIN` reaches Zammad, and certificates arrive on their own once both
+records point at the host. Neither application port is published.
 
-`PUBLIC_URL` must be the address clients actually connect to. It is used for the
-OAuth callback and as the resource identifier clients verify, so a wrong value
-fails the handshake rather than degrading quietly.
+Point your MCP client at `https://<MCP_DOMAIN>/mcp`.
+
+### Why two hostnames rather than one with a `/mcp` prefix
+
+The MCP server serves more than `/mcp`. OAuth discovery and the handshake need:
+
+```
+/mcp
+/authorize   /token   /register
+/.well-known/oauth-authorization-server
+/.well-known/oauth-protected-resource
+/oauth/callback
+```
+
+And there is the catch: **Zammad's own OAuth provider owns `/oauth/authorize` and
+`/oauth/token`**, while this server owns `/oauth/callback`. On one hostname
+`/oauth/*` has two owners, and the rule separating them decides whether logging
+in works. Two hostnames make the split obvious instead.
+
+### If you only have one hostname
+
+It can be done, with an exact match for the callback placed before the general
+`/oauth` rule. In a Caddyfile:
+
+```caddyfile
+example.com {
+	handle /mcp*             { reverse_proxy zammad-mcp:3000 }
+	handle /authorize*       { reverse_proxy zammad-mcp:3000 }
+	handle /token*           { reverse_proxy zammad-mcp:3000 }
+	handle /register*        { reverse_proxy zammad-mcp:3000 }
+	handle /.well-known/oauth-* { reverse_proxy zammad-mcp:3000 }
+	handle /oauth/callback   { reverse_proxy zammad-mcp:3000 }
+	handle                   { reverse_proxy zammad-nginx:8080 }
+}
+```
+
+Order matters: `/oauth/callback` has to be matched before the fallback hands the
+rest of `/oauth/*` to Zammad. Set `MCP_SCHEME`/`MCP_DOMAIN` and
+`ZAMMAD_SCHEME`/`ZAMMAD_DOMAIN` to the same host, and keep in mind that Zammad
+occupies the root, so anything it adds later could collide with a path above.
+
+### Trying it locally
+
+Caddy issues locally-trusted certificates for `*.localhost`, so no public DNS is
+required. Uncomment that block in `.env.example`, then:
+
+```bash
+curl -k -H 'Host: mcp.localhost' https://127.0.0.1:8443/health
+```
+
+Keep the scheme as `https`. In OAuth mode the server refuses to start behind a
+plain-HTTP address — the SDK rejects a non-HTTPS issuer, and the container
+restarts with `Issuer URL must be HTTPS`. Only `ZAMMAD_AUTH_MODE=token`, which
+involves no browser, runs over plain HTTP.
+
+Note that `HTTPS_PORT=8443` only moves where Caddy listens. `PUBLIC_URL` stays
+`https://mcp.localhost`, so the endpoints the server advertises carry no port and
+a real client would dial 443. That is fine for a smoke test; use the default 443
+if you want the advertised URLs to be dialable as published.
 
 ## Using a published image
 

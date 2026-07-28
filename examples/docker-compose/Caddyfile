@@ -1,0 +1,25 @@
+# Two hostnames, two containers. Caddy obtains certificates on its own once the
+# DNS records point here.
+#
+# The site addresses carry their scheme so they match PUBLIC_URL and
+# ZAMMAD_PUBLIC_URL exactly, and so a local trial on *.localhost can stay on
+# plain HTTP instead of asking for certificates nobody can issue.
+#
+# Subdomains rather than one host with a /mcp prefix, because the two servers
+# disagree about /oauth: Zammad's Doorkeeper owns /oauth/authorize and
+# /oauth/token, while this server owns /oauth/callback. Splitting that by path
+# means one exact-match rule standing between a working login and a confusing
+# one. README.md spells that variant out for anyone who has no second hostname.
+
+{$MCP_SITE} {
+	reverse_proxy zammad-mcp:3000
+}
+
+{$ZAMMAD_SITE} {
+	reverse_proxy zammad-nginx:8080 {
+		# Zammad builds absolute URLs from these; without them every link it
+		# sends out points at the container instead of at this host.
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Forwarded-Host {host}
+	}
+}

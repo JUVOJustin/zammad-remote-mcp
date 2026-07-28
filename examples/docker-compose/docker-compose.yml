@@ -11,6 +11,10 @@
 # send people to `http://zammad-nginx:8080/oauth/authorize`, which resolves
 # nowhere outside this network.
 #
+# Caddy fronts both: MCP_DOMAIN reaches the MCP server, ZAMMAD_DOMAIN reaches
+# Zammad, and it obtains certificates once DNS points here. Two hostnames rather
+# than one with a /mcp prefix — see Caddyfile for why.
+#
 # Copy .env.example to .env before starting.
 
 x-zammad-shared: &zammad-shared
@@ -25,7 +29,7 @@ x-zammad-shared: &zammad-shared
     ELASTICSEARCH_HOST: zammad-elasticsearch
     ELASTICSEARCH_PORT: "9200"
     ELASTICSEARCH_SCHEMA: http
-    NGINX_SERVER_SCHEME: ${NGINX_SERVER_SCHEME:-https}
+    NGINX_SERVER_SCHEME: ${ZAMMAD_SCHEME:-https}
     RAILS_TRUSTED_PROXIES: "0.0.0.0/0"
     TZ: ${TZ:-Europe/Berlin}
   image: ghcr.io/zammad/zammad:${ZAMMAD_VERSION:-7.1.1-0037}
@@ -41,6 +45,30 @@ x-zammad-shared: &zammad-shared
       condition: service_healthy
 
 services:
+  # --------------------------------------------------------------- the front door
+  caddy:
+    # Terminates TLS and routes each hostname to its container. Without it the
+    # MCP server would answer on a bare port and the OAuth callback would have
+    # nowhere to land.
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      # Full site addresses, so these stay identical to what the MCP server
+      # publishes as PUBLIC_URL and ZAMMAD_PUBLIC_URL. A mismatch between what
+      # Caddy serves and what the server advertises breaks the OAuth handshake.
+      MCP_SITE: ${MCP_SCHEME:-https}://${MCP_DOMAIN:?set this in .env}
+      ZAMMAD_SITE: ${ZAMMAD_SCHEME:-https}://${ZAMMAD_DOMAIN:?set this in .env}
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      zammad-mcp:
+        condition: service_started
+
   # ------------------------------------------------------------- the MCP server
   zammad-mcp:
     # The Dockerfile at the repository root, unchanged. Swap this for
@@ -53,10 +81,11 @@ services:
       # Internal: never leaves the compose network.
       ZAMMAD_URL: http://zammad-nginx:8080
       # External: what a browser is sent to during the OAuth approval.
-      ZAMMAD_PUBLIC_URL: ${ZAMMAD_PUBLIC_URL:?set this in .env}
+      ZAMMAD_PUBLIC_URL: ${ZAMMAD_SCHEME:-https}://${ZAMMAD_DOMAIN:?set this in .env}
       # This server's own public address, used for its callback and as the
-      # resource identifier clients check against.
-      PUBLIC_URL: ${PUBLIC_URL:?set this in .env}
+      # resource identifier clients check against. Must match what Caddy serves,
+      # or the OAuth handshake fails rather than degrading quietly.
+      PUBLIC_URL: ${MCP_SCHEME:-https}://${MCP_DOMAIN:?set this in .env}
 
       ZAMMAD_AUTH_MODE: ${ZAMMAD_AUTH_MODE:-oauth}
       ZAMMAD_OAUTH_MODE: ${ZAMMAD_OAUTH_MODE:-proxy}
@@ -67,8 +96,10 @@ services:
       ZAMMAD_API_TOKEN: ${ZAMMAD_API_TOKEN:-}
 
       LOG_LEVEL: ${LOG_LEVEL:-info}
-    ports:
-      - "${MCP_EXPOSE_PORT:-3000}:3000"
+    # No `ports:` — Caddy reaches this over the network. Publish it only if you
+    # front the stack with something else.
+    expose:
+      - "3000"
     depends_on:
       zammad-railsserver:
         condition: service_healthy
@@ -186,6 +217,8 @@ services:
       - redis-data:/data
 
 volumes:
+  caddy-config:
+  caddy-data:
   elasticsearch-data:
   postgresql-data:
   redis-data:
