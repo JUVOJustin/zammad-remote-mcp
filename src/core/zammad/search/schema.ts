@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { STATE_TYPES } from '../lookup.js';
-import { CONDITION_OPERATORS, conditionSchema, RELATIVE_RANGES } from '../selector.js';
+import { BLOCK_OPERATORS, CONDITION_OPERATORS, RELATIVE_RANGES } from '../selector.js';
 
 /**
  * Input schema for `zammad_search_tickets`.
@@ -148,6 +148,18 @@ export const articleFilterSchema = z
   .strict()
   .describe("Filters applied to the ticket's articles. A ticket matches if any article matches.");
 
+/**
+ * A selector value. Spelled out rather than left as `z.unknown()`, which emits
+ * an empty `{}` sub-schema — meaningless to a model and rejected outright by
+ * the stricter tool-schema validators.
+ */
+const selectorValue = z.union([
+  z.string(),
+  z.number(),
+  z.boolean(),
+  z.array(z.union([z.string(), z.number()])),
+]);
+
 export const customConditionSchema = z
   .object({
     name: z
@@ -158,13 +170,45 @@ export const customConditionSchema = z
           'Object Manager attributes live on `ticket.<name>`.',
       ),
     operator: z.enum(CONDITION_OPERATORS),
-    value: z.unknown().optional(),
+    value: selectorValue.optional(),
     range: z.enum(RELATIVE_RANGES).optional().describe('Required for the `(relative)` operators.'),
     pre_condition: z
       .enum(['not_set', 'current_user.id', 'current_user.organization_id', 'specific'])
       .optional(),
   })
   .strict();
+
+/**
+ * `raw_condition` as exposed to tool callers.
+ *
+ * The selector language is recursive, and expressing that with `z.lazy` emits a
+ * `$ref` into `definitions` wrapped in `allOf`. Several MCP clients validate
+ * tool schemas against a strict JSON Schema subset that allows none of those
+ * and silently drop the whole tool — which is how `zammad_search_tickets`
+ * disappeared from Codex.
+ *
+ * Unrolling to a fixed depth keeps the structure machine-readable with no
+ * `$ref` at all. Two levels of grouping cover the queries anyone writes by
+ * hand; the server still parses the full recursive form, so nothing deeper is
+ * rejected at runtime.
+ */
+const conditionLeafInput = customConditionSchema;
+
+const conditionGroupInner = z
+  .object({
+    operator: z.enum(BLOCK_OPERATORS),
+    conditions: z.array(conditionLeafInput).min(1),
+  })
+  .strict();
+
+const conditionGroupOuter = z
+  .object({
+    operator: z.enum(BLOCK_OPERATORS),
+    conditions: z.array(z.union([conditionLeafInput, conditionGroupInner])).min(1),
+  })
+  .strict();
+
+const rawConditionInput = z.union([conditionLeafInput, conditionGroupOuter]);
 
 export const searchTicketsInputSchema = z
   .object({
@@ -273,9 +317,13 @@ export const searchTicketsInputSchema = z
       .min(1)
       .optional()
       .describe('Raw selector conditions for Object Manager / custom attributes not covered above.'),
-    raw_condition: conditionSchema
+    raw_condition: rawConditionInput
       .optional()
-      .describe('A complete Zammad selector block, merged with the generated conditions. Full escape hatch.'),
+      .describe(
+        'A Zammad selector, merged with the generated conditions. Either a single condition ' +
+          '({name, operator, value}) or a group ({operator: "AND"|"OR"|"NOT", conditions: [...]}), ' +
+          'nestable one level deeper. Full escape hatch for anything the named filters do not cover.',
+      ),
     raw_query: z
       .string()
       .optional()
@@ -347,7 +395,7 @@ export const searchUsersInputSchema = z
     active: z.boolean().optional(),
     vip: z.boolean().optional(),
     custom: z.array(customConditionSchema).min(1).optional(),
-    raw_condition: conditionSchema.optional(),
+    raw_condition: rawConditionInput.optional(),
     page: z.number().int().positive().default(1),
     per_page: z.number().int().positive().max(200).default(25),
     output: z.enum(['summary', 'full', 'ids', 'count']).default('summary'),
@@ -365,7 +413,7 @@ export const searchOrganizationsInputSchema = z
     vip: z.boolean().optional(),
     active: z.boolean().optional(),
     custom: z.array(customConditionSchema).min(1).optional(),
-    raw_condition: conditionSchema.optional(),
+    raw_condition: rawConditionInput.optional(),
     page: z.number().int().positive().default(1),
     per_page: z.number().int().positive().max(200).default(25),
     output: z.enum(['summary', 'full', 'ids', 'count']).default('summary'),

@@ -45,7 +45,9 @@ export function registerMetadataTools(server: McpServer, base: ToolContext): voi
     'zammad_get_user',
     {
       title: 'Get a Zammad user',
-      description: 'Fetch one user by ID, login or email address.',
+      description:
+        'Fetch one user by ID, login or email address, including their organization and roles. Use it to ' +
+        'confirm an identity before filtering tickets by owner or customer.',
       inputSchema: {
         user: z.union([z.string().min(1), z.number().int().positive()]).describe('User ID, login or email.'),
         output: z.enum(['summary', 'full']).default('summary'),

@@ -62,7 +62,9 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
     'zammad_get_article',
     {
       title: 'Get a single Zammad article',
-      description: 'Fetch one article by ID, including its attachment metadata.',
+      description:
+        'Fetch one article by ID with its full body and attachment metadata. Attachment IDs from here are what ' +
+        'zammad_download_attachment takes.',
       inputSchema: {
         article_id: z.number().int().positive(),
         body_chars: z.number().int().positive().max(200_000).default(50_000),
