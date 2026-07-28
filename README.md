@@ -89,6 +89,50 @@ You still have to set `ZAMMAD_URL` and `PUBLIC_URL` afterwards — `PUBLIC_URL` 
 the Worker has a hostname, and it must match what clients dial, since it forms the OAuth issuer and
 the callback URL. Set both under the Worker's **Settings → Variables**, then redeploy.
 
+## Docker
+
+```bash
+docker build -t zammad-remote-mcp .
+docker run -p 3000:3000 \
+  -e ZAMMAD_URL=https://support.example.com \
+  -e ZAMMAD_AUTH_MODE=token \
+  -e ZAMMAD_API_TOKEN=your-token \
+  zammad-remote-mcp
+```
+
+Or with Compose, which reads the same variables from a local `.env`:
+
+```bash
+docker compose up --build
+```
+
+The image is a multi-stage build: TypeScript is compiled with the full dependency tree, the runtime
+stage keeps only production dependencies, and the process runs as the unprivileged `node` user. A
+`HEALTHCHECK` polls `/health` using Node's global `fetch`, so no `curl` has to be installed.
+
+`docker stop` is a graceful shutdown, not a timeout: `CMD` uses the exec form, so Node runs as PID 1
+and receives `SIGTERM` directly, and the server closes its listener on it.
+
+### Deploying with Coolify
+
+Point Coolify at this repository and choose **Dockerfile** as the build pack — it will find
+`/Dockerfile` without further configuration. Then:
+
+1. Set the environment variables (at minimum `ZAMMAD_URL`, and either `ZAMMAD_API_TOKEN` for token
+   mode or the three OAuth values). Everything in [`.env.example`](.env.example) is accepted.
+2. Set **`PUBLIC_URL` to the public URL Coolify assigns**, not the container address. It forms the
+   OAuth issuer, the callback URL and the resource identifier, and a wrong value breaks the
+   authorization flow in a way that points nowhere near the cause — the server logs a warning when
+   it does not match the host a request arrived on.
+3. Leave the port at `3000`, or set `PORT` and match it in Coolify's port mapping.
+4. Use `/health` as the health check path.
+
+Then register `<PUBLIC_URL>/oauth/callback` in Zammad under **System → API → Applications**.
+
+`OAUTH_STATE_SECRET` must be stable across restarts and identical on every replica — it signs the
+`client_id` and the OAuth state, which is what lets the proxy stay stateless. Generate it once with
+`openssl rand -base64 48` and store it as a Coolify secret.
+
 ### What differs between the two runtimes
 
 | | Node | Workers |
@@ -482,6 +526,9 @@ src/
   node/                      Node host: serve(), signals, .env
 
 test/                        config · cache · search-builder · server · env-file · tool-schema
+
+Dockerfile                   multi-stage build of the Node host
+compose.yaml                 the same, for `docker compose` and Coolify
 
 examples/
   cloudflare/                a deployable Worker consuming the published package

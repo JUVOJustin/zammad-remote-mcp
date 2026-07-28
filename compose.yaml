@@ -1,0 +1,50 @@
+# Runs the Node host from this repository's Dockerfile.
+#
+# Coolify can deploy this directly, or use the Dockerfile on its own — see the
+# "Docker" section of the README. Locally: `docker compose up --build`.
+
+services:
+  zammad-remote-mcp:
+    build: .
+    restart: unless-stopped
+    ports:
+      - '${PORT:-3000}:3000'
+    environment:
+      # --- required ---------------------------------------------------------
+      ZAMMAD_URL: ${ZAMMAD_URL:?set ZAMMAD_URL to your Zammad instance}
+
+      # Externally reachable URL of *this* server. It forms the OAuth issuer,
+      # the callback URL and the resource identifier, so behind a reverse proxy
+      # it must be the public URL, not the container address.
+      PUBLIC_URL: ${PUBLIC_URL:-}
+
+      # --- how this server authenticates against Zammad ----------------------
+      # oauth (default) | token | basic. Under `token` the MCP endpoint needs no
+      # credential of its own — anyone who can reach it acts as that token's
+      # user, so do not expose it without something in front.
+      ZAMMAD_AUTH_MODE: ${ZAMMAD_AUTH_MODE:-oauth}
+      ZAMMAD_API_TOKEN: ${ZAMMAD_API_TOKEN:-}
+
+      # --- oauth mode --------------------------------------------------------
+      ZAMMAD_OAUTH_CLIENT_ID: ${ZAMMAD_OAUTH_CLIENT_ID:-}
+      ZAMMAD_OAUTH_CLIENT_SECRET: ${ZAMMAD_OAUTH_CLIENT_SECRET:-}
+      # Must be stable across restarts and identical on every replica; rotating
+      # it invalidates registered clients and in-flight logins.
+      OAUTH_STATE_SECRET: ${OAUTH_STATE_SECRET:-}
+
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+
+    healthcheck:
+      # Repeated from the Dockerfile so `docker compose up` reports health even
+      # when the image is pulled rather than built here.
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3

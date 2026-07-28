@@ -57,6 +57,46 @@ jobs:
       - name: Test
         run: npm test
 
+  docker:
+    # The image is a deployment artefact like the Worker: if it stops building
+    # or stops starting, that is only visible here.
+    needs: quality
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build the image
+        run: docker build -t zammad-remote-mcp:ci .
+
+      - name: Start it and check /health
+        run: |
+          docker run -d --name zmcp -p 3000:3000 \
+            -e ZAMMAD_URL=https://zammad.invalid \
+            -e ZAMMAD_AUTH_MODE=token \
+            -e ZAMMAD_API_TOKEN=ci \
+            zammad-remote-mcp:ci
+          for i in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:3000/health > /dev/null; then
+              echo "healthy after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "never became healthy"
+          docker logs zmcp
+          exit 1
+
+      - name: Stop it gracefully
+        # A container that only dies on SIGKILL takes the full stop timeout on
+        # every deploy; exec-form CMD plus the server's SIGTERM handler is what
+        # avoids that, and this is what proves it still holds.
+        run: |
+          docker stop --timeout 10 zmcp
+          code=$(docker inspect zmcp --format '{{.State.ExitCode}}')
+          echo "exit code: $code"
+          test "$code" = "0"
+
   worker:
     # The core claims to run unchanged on the edge; this is what keeps that
     # honest. A Node built-in creeping back into src/core fails here, not in a

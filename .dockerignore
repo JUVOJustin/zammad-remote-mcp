@@ -1,0 +1,23 @@
+# Everything the build does not need. Keeping this tight matters twice: smaller
+# context, and no chance of a local .env or .dev.vars landing in an image layer.
+node_modules
+dist
+.git
+.github
+.wrangler
+examples
+test
+coverage
+
+.env
+.env.*
+.dev.vars
+.dev.vars.*
+
+*.log
+*.tsbuildinfo
+.DS_Store
+
+README.md
+LICENSE
+biome.json
