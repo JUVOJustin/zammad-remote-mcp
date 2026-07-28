@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
-import { callTool, callToolText, type Json, skipReason, startHarness, stopHarness } from './harness.js';
-import { ADMIN_LOGIN, AGENT_EMAIL, api } from './zammad.js';
+import {
+  callTool,
+  callToolText,
+  initialize,
+  type Json,
+  skipReason,
+  startHarness,
+  stopHarness,
+} from './harness.js';
+import { ADMIN_LOGIN, AGENT_EMAIL, api, BASE_URL } from './zammad.js';
 
 /**
  * Metadata and discovery against a real Zammad.
@@ -41,6 +49,20 @@ describe('metadata against a real Zammad', () => {
 
     const closed = await callTool('zammad_search_tickets', { state: ['closed'], output: 'count' });
     assert.equal(typeof closed.total_count, 'number');
+  });
+
+  it('names the instance it is connected to', async (t) => {
+    if (!ready) return t.skip(skipReason);
+
+    const { instructions } = await initialize();
+
+    // A Zammad link in a ticket or a signature is ambiguous on its own; the
+    // client has to be told which instance these tools actually reach.
+    assert.ok(instructions?.includes(BASE_URL), `the base URL is missing: ${instructions?.slice(0, 160)}`);
+    assert.ok(
+      instructions?.includes(`${BASE_URL}/#ticket/zoom/`),
+      'the ticket link pattern should be stated so a ticket can be cited as a link',
+    );
   });
 
   it('lists tags that exist', async (t) => {

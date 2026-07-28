@@ -355,6 +355,18 @@ describe('mcp endpoint', () => {
     assert.equal(response.status, 200);
     assert.equal(response.body.result.serverInfo.name, 'zammad-remote-mcp');
     assert.match(response.body.result.instructions, /zammad_search_tickets/);
+
+    // The configured instance, not a placeholder: a Zammad link carries no clue
+    // as to which instance it belongs to, so the client has to be told.
+    const instructions: string = response.body.result.instructions;
+    assert.ok(
+      instructions.includes(`http://127.0.0.1:${zammadPort}`),
+      `the instructions do not name the instance: ${instructions.slice(0, 200)}`,
+    );
+    assert.ok(
+      instructions.includes(`http://127.0.0.1:${zammadPort}/#ticket/zoom/`),
+      'the ticket link pattern lets a ticket be cited as a link rather than a number',
+    );
   });
 
   it('issues no session id — the transport is stateless', async () => {

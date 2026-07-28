@@ -88,6 +88,30 @@ export async function callTool(name: string, args: unknown): Promise<Json> {
   }
 }
 
+/** The initialize result, which carries the server's instructions. */
+export async function initialize(): Promise<{ instructions?: string }> {
+  const response = await fetch(`http://127.0.0.1:${port}/mcp`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '1' } },
+    }),
+  });
+
+  const text = await response.text();
+  const payload = response.headers.get('content-type')?.includes('text/event-stream')
+    ? text
+        .split('\n')
+        .find((line) => line.startsWith('data:'))
+        ?.slice(5)
+        .trim()
+    : text;
+  return JSON.parse(payload ?? '{}').result;
+}
+
 /** The tool list as a client receives it, enums and all. */
 export async function listTools(): Promise<Json[]> {
   const response = await fetch(`http://127.0.0.1:${port}/mcp`, {
