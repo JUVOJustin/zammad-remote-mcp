@@ -63,7 +63,10 @@
     "check:fix": "biome check --write .",
     "test": "node --test --import tsx test/*.test.ts",
     "verify": "npm run check && npm run typecheck && npm test && npm run build:worker",
-    "prepack": "npm run build"
+    "prepack": "npm run build",
+    "zammad:up": "./test/integration/up.sh",
+    "zammad:down": "./test/integration/down.sh",
+    "test:integration": "node --test --import tsx test/integration/*.test.ts"
   },
   "dependencies": {
     "@cfworker/json-schema": "^4.1.1",

@@ -1,0 +1,113 @@
+# A throwaway Zammad for integration tests.
+#
+# Derived from zammad/zammad-docker-compose, trimmed to what a test run needs.
+# Dropped: elasticsearch (a gigabyte of JVM for search we exercise through the
+# database anyway), websocket (no browser here) and backup. The scheduler stays
+# because notification jobs run there, and a mention that never notifies is
+# exactly the failure these tests exist to catch.
+#
+# Start it with ./up.sh, not `docker compose up` — a bare Zammad comes up sitting
+# in its setup wizard. up.sh seeds the admin the tests authenticate as.
+#
+# Not for anything but tests: the password is in the file and the volumes are
+# meant to be thrown away.
+
+x-shared:
+  zammad-service: &zammad-service
+    environment: &zammad-environment
+      MEMCACHE_SERVERS: zammad-memcached:11211
+      POSTGRESQL_DB: zammad_test
+      POSTGRESQL_HOST: zammad-postgresql
+      POSTGRESQL_USER: zammad
+      POSTGRESQL_PASS: zammad
+      POSTGRESQL_PORT: 5432
+      REDIS_URL: redis://zammad-redis:6379
+      ELASTICSEARCH_ENABLED: "false"
+      NGINX_SERVER_SCHEME: http
+      RAILS_TRUSTED_PROXIES: "0.0.0.0/0"
+      TZ: Europe/Berlin
+    image: ghcr.io/zammad/zammad:${ZAMMAD_VERSION:-7.1.1-0037}
+    restart: on-failure
+    volumes:
+      - zammad-storage:/opt/zammad/storage
+    depends_on:
+      zammad-memcached:
+        condition: service_healthy
+      zammad-postgresql:
+        condition: service_healthy
+      zammad-redis:
+        condition: service_healthy
+
+services:
+  zammad-init:
+    <<: *zammad-service
+    command: ["zammad-init"]
+    restart: on-failure
+    user: 0:0
+
+  zammad-railsserver:
+    <<: *zammad-service
+    command: ["zammad-railsserver"]
+    depends_on:
+      zammad-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:3000"]
+      interval: 10s
+      timeout: 5s
+      start_period: 180s
+      retries: 30
+
+  zammad-scheduler:
+    <<: *zammad-service
+    command: ["zammad-scheduler"]
+    depends_on:
+      zammad-init:
+        condition: service_completed_successfully
+
+  zammad-nginx:
+    <<: *zammad-service
+    command: ["zammad-nginx"]
+    ports:
+      - "${ZAMMAD_TEST_PORT:-8085}:8080"
+    depends_on:
+      zammad-railsserver:
+        condition: service_healthy
+
+  zammad-memcached:
+    image: memcached:1.6-alpine
+    command: memcached -m 256M
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "11211"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  zammad-postgresql:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: zammad_test
+      POSTGRES_USER: zammad
+      POSTGRES_PASSWORD: zammad
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zammad -d zammad_test"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - postgresql-data:/var/lib/postgresql/data
+
+  zammad-redis:
+    image: redis:8-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - redis-data:/data
+
+volumes:
+  postgresql-data:
+  redis-data:
+  zammad-storage:
