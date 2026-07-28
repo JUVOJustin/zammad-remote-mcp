@@ -55,8 +55,22 @@ const EnvSchema = z
     CORS_ORIGINS: csv.default(['*']),
 
     // ---------------------------------------------------------------- zammad
-    /** Base URL of the Zammad instance, e.g. https://support.example.com */
+    /**
+     * Base URL the *server* uses to reach Zammad, e.g. https://support.example.com.
+     *
+     * On a shared Docker network this is a service name — `http://zammad-nginx:8080`
+     * — which keeps API traffic off the public internet.
+     */
     ZAMMAD_URL: url,
+    /**
+     * Base URL a *browser* uses to reach Zammad. Defaults to ZAMMAD_URL.
+     *
+     * Only differs when the two are not the same host, which is exactly the
+     * container case above: the server resolves `zammad-nginx`, a browser never
+     * can. OAuth redirects and published metadata are the parts a browser
+     * follows, so they use this while API calls keep using ZAMMAD_URL.
+     */
+    ZAMMAD_PUBLIC_URL: url.optional(),
     /**
      * How the server authenticates against the Zammad REST API.
      *  - `oauth` : per-request Bearer token supplied by the MCP client (default,
@@ -231,10 +245,16 @@ export interface Config extends Env {
   publicUrl: string;
   /** Absolute callback URL that must be registered in Zammad (proxy mode). */
   oauthCallbackUrl: string;
-  /** Absolute Zammad OAuth endpoints. */
+  /** Browser-facing Zammad base — ZAMMAD_PUBLIC_URL, or ZAMMAD_URL when unset. */
+  zammadPublicUrl: string;
+  /** Where the browser is sent to approve access. Always browser-facing. */
   zammadAuthorizeUrl: string;
+  /** Where *this server* exchanges a code, so it may be a container-internal URL. */
   zammadTokenUrl: string;
   zammadRevokeUrl: string;
+  /** The same two endpoints as published to clients, which are not on the network. */
+  zammadPublicTokenUrl: string;
+  zammadPublicRevokeUrl: string;
   /** Canonical resource identifier for RFC 8707 / RFC 9728. */
   resourceIdentifier: string;
 }
@@ -257,15 +277,19 @@ export function loadConfig(source: EnvSource): Config {
 
   const env = parsed.data;
   const publicUrl = env.PUBLIC_URL ?? `http://localhost:${env.PORT}`;
+  const zammadPublicUrl = env.ZAMMAD_PUBLIC_URL ?? env.ZAMMAD_URL;
 
   return {
     ...env,
     ZAMMAD_OAUTH_MODE: resolveOAuthMode(env.ZAMMAD_AUTH_MODE, env.ZAMMAD_OAUTH_MODE),
     publicUrl,
     oauthCallbackUrl: `${publicUrl}/oauth/callback`,
-    zammadAuthorizeUrl: `${env.ZAMMAD_URL}${env.ZAMMAD_OAUTH_AUTHORIZE_PATH}`,
+    zammadPublicUrl,
+    zammadAuthorizeUrl: `${zammadPublicUrl}${env.ZAMMAD_OAUTH_AUTHORIZE_PATH}`,
     zammadTokenUrl: `${env.ZAMMAD_URL}${env.ZAMMAD_OAUTH_TOKEN_PATH}`,
     zammadRevokeUrl: `${env.ZAMMAD_URL}${env.ZAMMAD_OAUTH_REVOKE_PATH}`,
+    zammadPublicTokenUrl: `${zammadPublicUrl}${env.ZAMMAD_OAUTH_TOKEN_PATH}`,
+    zammadPublicRevokeUrl: `${zammadPublicUrl}${env.ZAMMAD_OAUTH_REVOKE_PATH}`,
     resourceIdentifier: `${publicUrl}${env.MCP_PATH}`,
   };
 }

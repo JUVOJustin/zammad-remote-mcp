@@ -86,3 +86,44 @@ describe('credential requirements', () => {
     );
   });
 });
+
+describe('ZAMMAD_PUBLIC_URL', () => {
+  const base = {
+    ZAMMAD_URL: 'http://zammad-nginx:8080',
+    ZAMMAD_AUTH_MODE: 'oauth',
+    ZAMMAD_OAUTH_MODE: 'proxy',
+    ZAMMAD_OAUTH_CLIENT_ID: 'id',
+    ZAMMAD_OAUTH_CLIENT_SECRET: 'secret',
+    OAUTH_STATE_SECRET: 'a-secret-that-is-long-enough-to-pass',
+    PUBLIC_URL: 'https://mcp.example.com',
+  } as NodeJS.ProcessEnv;
+
+  it('falls back to ZAMMAD_URL when unset', () => {
+    const config = loadConfig({ ...base, ZAMMAD_URL: 'https://support.example.com' });
+
+    // The single-host case, which is every deployment that existed before this
+    // setting: nothing may change for it.
+    assert.equal(config.zammadPublicUrl, 'https://support.example.com');
+    assert.equal(config.zammadAuthorizeUrl, 'https://support.example.com/oauth/authorize');
+    assert.equal(config.zammadTokenUrl, config.zammadPublicTokenUrl);
+  });
+
+  it('sends the browser to the public host and keeps API calls internal', () => {
+    const config = loadConfig({ ...base, ZAMMAD_PUBLIC_URL: 'https://support.example.com' });
+
+    // A browser cannot resolve `zammad-nginx`, so anything it follows has to
+    // carry the public host.
+    assert.equal(config.zammadAuthorizeUrl, 'https://support.example.com/oauth/authorize');
+    assert.equal(config.zammadPublicTokenUrl, 'https://support.example.com/oauth/token');
+    assert.equal(config.zammadPublicRevokeUrl, 'https://support.example.com/oauth/revoke');
+
+    // This server exchanges the code itself and stays on the compose network,
+    // which is the whole point of running the two side by side.
+    assert.equal(config.zammadTokenUrl, 'http://zammad-nginx:8080/oauth/token');
+    assert.equal(config.ZAMMAD_URL, 'http://zammad-nginx:8080');
+  });
+
+  it('rejects a public URL that is not a URL', () => {
+    assert.throws(() => loadConfig({ ...base, ZAMMAD_PUBLIC_URL: 'support.example.com' }));
+  });
+});

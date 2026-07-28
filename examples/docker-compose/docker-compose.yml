@@ -1,0 +1,192 @@
+# Zammad and the MCP server side by side.
+#
+# The MCP container talks to Zammad over the compose network as
+# `http://zammad-nginx:8080`, so API traffic never leaves the host and Zammad's
+# own port does not have to be published at all. Only the MCP server is exposed.
+#
+# The one thing that cannot be internal is what a *browser* follows. In OAuth
+# mode the user approves access on Zammad itself, so the redirect and the
+# published metadata must carry a URL their browser can resolve — hence
+# ZAMMAD_PUBLIC_URL alongside ZAMMAD_URL. Leave it unset and the server would
+# send people to `http://zammad-nginx:8080/oauth/authorize`, which resolves
+# nowhere outside this network.
+#
+# Copy .env.example to .env before starting.
+
+x-zammad-shared: &zammad-shared
+  environment: &zammad-environment
+    MEMCACHE_SERVERS: zammad-memcached:11211
+    POSTGRESQL_DB: ${POSTGRES_DB:-zammad_production}
+    POSTGRESQL_HOST: zammad-postgresql
+    POSTGRESQL_USER: ${POSTGRES_USER:-zammad}
+    POSTGRESQL_PASS: ${POSTGRES_PASS:-zammad}
+    REDIS_URL: redis://zammad-redis:6379
+    ELASTICSEARCH_ENABLED: ${ELASTICSEARCH_ENABLED:-true}
+    ELASTICSEARCH_HOST: zammad-elasticsearch
+    ELASTICSEARCH_PORT: "9200"
+    ELASTICSEARCH_SCHEMA: http
+    NGINX_SERVER_SCHEME: ${NGINX_SERVER_SCHEME:-https}
+    RAILS_TRUSTED_PROXIES: "0.0.0.0/0"
+    TZ: ${TZ:-Europe/Berlin}
+  image: ghcr.io/zammad/zammad:${ZAMMAD_VERSION:-7.1.1-0037}
+  restart: unless-stopped
+  volumes:
+    - zammad-storage:/opt/zammad/storage
+  depends_on:
+    zammad-memcached:
+      condition: service_healthy
+    zammad-postgresql:
+      condition: service_healthy
+    zammad-redis:
+      condition: service_healthy
+
+services:
+  # ------------------------------------------------------------- the MCP server
+  zammad-mcp:
+    # The Dockerfile at the repository root, unchanged. Swap this for
+    # `image: ghcr.io/juvojustin/zammad-remote-mcp:latest` to skip the build.
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      # Internal: never leaves the compose network.
+      ZAMMAD_URL: http://zammad-nginx:8080
+      # External: what a browser is sent to during the OAuth approval.
+      ZAMMAD_PUBLIC_URL: ${ZAMMAD_PUBLIC_URL:?set this in .env}
+      # This server's own public address, used for its callback and as the
+      # resource identifier clients check against.
+      PUBLIC_URL: ${PUBLIC_URL:?set this in .env}
+
+      ZAMMAD_AUTH_MODE: ${ZAMMAD_AUTH_MODE:-oauth}
+      ZAMMAD_OAUTH_MODE: ${ZAMMAD_OAUTH_MODE:-proxy}
+      ZAMMAD_OAUTH_CLIENT_ID: ${ZAMMAD_OAUTH_CLIENT_ID:-}
+      ZAMMAD_OAUTH_CLIENT_SECRET: ${ZAMMAD_OAUTH_CLIENT_SECRET:-}
+      OAUTH_STATE_SECRET: ${OAUTH_STATE_SECRET:-}
+      # Only read when ZAMMAD_AUTH_MODE=token.
+      ZAMMAD_API_TOKEN: ${ZAMMAD_API_TOKEN:-}
+
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "${MCP_EXPOSE_PORT:-3000}:3000"
+    depends_on:
+      zammad-railsserver:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  # ------------------------------------------------------------------- zammad
+  zammad-init:
+    <<: *zammad-shared
+    command: ["zammad-init"]
+    restart: on-failure
+    user: 0:0
+    depends_on:
+      zammad-elasticsearch:
+        condition: service_healthy
+      zammad-memcached:
+        condition: service_healthy
+      zammad-postgresql:
+        condition: service_healthy
+      zammad-redis:
+        condition: service_healthy
+
+  zammad-railsserver:
+    <<: *zammad-shared
+    command: ["zammad-railsserver"]
+    depends_on:
+      zammad-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:3000"]
+      interval: 10s
+      timeout: 5s
+      start_period: 180s
+      retries: 30
+
+  zammad-scheduler:
+    <<: *zammad-shared
+    command: ["zammad-scheduler"]
+    depends_on:
+      zammad-init:
+        condition: service_completed_successfully
+
+  zammad-websocket:
+    <<: *zammad-shared
+    command: ["zammad-websocket"]
+    depends_on:
+      zammad-init:
+        condition: service_completed_successfully
+
+  zammad-nginx:
+    <<: *zammad-shared
+    command: ["zammad-nginx"]
+    # No `ports:` on purpose — the MCP server reaches this over the network by
+    # name. Publish it, or put it behind your reverse proxy, if people also use
+    # the Zammad UI on this host.
+    expose:
+      - "8080"
+    depends_on:
+      zammad-railsserver:
+        condition: service_healthy
+
+  zammad-elasticsearch:
+    image: elasticsearch:${ELASTICSEARCH_VERSION:-8.17.0}
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: ${ELASTICSEARCH_JAVA_OPTS:--Xms1g -Xmx1g}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+
+  zammad-memcached:
+    image: memcached:1.6-alpine
+    command: memcached -m 256M
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "11211"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  zammad-postgresql:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-zammad_production}
+      POSTGRES_USER: ${POSTGRES_USER:-zammad}
+      POSTGRES_PASSWORD: ${POSTGRES_PASS:-zammad}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-zammad}"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - postgresql-data:/var/lib/postgresql/data
+
+  zammad-redis:
+    image: redis:8-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - redis-data:/data
+
+volumes:
+  elasticsearch-data:
+  postgresql-data:
+  redis-data:
+  zammad-storage:

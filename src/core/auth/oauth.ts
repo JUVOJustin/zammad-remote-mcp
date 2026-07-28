@@ -354,11 +354,13 @@ export function createOAuthLayer(config: Config, logger: Logger): OAuthLayer | u
     // authorization-server metadata, so this server publishes it on Zammad's
     // behalf and the client is expected to accept an issuer whose metadata is
     // hosted here. Every client redirect URI must be registered in Zammad.
+    // Everything here is consumed by the client, which is not on this server's
+    // network, so every endpoint has to be the browser-facing one.
     const metadata = {
-      issuer: config.ZAMMAD_URL,
+      issuer: config.zammadPublicUrl,
       authorization_endpoint: config.zammadAuthorizeUrl,
-      token_endpoint: config.zammadTokenUrl,
-      revocation_endpoint: config.zammadRevokeUrl,
+      token_endpoint: config.zammadPublicTokenUrl,
+      revocation_endpoint: config.zammadPublicRevokeUrl,
       scopes_supported: config.ZAMMAD_OAUTH_SCOPES,
       response_types_supported: ['code'],
       grant_types_supported: ['authorization_code', 'refresh_token'],
@@ -367,7 +369,7 @@ export function createOAuthLayer(config: Config, logger: Logger): OAuthLayer | u
     };
     const protectedResource = {
       resource: config.resourceIdentifier,
-      authorization_servers: [config.ZAMMAD_URL],
+      authorization_servers: [config.zammadPublicUrl],
       scopes_supported: config.ZAMMAD_OAUTH_SCOPES,
       resource_name: 'Zammad MCP',
     };

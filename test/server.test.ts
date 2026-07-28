@@ -363,10 +363,6 @@ describe('mcp endpoint', () => {
       instructions.includes(`http://127.0.0.1:${zammadPort}`),
       `the instructions do not name the instance: ${instructions.slice(0, 200)}`,
     );
-    assert.ok(
-      instructions.includes(`http://127.0.0.1:${zammadPort}/#ticket/zoom/`),
-      'the ticket link pattern lets a ticket be cited as a link rather than a number',
-    );
   });
 
   it('issues no session id — the transport is stateless', async () => {

@@ -13,17 +13,14 @@ import { registerTicketTools } from './tools/tickets.js';
 /**
  * Names the instance these tools reach.
  *
- * Without it a Zammad URL in a ticket, a signature or a customer's mail is just
- * a link: there is no way to tell whether it points at the helpdesk in front of
- * you or at a different one. Stating the base URL also lets a ticket be cited
- * as a link instead of a bare number.
+ * A Zammad URL in a ticket, a signature or a customer's mail says nothing about
+ * which instance it belongs to. The base URL settles that; the link shapes
+ * built from it are obvious enough not to spell out.
  */
 function instructionsFor(zammadUrl: string): string {
   const base = zammadUrl.replace(/\/+$/, '');
-  return `Tools for the Zammad helpdesk at ${base}.
+  return `Tools for the Zammad support ticket helpdesk at ${base}.
 
-  • Links on this instance: tickets are ${base}/#ticket/zoom/<ticket id>, users ${base}/#user/profile/<user id>.
-    A link elsewhere belongs to a different Zammad and these tools cannot read it.
   • Valid states, priorities, groups and macros for *this* instance are in the tool schemas — read the enums
     instead of asking. A wrong value comes back with the valid options.
   • \`zammad_search_tickets\` is the main entry point: express filters as arguments rather than fetching

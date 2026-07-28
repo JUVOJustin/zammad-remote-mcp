@@ -59,10 +59,6 @@ describe('metadata against a real Zammad', () => {
     // A Zammad link in a ticket or a signature is ambiguous on its own; the
     // client has to be told which instance these tools actually reach.
     assert.ok(instructions?.includes(BASE_URL), `the base URL is missing: ${instructions?.slice(0, 160)}`);
-    assert.ok(
-      instructions?.includes(`${BASE_URL}/#ticket/zoom/`),
-      'the ticket link pattern should be stated so a ticket can be cited as a link',
-    );
   });
 
   it('lists tags that exist', async (t) => {
