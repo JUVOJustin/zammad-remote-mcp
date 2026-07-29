@@ -201,11 +201,27 @@ export function presentArticle(
   if (out.body === undefined) delete out.body;
 
   if (Array.isArray(article.attachments)) {
-    out.attachments = article.attachments.map((a) =>
-      present({ id: a.id, filename: a.filename, size: a.size }, new Set()),
-    );
+    const attachments = article.attachments
+      .filter((a) => !isAlternativePart(a))
+      .map((a) => present({ id: a.id, filename: a.filename, size: a.size }, new Set()));
+    if (attachments.length > 0) out.attachments = attachments;
   }
   return out;
+}
+
+/**
+ * `message.html` is not an attachment. When a mail arrives as multipart Zammad
+ * stores the HTML alternative as one, so every such article lists a file that is
+ * a copy of the body already printed beside it. Across 60 tickets that was 43%
+ * of all attachment entries.
+ *
+ * Inline images are left in place even though they are a similar share, because
+ * they are the only trace a pasted screenshot leaves once `<img>` is stripped
+ * from the body — an article whose body renders to nothing points at them.
+ */
+function isAlternativePart(attachment: Record<string, unknown>): boolean {
+  const preferences = attachment.preferences as Record<string, unknown> | undefined;
+  return preferences?.['content-alternative'] === true;
 }
 
 /**
