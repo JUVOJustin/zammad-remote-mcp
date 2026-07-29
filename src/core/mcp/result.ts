@@ -165,6 +165,35 @@ export function summarizeArticle(
   });
 }
 
+/**
+ * The complete stored article, but with its body rendered.
+ *
+ * For the paths that hand back the whole Zammad object instead of a summary.
+ * Zammad has no representation negotiation of its own — `content_type`
+ * describes what is stored, and asking for `text/plain` via a query parameter
+ * or an Accept header returns byte-identical HTML — so a body that leaves this
+ * server un-rendered cannot be fixed anywhere downstream. Attaching the
+ * rendering to `body_format` rather than to the summary keeps one switch in
+ * charge of the representation, whichever shape the caller asked for.
+ *
+ * Unlike `summarizeArticle` this does not truncate: the caller asked for the
+ * whole object, and the rendering has already removed most of the volume.
+ */
+export function withRenderedBody(
+  article: ArticleLike,
+  format: BodyFormat = 'markdown',
+): Record<string, unknown> {
+  if (format === 'html') return { ...article };
+
+  const rendered = renderArticleBody(article.body, article.content_type, format);
+  return {
+    ...article,
+    body: rendered.body,
+    content_type: 'text/markdown',
+    ...(rendered.omitted.length > 0 ? { body_omitted: rendered.omitted } : {}),
+  };
+}
+
 export function summarizeUser(user: Record<string, unknown>): Record<string, unknown> {
   return compact({
     id: user.id,

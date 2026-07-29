@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { summarizeArticle } from '../src/core/mcp/result.js';
+import { summarizeArticle, withRenderedBody } from '../src/core/mcp/result.js';
 import { renderArticleBody } from '../src/core/zammad/article-body.js';
 
 /** Shapes taken from real articles on a live Zammad instance. */
@@ -262,5 +262,54 @@ describe('summarizeArticle', () => {
   it('omits body_omitted when nothing was removed', () => {
     const summary = summarizeArticle({ id: 1, content_type: 'text/plain', body: 'plain' });
     assert.equal(summary.body_omitted, undefined);
+  });
+});
+
+/**
+ * The tools that hand back the whole Zammad object rather than a summary —
+ * `zammad_get_article`'s `raw_article` and `zammad_list_ticket_articles` with
+ * `output: "full"`. Zammad offers no representation of its own, so a body that
+ * leaves un-rendered here cannot be fixed downstream.
+ */
+describe('withRenderedBody', () => {
+  const article = {
+    id: 7,
+    ticket_id: 3,
+    message_id: '<abc@example.com>',
+    content_type: 'text/html',
+    body: `Hello there<blockquote type="cite">old thread</blockquote>${SIGNATURE_DIV}Regards</div>`,
+  };
+
+  it('renders the body while keeping every other field', () => {
+    const full = withRenderedBody(article);
+    assert.equal(full.body, 'Hello there');
+    assert.equal(full.content_type, 'text/markdown');
+    assert.deepEqual(full.body_omitted, ['quoted_reply', 'signature']);
+    // Fields the summary drops must survive — that is the point of the raw shape.
+    assert.equal(full.message_id, '<abc@example.com>');
+    assert.equal(full.ticket_id, 3);
+  });
+
+  it('returns the stored markup untouched for html', () => {
+    const full = withRenderedBody(article, 'html');
+    assert.equal(full.body, article.body);
+    assert.equal(full.content_type, 'text/html');
+    assert.equal(full.body_omitted, undefined);
+  });
+
+  it('does not truncate — the caller asked for the whole object', () => {
+    const long = { ...article, body: `<p>${'x'.repeat(9000)}</p>` };
+    assert.equal(withRenderedBody(long).body, 'x'.repeat(9000));
+  });
+
+  it('leaves the source object alone', () => {
+    const source = { ...article };
+    withRenderedBody(source);
+    assert.equal(source.body, article.body, 'the caller keeps what Zammad sent');
+  });
+
+  it('omits body_omitted when nothing was removed', () => {
+    const full = withRenderedBody({ id: 1, content_type: 'text/html', body: '<p>plain</p>' });
+    assert.equal(full.body_omitted, undefined);
   });
 });

@@ -4,7 +4,7 @@ import { bytesToBase64, textFromBytes } from '../../util/base64.js';
 import { rewriteMentions } from '../../zammad/mentions.js';
 import type { ToolContext } from '../context.js';
 import { withOnBehalfOf } from '../context.js';
-import { guard, jsonResult, summarizeArticle, textResult } from '../result.js';
+import { guard, jsonResult, summarizeArticle, textResult, withRenderedBody } from '../result.js';
 
 const onBehalfOf = z
   .string()
@@ -65,7 +65,7 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
         returned: limited.length,
         articles:
           input.output === 'full'
-            ? limited
+            ? limited.map((a) => withRenderedBody(a, input.body_format))
             : limited.map((a) =>
                 summarizeArticle(a, { maxBodyChars: input.body_chars, bodyFormat: input.body_format }),
               ),
@@ -101,7 +101,7 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
           maxBodyChars: input.body_chars,
           bodyFormat: input.body_format,
         }),
-        raw_article: article,
+        raw_article: withRenderedBody(article, input.body_format),
       });
     }),
   );
