@@ -538,34 +538,6 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
     }),
   );
 
-  const titleInput = z.object({
-    ticket_id: z.number().int().positive().optional(),
-    ticket_number: z.string().min(1).optional(),
-    title: z.string().min(1),
-    on_behalf_of: onBehalfOf,
-  });
-
-  server.registerTool(
-    'zammad_update_ticket_title',
-    {
-      title: 'Rename a Zammad ticket',
-      description: "Change only the ticket title, via Zammad's dedicated endpoint.",
-      inputSchema: titleInput.shape,
-      annotations: { readOnlyHint: false, idempotentHint: true, openWorldHint: true },
-    },
-    guard(async (rawInput) => {
-      const input = titleInput.parse(rawInput);
-      const context = withOnBehalfOf(base, input.on_behalf_of);
-      const id = await resolveTicketId(context, input);
-      const ticket = await context.client.put<Record<string, unknown>>(
-        `/api/v1/tickets/${id}/update_title`,
-        { title: input.title },
-        { expand: true },
-      );
-      return jsonResult({ updated: true, ticket: presentTicket(ticket) });
-    }),
-  );
-
   const customerInput = z.object({
     ticket_id: z.number().int().positive().optional(),
     ticket_number: z.string().min(1).optional(),
