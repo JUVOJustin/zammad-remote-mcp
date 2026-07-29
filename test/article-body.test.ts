@@ -176,6 +176,13 @@ describe('renderArticleBody', () => {
     assert.equal(renderArticleBody(html, 'text/html').body, 'Ein fetter und schräger Satz');
   });
 
+  /** Turndown alone puts every cell on its own line, scattering a small table. */
+  it('keeps a table row on one line', () => {
+    const html =
+      '<table><tr><th>Zeit</th><th>Bestellung</th></tr><tr><td>07:41</td><td>#48211</td></tr></table>';
+    assert.equal(renderArticleBody(html, 'text/html').body, 'Zeit | Bestellung\n07:41 | #48211');
+  });
+
   it('does not turn a plain-text body into markdown', () => {
     // Running plain text through a converter would escape its punctuation.
     const body = 'Preis: 5 * 3 = 15 (siehe _Anlage_)';
