@@ -27,9 +27,10 @@ const bodyFormat = z
   .enum(['text', 'html'])
   .default('text')
   .describe(
-    'How article bodies are rendered. `text` (default) converts HTML to plain text and drops the quoted reply ' +
-      'and the signature block, which removes most of the payload without losing the message. `html` returns the ' +
-      'stored markup untouched.',
+    'How article bodies are rendered. Leave this at `text`: the body comes back as plain text with the quoted ' +
+      'reply and the signature removed, which is the whole message minus the markup around it — nothing a reader ' +
+      'needs is lost. Pass `html` only when the markup itself is the subject, such as tracing a broken email ' +
+      'template or a rendering problem; it returns the stored HTML in full and is several times larger.',
   );
 
 const attachmentSchema = z.object({
