@@ -21,9 +21,9 @@ describe('renderArticleBody', () => {
     assert.deepEqual(result.omitted, []);
   });
 
-  it('converts markup to text and reports nothing omitted', () => {
+  it('converts markup to markdown and reports nothing omitted', () => {
     const result = renderArticleBody('<p>Line one</p><p>Line two</p>', 'text/html');
-    assert.equal(result.body, 'Line one\nLine two');
+    assert.equal(result.body, 'Line one\n\nLine two');
     assert.deepEqual(result.omitted, []);
   });
 
@@ -60,14 +60,14 @@ describe('renderArticleBody', () => {
     const result = renderArticleBody(html, 'text/html');
     assert.equal(
       result.body,
-      'The installer prints this:\n\n> FATAL: role "zammad" does not exist\nAny idea what causes it?',
+      'The installer prints this:\n\n> FATAL: role "zammad" does not exist\n\nAny idea what causes it?',
     );
     assert.deepEqual(result.omitted, [], 'nothing was dropped, so nothing may be reported');
   });
 
   it('marks every line of a kept quote', () => {
     const html = '<p>See:</p><blockquote>line one<br>line two</blockquote><p>Thoughts?</p>';
-    assert.equal(renderArticleBody(html, 'text/html').body, 'See:\n\n> line one\n> line two\nThoughts?');
+    assert.equal(renderArticleBody(html, 'text/html').body, 'See:\n\n> line one\n> line two\n\nThoughts?');
   });
 
   /** Reply chains nest; the deepest seen on a live instance was 13 levels. */
@@ -89,7 +89,7 @@ describe('renderArticleBody', () => {
       '<blockquote type="cite">Am 1.1.2026 schrieb jemand: alter Text</blockquote>',
     ].join('');
     const result = renderArticleBody(html, 'text/html');
-    assert.equal(result.body, 'Log excerpt:\n\n> ERROR at line 12\nand my reply below');
+    assert.equal(result.body, 'Log excerpt:\n\n> ERROR at line 12\n\nand my reply below');
     assert.deepEqual(result.omitted, ['quoted_reply']);
   });
 
@@ -143,13 +143,13 @@ describe('renderArticleBody', () => {
 
   it('keeps the quoted reply when it is the entire body', () => {
     const result = renderArticleBody('<blockquote>only the quote</blockquote>', 'text/html');
-    assert.equal(result.body, 'only the quote');
+    assert.equal(result.body, '> only the quote');
     assert.deepEqual(result.omitted, []);
   });
 
   it('keeps a link target the anchor text does not name', () => {
     const html = '<a href="https://example.com/ticket/42">the ticket</a>';
-    assert.equal(renderArticleBody(html, 'text/html').body, 'the ticket (https://example.com/ticket/42)');
+    assert.equal(renderArticleBody(html, 'text/html').body, '[the ticket](https://example.com/ticket/42)');
   });
 
   it('does not repeat a link whose text is already the URL', () => {
@@ -160,6 +160,26 @@ describe('renderArticleBody', () => {
   it('keeps mailto and cid anchors as their visible text', () => {
     const html = '<a href="mailto:jane@acme.com">jane@acme.com</a>';
     assert.equal(renderArticleBody(html, 'text/html').body, 'jane@acme.com');
+  });
+
+  it('keeps headings and lists as markdown', () => {
+    const html = '<h2>Schritte</h2><ul><li>eins</li><li>zwei</li></ul>';
+    assert.equal(renderArticleBody(html, 'text/html').body, '## Schritte\n\n-   eins\n-   zwei');
+  });
+
+  /**
+   * Emphasis in support mail is nearly always styling — a coloured brand word,
+   * a bolded greeting. The text is kept, the markers are not.
+   */
+  it('drops emphasis markers but keeps their text', () => {
+    const html = '<p>Ein <b>fetter</b> und <em>schräger</em> Satz</p>';
+    assert.equal(renderArticleBody(html, 'text/html').body, 'Ein fetter und schräger Satz');
+  });
+
+  it('does not turn a plain-text body into markdown', () => {
+    // Running plain text through a converter would escape its punctuation.
+    const body = 'Preis: 5 * 3 = 15 (siehe _Anlage_)';
+    assert.equal(renderArticleBody(body, 'text/plain').body, body);
   });
 
   it('decodes named, decimal and hex entities', () => {
@@ -208,10 +228,10 @@ describe('summarizeArticle', () => {
     body: `Hello there<blockquote>old</blockquote>${SIGNATURE_DIV}Regards</div>`,
   };
 
-  it('renders bodies as text by default and says so', () => {
+  it('renders bodies as markdown by default and says so', () => {
     const summary = summarizeArticle(article);
     assert.equal(summary.body, 'Hello there');
-    assert.equal(summary.content_type, 'text/plain');
+    assert.equal(summary.content_type, 'text/markdown');
     assert.deepEqual(summary.body_omitted, ['quoted_reply', 'signature']);
   });
 

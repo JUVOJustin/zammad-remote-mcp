@@ -482,10 +482,13 @@ customer unless `type: "email"` and `internal: false` are set deliberately. Dest
 ### Article bodies
 
 Zammad stores most email articles as `text/html`, where the markup dwarfs the message. Every tool
-that returns an article renders the body as plain text by default and drops two things:
+that returns an article renders the body as **Markdown** by default — headings, lists, link targets
+and quote levels keep their meaning, at almost no cost over flat text — and drops two things:
 
-- the quoted reply (`<blockquote>`) — in a ticket thread that text is already present as an earlier
-  article, so repeating it once per reply is duplication;
+- quoted replies, which in a ticket thread are already present as an earlier article. Only
+  blockquotes that identify themselves as citations (`type="cite"`), open with a mail client's
+  attribution line, or trail the message are removed. A customer quoting an error message keeps it,
+  rendered as a Markdown quote;
 - the signature block, located by the marker Zammad itself emits
   (`<span class="js-signatureMarker">`, `data-signature`).
 
@@ -497,10 +500,14 @@ Signatures with no Zammad marker, such as a foreign sender's legal footer, are l
 Recognising those means matching on wording, which is not reliable enough to risk cutting real
 content.
 
-Across 377 articles from a live instance this cut 2.04M characters of stored body to 290K (−86%),
-and the share of articles hitting the 4000-character cap fell from 43% to 5% — the truncation that
+Across 377 articles from a live instance this cut 2.04M characters of stored body to 244K (−88%),
+and the share of articles hitting the 4000-character cap fell from 43% to 2% — the truncation that
 otherwise makes a model re-fetch the same article in full. `body_omitted` on each article records
 what was dropped, and `body_format: "html"` returns the stored markup untouched.
+
+Conversion uses [turndown](https://github.com/mixmark-io/turndown). On Node it works as shipped; on
+Cloudflare Workers it needs its bundled DOM rather than the host's, which the `alias` block in
+`examples/cloudflare/wrangler.jsonc` arranges — see the comment there for why.
 
 ---
 

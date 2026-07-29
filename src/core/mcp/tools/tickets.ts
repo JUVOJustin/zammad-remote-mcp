@@ -24,12 +24,12 @@ const onBehalfOf = z
 
 /** Shared by every tool that returns article bodies — see zammad/article-body.ts. */
 const bodyFormat = z
-  .enum(['text', 'html'])
-  .default('text')
+  .enum(['markdown', 'html'])
+  .default('markdown')
   .describe(
-    'How article bodies are rendered. Leave this at `text`: the body comes back as plain text with the quoted ' +
-      'reply and the signature removed, which is the whole message minus the markup around it — nothing a reader ' +
-      'needs is lost. Pass `html` only when the markup itself is the subject, such as tracing a broken email ' +
+    'How article bodies are rendered. Leave this at `markdown`: the body comes back as Markdown with the quoted ' +
+      'reply and the signature removed. Headings, lists, tables, links and quotes keep their meaning, and nothing a ' +
+      'reader needs is lost. Pass `html` only when the markup itself is the subject, such as tracing a broken email ' +
       'template or a rendering problem; it returns the stored HTML in full and is several times larger.',
   );
 
@@ -217,7 +217,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
         'are resolved, so the result shows "open" rather than a state ID.\n\n' +
         'The conversation is included by default — there is no need to follow up with ' +
         'zammad_list_ticket_articles unless `articles_note` says articles were left out. Article bodies are ' +
-        'rendered as plain text with the quoted reply and signature removed; pass `body_format: "html"` for the ' +
+        'rendered as Markdown with the quoted reply and signature removed; pass `body_format: "html"` for the ' +
         'original markup.',
       inputSchema: getTicketInput.shape,
       annotations: { readOnlyHint: true, openWorldHint: true },

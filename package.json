@@ -75,11 +75,13 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "hono": "^4.12.32",
     "hono-rate-limiter": "^0.5.3",
+    "turndown": "^7.2.4",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.5",
     "@types/node": "^22.15.0",
+    "@types/turndown": "^5.0.6",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3"
   }

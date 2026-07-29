@@ -132,7 +132,7 @@ export function summarizeArticle(
   options: { maxBodyChars?: number; bodyFormat?: BodyFormat } = {},
 ): Record<string, unknown> {
   const limit = options.maxBodyChars ?? 4000;
-  const format = options.bodyFormat ?? 'text';
+  const format = options.bodyFormat ?? 'markdown';
   const rendered = renderArticleBody(article.body, article.content_type, format);
   const body = rendered.body || undefined;
 
@@ -149,7 +149,7 @@ export function summarizeArticle(
     created_at: article.created_at,
     created_by: article.created_by ?? article.created_by_id,
     // Report what the model is actually reading, not how Zammad stored it.
-    content_type: format === 'html' ? article.content_type : 'text/plain',
+    content_type: format === 'html' ? article.content_type : 'text/markdown',
     body:
       body && body.length > limit
         ? `${body.slice(0, limit)}\n…[truncated, ${body.length} chars total]`

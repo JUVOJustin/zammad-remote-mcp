@@ -13,12 +13,12 @@ const onBehalfOf = z
 
 /** Shared by every tool that returns article bodies — see zammad/article-body.ts. */
 const bodyFormat = z
-  .enum(['text', 'html'])
-  .default('text')
+  .enum(['markdown', 'html'])
+  .default('markdown')
   .describe(
-    'How article bodies are rendered. Leave this at `text`: the body comes back as plain text with the quoted ' +
-      'reply and the signature removed, which is the whole message minus the markup around it — nothing a reader ' +
-      'needs is lost. Pass `html` only when the markup itself is the subject, such as tracing a broken email ' +
+    'How article bodies are rendered. Leave this at `markdown`: the body comes back as Markdown with the quoted ' +
+      'reply and the signature removed. Headings, lists, tables, links and quotes keep their meaning, and nothing a ' +
+      'reader needs is lost. Pass `html` only when the markup itself is the subject, such as tracing a broken email ' +
       'template or a rendering problem; it returns the stored HTML in full and is several times larger.',
   );
 
@@ -43,7 +43,7 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
     {
       title: "List a Zammad ticket's articles",
       description:
-        'The full conversation on a ticket, oldest first. Bodies are rendered as plain text with the quoted reply ' +
+        'The full conversation on a ticket, oldest first. Bodies are rendered as Markdown with the quoted reply ' +
         'and signature removed, and truncated at `body_chars` so a long thread stays readable. Note that ' +
         'zammad_get_ticket already returns the articles — reach for this tool when you need more of them than it ' +
         'returned, or when you want to exclude internal notes.',
