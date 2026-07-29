@@ -11,6 +11,16 @@ const onBehalfOf = z
   .optional()
   .describe('Perform the action as another Zammad user (login, email or ID). Requires admin privileges.');
 
+/** Shared by every tool that returns article bodies — see zammad/article-body.ts. */
+const bodyFormat = z
+  .enum(['text', 'html'])
+  .default('text')
+  .describe(
+    'How article bodies are rendered. `text` (default) converts HTML to plain text and drops the quoted reply ' +
+      'and the signature block, which removes most of the payload without losing the message. `html` returns the ' +
+      'stored markup untouched.',
+  );
+
 export function registerArticleTools(server: McpServer, base: ToolContext): void {
   const listInput = z.object({
     ticket_id: z.number().int().positive(),
@@ -22,6 +32,7 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
       .max(50_000)
       .default(4000)
       .describe('Truncate article bodies to this length.'),
+    body_format: bodyFormat,
     include_internal: z.boolean().default(true),
     output: z.enum(['summary', 'full']).default('summary'),
   });
@@ -31,8 +42,10 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
     {
       title: "List a Zammad ticket's articles",
       description:
-        'The full conversation on a ticket, oldest first. Bodies are truncated by default so a long thread stays ' +
-        'readable; raise `body_chars` when the full text matters.',
+        'The full conversation on a ticket, oldest first. Bodies are rendered as plain text with the quoted reply ' +
+        'and signature removed, and truncated at `body_chars` so a long thread stays readable. Note that ' +
+        'zammad_get_ticket already returns the articles — reach for this tool when you need more of them than it ' +
+        'returned, or when you want to exclude internal notes.',
       inputSchema: listInput.shape,
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
@@ -54,10 +67,18 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
         articles:
           input.output === 'full'
             ? limited
-            : limited.map((a) => summarizeArticle(a, { maxBodyChars: input.body_chars })),
+            : limited.map((a) =>
+                summarizeArticle(a, { maxBodyChars: input.body_chars, bodyFormat: input.body_format }),
+              ),
       });
     }),
   );
+
+  const getArticleInput = z.object({
+    article_id: z.number().int().positive(),
+    body_chars: z.number().int().positive().max(200_000).default(50_000),
+    body_format: bodyFormat,
+  });
 
   server.registerTool(
     'zammad_get_article',
@@ -65,28 +86,23 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
       title: 'Get a single Zammad article',
       description:
         'Fetch one article by ID with its full body and attachment metadata. Attachment IDs from here are what ' +
-        'zammad_download_attachment takes.',
-      inputSchema: {
-        article_id: z.number().int().positive(),
-        body_chars: z.number().int().positive().max(200_000).default(50_000),
-      },
+        'zammad_download_attachment takes. Only needed when an article came back truncated elsewhere — ' +
+        'zammad_get_ticket already returns the bodies.',
+      inputSchema: getArticleInput.shape,
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     guard(async (rawInput) => {
-      const input = z
-        .object({
-          article_id: z.number().int().positive(),
-          body_chars: z.number().int().positive().max(200_000).default(50_000),
-        })
-        .parse(rawInput);
+      const input = getArticleInput.parse(rawInput);
 
       const article = await base.client.get<Record<string, unknown>>(
         `/api/v1/ticket_articles/${input.article_id}`,
         { expand: true },
       );
       return jsonResult({
-        article: summarizeArticle(article, { maxBodyChars: input.body_chars }),
-        raw_article: article,
+        article: summarizeArticle(article, {
+          maxBodyChars: input.body_chars,
+          bodyFormat: input.body_format,
+        }),
       });
     }),
   );

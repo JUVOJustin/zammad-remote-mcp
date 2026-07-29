@@ -1,5 +1,6 @@
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { describeError } from '../util/errors.js';
+import { type BodyFormat, renderArticleBody } from '../zammad/article-body.js';
 
 /**
  * Tool results are returned as pretty-printed JSON inside a single text block.
@@ -128,10 +129,12 @@ export interface ArticleLike {
 
 export function summarizeArticle(
   article: ArticleLike,
-  options: { maxBodyChars?: number } = {},
+  options: { maxBodyChars?: number; bodyFormat?: BodyFormat } = {},
 ): Record<string, unknown> {
   const limit = options.maxBodyChars ?? 4000;
-  const body = typeof article.body === 'string' ? article.body : undefined;
+  const format = options.bodyFormat ?? 'text';
+  const rendered = renderArticleBody(article.body, article.content_type, format);
+  const body = rendered.body || undefined;
 
   return compact({
     id: article.id,
@@ -145,16 +148,18 @@ export function summarizeArticle(
     internal: article.internal,
     created_at: article.created_at,
     created_by: article.created_by ?? article.created_by_id,
-    content_type: article.content_type,
+    // Report what the model is actually reading, not how Zammad stored it.
+    content_type: format === 'html' ? article.content_type : 'text/plain',
     body:
       body && body.length > limit
         ? `${body.slice(0, limit)}\n…[truncated, ${body.length} chars total]`
         : body,
+    body_omitted: rendered.omitted,
     attachments: article.attachments?.map((a) =>
       compact({
         id: a.id,
         filename: a.filename,
-        size: (a.preferences as Record<string, unknown> | undefined)?.['Content-Type'] ? a.size : a.size,
+        size: a.size,
       }),
     ),
   });

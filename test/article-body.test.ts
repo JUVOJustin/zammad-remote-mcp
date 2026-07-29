@@ -1,0 +1,180 @@
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+import { summarizeArticle } from '../src/core/mcp/result.js';
+import { renderArticleBody } from '../src/core/zammad/article-body.js';
+
+/** Shapes taken from real articles on a live Zammad instance. */
+const SIGNATURE_DIV = '<div data-signature="true" data-signature-id="1">';
+const SIGNATURE_SPAN = '<span class="js-signatureMarker">';
+
+describe('renderArticleBody', () => {
+  it('leaves a plain-text body alone', () => {
+    const result = renderArticleBody('Just text.', 'text/plain');
+    assert.equal(result.body, 'Just text.');
+    assert.deepEqual(result.omitted, []);
+  });
+
+  it('returns the stored markup untouched for format html', () => {
+    const html = '<div>Hello<blockquote>quoted</blockquote></div>';
+    const result = renderArticleBody(html, 'text/html', 'html');
+    assert.equal(result.body, html);
+    assert.deepEqual(result.omitted, []);
+  });
+
+  it('converts markup to text and reports nothing omitted', () => {
+    const result = renderArticleBody('<p>Line one</p><p>Line two</p>', 'text/html');
+    assert.equal(result.body, 'Line one\nLine two');
+    assert.deepEqual(result.omitted, []);
+  });
+
+  it('drops the quoted reply', () => {
+    const html = 'My answer.<blockquote type="cite">Everything they wrote before</blockquote>';
+    const result = renderArticleBody(html, 'text/html');
+    assert.equal(result.body, 'My answer.');
+    assert.deepEqual(result.omitted, ['quoted_reply']);
+  });
+
+  it('cuts at a signature div', () => {
+    const html = `The actual message<br><br>${SIGNATURE_DIV}Kind regards<br>Justin<br>--<br>Citation Media GmbH</div>`;
+    const result = renderArticleBody(html, 'text/html');
+    assert.equal(result.body, 'The actual message');
+    assert.deepEqual(result.omitted, ['signature']);
+  });
+
+  it('cuts at a signature span', () => {
+    const html = `Message body${SIGNATURE_SPAN}</span>Kind regards, Justin`;
+    const result = renderArticleBody(html, 'text/html');
+    assert.equal(result.body, 'Message body');
+    assert.deepEqual(result.omitted, ['signature']);
+  });
+
+  /**
+   * 18% of customer replies carry a signature marker inside the quoted copy of
+   * our own outgoing mail. Cutting at that marker would drop the reply itself,
+   * so quotes have to go first.
+   */
+  it('ignores a signature marker that sits inside the quoted reply', () => {
+    const html = [
+      'Thanks, that worked!',
+      `<blockquote type="cite">Our earlier mail${SIGNATURE_DIV}Kind regards<br>Justin</div></blockquote>`,
+    ].join('');
+    const result = renderArticleBody(html, 'text/html');
+    assert.equal(result.body, 'Thanks, that worked!');
+    assert.deepEqual(result.omitted, ['quoted_reply']);
+  });
+
+  it('reports both removals when both happened', () => {
+    const html = [
+      'Answer.',
+      `${SIGNATURE_DIV}Kind regards</div>`,
+      '<blockquote>older thread</blockquote>',
+    ].join('');
+    const result = renderArticleBody(html, 'text/html');
+    assert.equal(result.body, 'Answer.');
+    assert.deepEqual(result.omitted, ['quoted_reply', 'signature']);
+  });
+
+  /** An article whose whole body is a signature must not render as empty. */
+  it('keeps the signature when cutting it would leave nothing', () => {
+    const html = `${SIGNATURE_DIV}Kind regards<br>Justin Vogt</div>`;
+    const result = renderArticleBody(html, 'text/html');
+    assert.equal(result.body, 'Kind regards\nJustin Vogt');
+    assert.deepEqual(result.omitted, []);
+  });
+
+  it('keeps the quoted reply when it is the entire body', () => {
+    const result = renderArticleBody('<blockquote>only the quote</blockquote>', 'text/html');
+    assert.equal(result.body, 'only the quote');
+    assert.deepEqual(result.omitted, []);
+  });
+
+  it('keeps a link target the anchor text does not name', () => {
+    const html = '<a href="https://example.com/ticket/42">the ticket</a>';
+    assert.equal(renderArticleBody(html, 'text/html').body, 'the ticket (https://example.com/ticket/42)');
+  });
+
+  it('does not repeat a link whose text is already the URL', () => {
+    const html = '<a href="https://example.com/x">https://example.com/x</a>';
+    assert.equal(renderArticleBody(html, 'text/html').body, 'https://example.com/x');
+  });
+
+  it('keeps mailto and cid anchors as their visible text', () => {
+    const html = '<a href="mailto:jane@acme.com">jane@acme.com</a>';
+    assert.equal(renderArticleBody(html, 'text/html').body, 'jane@acme.com');
+  });
+
+  it('decodes named, decimal and hex entities', () => {
+    const html = '<p>Gr&uuml;&szlig;e &amp; Dank &#8364; &#x1F600;</p>';
+    assert.equal(renderArticleBody(html, 'text/html').body, 'Grüße & Dank € 😀');
+  });
+
+  it('drops scripts, styles and inline images', () => {
+    const html = '<style>p{color:red}</style><script>alert(1)</script><p>Text</p><img src="cid:1">';
+    assert.equal(renderArticleBody(html, 'text/html').body, 'Text');
+  });
+
+  it('trims padding and never runs up more than one blank line', () => {
+    const html = '<div>  a  </div>\n\n\n<div>   </div><div>   </div><div>   </div><div>  b  </div>';
+    const body = renderArticleBody(html, 'text/html').body;
+    // An empty div is a paragraph break, so one blank line is expected — but a
+    // run of them must not survive as vertical whitespace.
+    assert.equal(body, 'a\n\nb');
+    assert.equal(body, body.trim(), 'no leading or trailing whitespace');
+    assert.ok(!/\n{3,}/.test(body), 'no runs of blank lines');
+    assert.ok(!/[ \t]{2,}/.test(body), 'no runs of spaces');
+  });
+
+  /** A pasted screenshot with no accompanying text — real, and easy to render blank. */
+  it('says so when an image-only body has no text at all', () => {
+    const html =
+      '<img style="max-width:100%" src="/api/v1/ticket_attachment/34/106/150?view=inline"><div><br></div>';
+    assert.equal(
+      renderArticleBody(html, 'text/html').body,
+      '[no text content — 1 inline image(s), see attachments]',
+    );
+  });
+
+  it('handles a missing or empty body', () => {
+    assert.equal(renderArticleBody(undefined, 'text/html').body, '');
+    assert.equal(renderArticleBody('', 'text/html').body, '');
+    assert.equal(renderArticleBody('<div><br></div>', 'text/html').body, '');
+  });
+});
+
+describe('summarizeArticle', () => {
+  const article = {
+    id: 7,
+    ticket_id: 3,
+    content_type: 'text/html',
+    body: `Hello there<blockquote>old</blockquote>${SIGNATURE_DIV}Regards</div>`,
+  };
+
+  it('renders bodies as text by default and says so', () => {
+    const summary = summarizeArticle(article);
+    assert.equal(summary.body, 'Hello there');
+    assert.equal(summary.content_type, 'text/plain');
+    assert.deepEqual(summary.body_omitted, ['quoted_reply', 'signature']);
+  });
+
+  it('keeps the original markup and content type for html', () => {
+    const summary = summarizeArticle(article, { bodyFormat: 'html' });
+    assert.equal(summary.body, article.body);
+    assert.equal(summary.content_type, 'text/html');
+    assert.equal(summary.body_omitted, undefined, 'nothing is dropped in html mode');
+  });
+
+  it('truncates against the rendered length, not the markup length', () => {
+    const long = {
+      ...article,
+      body: `<p>${'x'.repeat(500)}</p><blockquote>${'q'.repeat(9000)}</blockquote>`,
+    };
+    const summary = summarizeArticle(long, { maxBodyChars: 4000 });
+    // The quote is gone, so 500 characters of real text survive untruncated.
+    assert.equal(summary.body, 'x'.repeat(500));
+  });
+
+  it('omits body_omitted when nothing was removed', () => {
+    const summary = summarizeArticle({ id: 1, content_type: 'text/plain', body: 'plain' });
+    assert.equal(summary.body_omitted, undefined);
+  });
+});

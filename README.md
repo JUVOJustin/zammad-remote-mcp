@@ -479,6 +479,29 @@ Write tools default to the safe option: articles are created as internal notes, 
 customer unless `type: "email"` and `internal: false` are set deliberately. Destructive tools carry
 `destructiveHint` and require an explicit `confirm: true`.
 
+### Article bodies
+
+Zammad stores most email articles as `text/html`, where the markup dwarfs the message. Every tool
+that returns an article renders the body as plain text by default and drops two things:
+
+- the quoted reply (`<blockquote>`) — in a ticket thread that text is already present as an earlier
+  article, so repeating it once per reply is duplication;
+- the signature block, located by the marker Zammad itself emits
+  (`<span class="js-signatureMarker">`, `data-signature`).
+
+Quotes are removed first and the signature is then located in what remains, because a customer's
+reply often quotes our own outgoing mail *including* its signature marker — cutting at the first
+marker found would truncate at that copy instead of at their own signature.
+
+Signatures with no Zammad marker, such as a foreign sender's legal footer, are left alone.
+Recognising those means matching on wording, which is not reliable enough to risk cutting real
+content.
+
+Across 377 articles from a live instance this cut 2.04M characters of stored body to 290K (−86%),
+and the share of articles hitting the 4000-character cap fell from 43% to 5% — the truncation that
+otherwise makes a model re-fetch the same article in full. `body_omitted` on each article records
+what was dropped, and `body_format: "html"` returns the stored markup untouched.
+
 ---
 
 ## HTTP endpoints

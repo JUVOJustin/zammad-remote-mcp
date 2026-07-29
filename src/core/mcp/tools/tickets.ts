@@ -22,6 +22,16 @@ const onBehalfOf = z
   .optional()
   .describe('Perform the action as another Zammad user (login, email or ID). Requires admin privileges.');
 
+/** Shared by every tool that returns article bodies — see zammad/article-body.ts. */
+const bodyFormat = z
+  .enum(['text', 'html'])
+  .default('text')
+  .describe(
+    'How article bodies are rendered. `text` (default) converts HTML to plain text and drops the quoted reply ' +
+      'and the signature block, which removes most of the payload without losing the message. `html` returns the ' +
+      'stored markup untouched.',
+  );
+
 const attachmentSchema = z.object({
   filename: z.string().min(1),
   data: z.string().min(1).describe('Base64-encoded file content.'),
@@ -191,6 +201,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       .default(20)
       .describe('Most recent N articles to include.'),
     article_body_chars: z.number().int().positive().max(50_000).default(4000),
+    body_format: bodyFormat,
     include_tags: z.boolean().default(true),
     include_links: z.boolean().default(false).describe('Include linked tickets (child/parent/normal).'),
     on_behalf_of: onBehalfOf,
@@ -201,8 +212,12 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
     {
       title: 'Get a Zammad ticket',
       description:
-        'Fetch one ticket by ID or by ticket number, optionally with its articles, tags and links. Association names ' +
-        'are resolved, so the result shows "open" rather than a state ID.',
+        'Fetch one ticket by ID or by ticket number, together with its articles, tags and links. Association names ' +
+        'are resolved, so the result shows "open" rather than a state ID.\n\n' +
+        'The conversation is included by default — there is no need to follow up with ' +
+        'zammad_list_ticket_articles unless `articles_note` says articles were left out. Article bodies are ' +
+        'rendered as plain text with the quoted reply and signature removed; pass `body_format: "html"` for the ' +
+        'original markup.',
       inputSchema: getTicketInput.shape,
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
@@ -226,9 +241,12 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
         );
         const list = Array.isArray(articles) ? articles : [];
         payload.article_count = list.length;
-        payload.articles = list
-          .slice(-input.article_limit)
-          .map((a) => summarizeArticle(a, { maxBodyChars: input.article_body_chars }));
+        payload.articles = list.slice(-input.article_limit).map((a) =>
+          summarizeArticle(a, {
+            maxBodyChars: input.article_body_chars,
+            bodyFormat: input.body_format,
+          }),
+        );
         if (list.length > input.article_limit) {
           payload.articles_note = `Showing the ${input.article_limit} most recent of ${list.length} articles.`;
         }
