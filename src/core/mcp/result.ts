@@ -128,20 +128,22 @@ export interface ArticleLike {
 }
 
 /**
- * `maxBodyChars` is off unless asked for. The old 4000-character default was
- * calibrated against stored HTML, whose bodies had a median of 1736 characters
- * and a 90th percentile of 13177 — it fired on 43% of articles. Rendered
- * Markdown has a median of 389 and a 99th percentile of 4511, so the same
- * threshold now sits above p99: measured across the seven largest tickets it
- * saved 391 characters in total, 0.2%, while truncating exactly the longest and
- * most informative articles — the ones a model then re-fetches. `article_limit`
- * still bounds how many articles come back, which is the volume that matters.
+ * A compact article row: the fields a model needs to read a conversation, with
+ * association names in place of IDs.
+ *
+ * Bodies are not truncated. Zammad's own API returns the stored body in full,
+ * and the 4000-character cap this used to apply was calibrated against that
+ * stored HTML — median 1736 characters, 90th percentile 13177, so it fired on
+ * 43% of articles. Rendered Markdown has a median of 389, which puts the same
+ * threshold above the 99th percentile: across the seven largest tickets on a
+ * live instance it saved 391 characters in total, 0.2%, while cutting the few
+ * longest articles off mid-sentence. `article_limit` bounds how many articles
+ * come back, which is the volume that actually matters.
  */
 export function summarizeArticle(
   article: ArticleLike,
-  options: { maxBodyChars?: number; bodyFormat?: BodyFormat } = {},
+  options: { bodyFormat?: BodyFormat } = {},
 ): Record<string, unknown> {
-  const limit = options.maxBodyChars;
   const format = options.bodyFormat ?? 'markdown';
   const rendered = renderArticleBody(article.body, article.content_type, format);
   const body = rendered.body || undefined;
@@ -160,10 +162,7 @@ export function summarizeArticle(
     created_by: article.created_by ?? article.created_by_id,
     // Report what the model is actually reading, not how Zammad stored it.
     content_type: format === 'html' ? article.content_type : 'text/markdown',
-    body:
-      body && limit !== undefined && body.length > limit
-        ? `${body.slice(0, limit)}\n…[truncated, ${body.length} chars total]`
-        : body,
+    body,
     body_omitted: rendered.omitted,
     attachments: article.attachments?.map((a) =>
       compact({

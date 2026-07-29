@@ -249,24 +249,19 @@ describe('summarizeArticle', () => {
     assert.equal(summary.body_omitted, undefined, 'nothing is dropped in html mode');
   });
 
-  it('truncates against the rendered length, not the markup length', () => {
+  it('reports the rendered body, not the markup it came from', () => {
     const long = {
       ...article,
       body: `<p>${'x'.repeat(500)}</p><blockquote>${'q'.repeat(9000)}</blockquote>`,
     };
-    const summary = summarizeArticle(long, { maxBodyChars: 4000 });
-    // The quote is gone, so 500 characters of real text survive untruncated.
-    assert.equal(summary.body, 'x'.repeat(500));
+    // 9500 characters of stored markup, 500 characters of message.
+    assert.equal(summarizeArticle(long).body, 'x'.repeat(500));
   });
 
-  it('does not truncate unless asked', () => {
-    // The old 4000-character default was calibrated against stored HTML and fired
-    // on 43% of articles; against rendered Markdown it sits above p99.
+  /** Zammad's own API returns the stored body in full; so does this. */
+  it('never truncates the body', () => {
     const long = { id: 2, content_type: 'text/html', body: `<p>${'x'.repeat(9000)}</p>` };
     assert.equal(summarizeArticle(long).body, 'x'.repeat(9000));
-    const capped = summarizeArticle(long, { maxBodyChars: 100 }) as { body: string };
-    assert.ok(capped.body.startsWith('x'.repeat(100)));
-    assert.ok(capped.body.includes('truncated, 9000 chars total'));
   });
 
   it('omits body_omitted when nothing was removed', () => {

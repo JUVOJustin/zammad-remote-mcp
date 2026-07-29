@@ -26,16 +26,6 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
   const listInput = z.object({
     ticket_id: z.number().int().positive(),
     limit: z.number().int().positive().max(200).default(50),
-    body_chars: z
-      .number()
-      .int()
-      .positive()
-      .max(200_000)
-      .optional()
-      .describe(
-        'Truncate article bodies to this length. Off by default — rendered bodies have a median of a few hundred ' +
-          'characters, so truncating mostly costs the long articles their ending. Set it only to bound a runaway thread.',
-      ),
     body_format: bodyFormat,
     include_internal: z.boolean().default(true),
     output: z.enum(['summary', 'full']).default('summary'),
@@ -47,7 +37,7 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
       title: "List a Zammad ticket's articles",
       description:
         'The full conversation on a ticket, oldest first. Bodies are rendered as Markdown with the quoted reply ' +
-        'and signature removed, and truncated at `body_chars` so a long thread stays readable.',
+        'and signature removed. Bodies are returned in full, as Zammad stores them.',
       inputSchema: listInput.shape,
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
@@ -69,22 +59,13 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
         articles:
           input.output === 'full'
             ? limited.map((a) => withRenderedBody(a, input.body_format))
-            : limited.map((a) =>
-                summarizeArticle(a, { maxBodyChars: input.body_chars, bodyFormat: input.body_format }),
-              ),
+            : limited.map((a) => summarizeArticle(a, { bodyFormat: input.body_format })),
       });
     }),
   );
 
   const getArticleInput = z.object({
     article_id: z.number().int().positive(),
-    body_chars: z
-      .number()
-      .int()
-      .positive()
-      .max(200_000)
-      .optional()
-      .describe('Truncate the body to this length. Off by default.'),
     body_format: bodyFormat,
   });
 
@@ -106,10 +87,7 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
         { expand: true },
       );
       return jsonResult({
-        article: summarizeArticle(article, {
-          maxBodyChars: input.body_chars,
-          bodyFormat: input.body_format,
-        }),
+        article: summarizeArticle(article, { bodyFormat: input.body_format }),
         raw_article: withRenderedBody(article, input.body_format),
       });
     }),

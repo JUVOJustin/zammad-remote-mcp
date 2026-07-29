@@ -232,16 +232,6 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       .max(200)
       .default(20)
       .describe('Most recent N articles to include.'),
-    article_body_chars: z
-      .number()
-      .int()
-      .positive()
-      .max(200_000)
-      .optional()
-      .describe(
-        'Truncate article bodies to this length. Off by default — rendered bodies have a median of a few hundred ' +
-          'characters, so truncating mostly costs the long articles their ending. Set it only to bound a runaway thread.',
-      ),
     body_format: bodyFormat,
     include_tags: z.boolean().default(true),
     include_links: z.boolean().default(false).describe('Include linked tickets (child/parent/normal).'),
@@ -279,12 +269,9 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
         );
         const list = Array.isArray(articles) ? articles : [];
         payload.article_count = list.length;
-        payload.articles = list.slice(-input.article_limit).map((a) =>
-          summarizeArticle(a, {
-            maxBodyChars: input.article_body_chars,
-            bodyFormat: input.body_format,
-          }),
-        );
+        payload.articles = list
+          .slice(-input.article_limit)
+          .map((a) => summarizeArticle(a, { bodyFormat: input.body_format }));
         if (list.length > input.article_limit) {
           payload.articles_note = `Showing the ${input.article_limit} most recent of ${list.length} articles.`;
         }
