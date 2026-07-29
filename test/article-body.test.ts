@@ -384,3 +384,84 @@ describe('presentTicket', () => {
     assert.ok(!('referencing_checklists' in out));
   });
 });
+
+/**
+ * The shapes these guard against were all introduced together and all passed
+ * the suite as it stood, so each one is pinned by its own case.
+ */
+describe('presented shapes, regressions', () => {
+  /**
+   * Zammad resolves association names only when a request passed `expand=true`.
+   * A response without it carries `state_id: 4` and no `state`, so dropping the
+   * id by name would leave the caller with neither.
+   */
+  it('keeps a numeric id when its name is not there', () => {
+    const unexpanded = {
+      id: 26909,
+      number: '8126901',
+      title: 'ZG: Error in Workflow',
+      state_id: 4,
+      group_id: 1,
+      owner_id: 381,
+      customer_id: 470,
+    };
+    const out = presentTicket(unexpanded);
+    assert.equal(out.state_id, 4, 'without a state name the id has to survive');
+    assert.equal(out.group_id, 1);
+    assert.equal(out.owner_id, 381);
+    assert.equal(out.customer_id, 470);
+  });
+
+  it('still drops the id once the name is there', () => {
+    const expanded = { id: 1, state: 'closed', state_id: 4, group: 'Users', group_id: 1 };
+    const out = presentTicket(expanded);
+    assert.equal(out.state, 'closed');
+    assert.equal(out.state_id, undefined);
+    assert.equal(out.group_id, undefined);
+  });
+
+  /**
+   * `present` copies Zammad's raw attachment array first, so an empty filtered
+   * list must clear it rather than be skipped — otherwise the raw entries, and
+   * the alternative part itself, survive.
+   */
+  it('does not leak raw attachments when every one is filtered out', () => {
+    const article = {
+      id: 7,
+      content_type: 'text/plain',
+      body: 'text',
+      attachments: [
+        {
+          id: 9,
+          store_file_id: 77,
+          filename: 'message.html',
+          size: '100',
+          preferences: { 'content-alternative': true },
+        },
+      ],
+    };
+    const out = presentArticle(article);
+    assert.equal(out.attachments, undefined, 'the alternative part is not an attachment');
+  });
+
+  it('keeps real attachments and strips their internals', () => {
+    const article = {
+      id: 7,
+      content_type: 'text/plain',
+      body: 'text',
+      attachments: [
+        { id: 9, store_file_id: 77, filename: 'message.html', preferences: { 'content-alternative': true } },
+        {
+          id: 10,
+          store_file_id: 78,
+          filename: 'invoice.pdf',
+          size: '2048',
+          preferences: { 'Mime-Type': 'application/pdf' },
+        },
+      ],
+    };
+    const out = presentArticle(article) as { attachments: Array<Record<string, unknown>> };
+    assert.equal(out.attachments.length, 1);
+    assert.deepEqual(out.attachments[0], { id: 10, filename: 'invoice.pdf', size: '2048' });
+  });
+});

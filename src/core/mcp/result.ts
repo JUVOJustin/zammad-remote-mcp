@@ -110,24 +110,10 @@ const TICKET_NOISE = new Set([
   'ticket_time_accounting_ids',
   'ticket_time_accounting',
   'article_ids',
-  'create_article_type_id',
-  'create_article_sender_id',
-  'state_id',
-  'priority_id',
-  'group_id',
-  'owner_id',
-  'customer_id',
-  'organization_id',
-  'updated_by_id',
-  'created_by_id',
 ]);
 
 /** The same idea for an article: resolved twins, and mail transport internals. */
 const ARTICLE_NOISE = new Set([
-  'type_id',
-  'sender_id',
-  'updated_by_id',
-  'created_by_id',
   'origin_by_id',
   'message_id',
   'message_id_md5',
@@ -150,11 +136,29 @@ function present(object: Record<string, unknown>, noise: Set<string>): Record<st
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(object)) {
     if (noise.has(key)) continue;
+    if (isResolvedTwin(key, object)) continue;
     if (value === undefined || value === null || value === '') continue;
     if (Array.isArray(value) && value.length === 0) continue;
     out[key] = value;
   }
   return out;
+}
+
+/**
+ * Is this a `<field>_id` whose `<field>` is already spelled out beside it?
+ *
+ * Checked against the object rather than listed by name, because the number is
+ * only redundant when the name is actually there. Zammad resolves associations
+ * only when the request passed `expand=true`; a response without it carries
+ * `state_id: 4` and no `state` at all, and dropping the id by name would leave
+ * the caller with neither. Every write endpoint here asks for `expand`, so this
+ * should not come up — but it costs one lookup to make that a preference rather
+ * than a requirement.
+ */
+function isResolvedTwin(key: string, object: Record<string, unknown>): boolean {
+  if (!key.endsWith('_id')) return false;
+  const resolved = object[key.slice(0, -'_id'.length)];
+  return resolved !== undefined && resolved !== null && resolved !== '';
 }
 
 export function presentTicket(ticket: TicketLike): Record<string, unknown> {
@@ -200,12 +204,19 @@ export function presentArticle(
   if (rendered.omitted.length > 0) out.body_omitted = rendered.omitted;
   if (out.body === undefined) delete out.body;
 
-  if (Array.isArray(article.attachments)) {
-    const attachments = article.attachments
-      .filter((a) => !isAlternativePart(a))
-      .map((a) => present({ id: a.id, filename: a.filename, size: a.size }, new Set()));
-    if (attachments.length > 0) out.attachments = attachments;
-  }
+  // Assigned unconditionally: `present` has already copied Zammad's raw array
+  // into `out`, so skipping this when the filtered list is empty would leave the
+  // unfiltered one — store_file_id, preferences and the alternative part that
+  // was supposed to disappear. An article whose only attachment is message.html
+  // is the ordinary case, not an edge one.
+  const attachments = Array.isArray(article.attachments)
+    ? article.attachments
+        .filter((a) => !isAlternativePart(a))
+        .map((a) => present({ id: a.id, filename: a.filename, size: a.size }, new Set()))
+    : [];
+  if (attachments.length > 0) out.attachments = attachments;
+  else delete out.attachments;
+
   return out;
 }
 

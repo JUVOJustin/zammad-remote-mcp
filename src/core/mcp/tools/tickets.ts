@@ -338,9 +338,15 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
         );
         const list = Array.isArray(articles) ? articles : [];
         payload.article_count = list.length;
+        // `output` governs the articles too. Asking for the full shape because
+        // an article field is missing would otherwise change only the ticket.
         payload.articles = list
           .slice(-input.article_limit)
-          .map((a) => presentArticle(a, { bodyFormat: input.body_format }));
+          .map((a) =>
+            input.output === 'full'
+              ? withRenderedBody(a, input.body_format)
+              : presentArticle(a, { bodyFormat: input.body_format }),
+          );
         if (list.length > input.article_limit) {
           payload.articles_note = `Showing the ${input.article_limit} most recent of ${list.length} articles.`;
         }
@@ -473,7 +479,12 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
         article: articlePayload(input.article),
       };
 
-      const ticket = await context.client.post<Record<string, unknown>>('/api/v1/tickets', body);
+      // `expand` is what makes Zammad resolve state/group/owner/customer to names.
+      // Without it the response carries only the numeric ids, which the presented
+      // shape drops — the caller would get a ticket with no associations at all.
+      const ticket = await context.client.post<Record<string, unknown>>('/api/v1/tickets', body, {
+        expand: true,
+      });
       return jsonResult({ created: true, ticket: presentTicket(ticket) });
     }),
   );
@@ -520,7 +531,9 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
         throw new ToolInputError('Nothing to update — pass at least one attribute or an article.');
       }
 
-      const ticket = await context.client.put<Record<string, unknown>>(`/api/v1/tickets/${id}`, body);
+      const ticket = await context.client.put<Record<string, unknown>>(`/api/v1/tickets/${id}`, body, {
+        expand: true,
+      });
       return jsonResult({ updated: true, ticket: presentTicket(ticket) });
     }),
   );
@@ -544,9 +557,11 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       const input = titleInput.parse(rawInput);
       const context = withOnBehalfOf(base, input.on_behalf_of);
       const id = await resolveTicketId(context, input);
-      const ticket = await context.client.put<Record<string, unknown>>(`/api/v1/tickets/${id}/update_title`, {
-        title: input.title,
-      });
+      const ticket = await context.client.put<Record<string, unknown>>(
+        `/api/v1/tickets/${id}/update_title`,
+        { title: input.title },
+        { expand: true },
+      );
       return jsonResult({ updated: true, ticket: presentTicket(ticket) });
     }),
   );
@@ -579,9 +594,8 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       const customerId = input.customer_id ?? (await context.lookup.resolveUsers([input.customer!]))[0];
       const ticket = await context.client.put<Record<string, unknown>>(
         `/api/v1/tickets/${id}/update_customer`,
-        {
-          customer_id: customerId,
-        },
+        { customer_id: customerId },
+        { expand: true },
       );
       return jsonResult({ updated: true, ticket: presentTicket(ticket) });
     }),
