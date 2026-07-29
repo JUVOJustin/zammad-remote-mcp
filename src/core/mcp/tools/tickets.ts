@@ -1,11 +1,20 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { ToolInputError } from '../../util/errors.js';
+import type { BodyFormat } from '../../zammad/article-body.js';
 import { asTopLevel, leaf } from '../../zammad/selector.js';
 import type { Vocabulary } from '../../zammad/vocabulary.js';
 import type { ToolContext } from '../context.js';
 import { withOnBehalfOf } from '../context.js';
-import { guard, jsonResult, summarizeArticle, summarizeTicket, textResult } from '../result.js';
+import type { ArticleLike } from '../result.js';
+import {
+  guard,
+  jsonResult,
+  summarizeArticle,
+  summarizeTicket,
+  textResult,
+  withRenderedBody,
+} from '../result.js';
 import { singleReferenceField } from './enrich.js';
 
 /**
@@ -21,6 +30,17 @@ const onBehalfOf = z
   .string()
   .optional()
   .describe('Perform the action as another Zammad user (login, email or ID). Requires admin privileges.');
+
+/** Shared by every tool that returns article bodies — see zammad/article-body.ts. */
+const bodyFormat = z
+  .enum(['markdown', 'html'])
+  .default('markdown')
+  .describe(
+    'How article bodies are rendered. Leave this at `markdown`: the body comes back as Markdown with the quoted ' +
+      'reply and the signature removed. Headings, lists, tables, links and quotes keep their meaning, and nothing a ' +
+      'reader needs is lost. Pass `html` only when the markup itself is the subject, such as tracing a broken email ' +
+      'template or a rendering problem; it returns the stored HTML in full and is several times larger.',
+  );
 
 const attachmentSchema = z.object({
   filename: z.string().min(1),
@@ -140,6 +160,28 @@ function articlePayload(article: z.infer<typeof articleInputSchema>): Record<str
   return payload;
 }
 
+interface HistoryResponse {
+  assets?: { TicketArticle?: Record<string, ArticleLike> };
+  [key: string]: unknown;
+}
+
+/**
+ * Zammad bundles every article it references into the history response, bodies
+ * and all. On a 103-article ticket that made the payload 1.1M characters, more
+ * than half of it stored markup — enough to exhaust a context window on what is
+ * meant to be an audit trail.
+ */
+function renderHistoryAssets(history: HistoryResponse, format: BodyFormat): unknown {
+  const articles = history?.assets?.TicketArticle;
+  if (!articles || format === 'html') return history;
+
+  const rendered: Record<string, unknown> = {};
+  for (const [id, article] of Object.entries(articles)) {
+    rendered[id] = withRenderedBody(article, format);
+  }
+  return { ...history, assets: { ...history.assets, TicketArticle: rendered } };
+}
+
 /** Resolve a ticket number to its ID via the search endpoint. */
 async function resolveTicketId(
   context: ToolContext,
@@ -190,7 +232,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       .max(200)
       .default(20)
       .describe('Most recent N articles to include.'),
-    article_body_chars: z.number().int().positive().max(50_000).default(4000),
+    body_format: bodyFormat,
     include_tags: z.boolean().default(true),
     include_links: z.boolean().default(false).describe('Include linked tickets (child/parent/normal).'),
     on_behalf_of: onBehalfOf,
@@ -201,8 +243,9 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
     {
       title: 'Get a Zammad ticket',
       description:
-        'Fetch one ticket by ID or by ticket number, optionally with its articles, tags and links. Association names ' +
-        'are resolved, so the result shows "open" rather than a state ID.',
+        'Fetch one ticket by ID or by ticket number, optionally with its articles, tags and links. Association ' +
+        'names are resolved, so the result shows "open" rather than a state ID. Article bodies are rendered as ' +
+        'Markdown with the quoted reply and signature removed; pass `body_format: "html"` for the original markup.',
       inputSchema: getTicketInput.shape,
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
@@ -228,7 +271,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
         payload.article_count = list.length;
         payload.articles = list
           .slice(-input.article_limit)
-          .map((a) => summarizeArticle(a, { maxBodyChars: input.article_body_chars }));
+          .map((a) => summarizeArticle(a, { bodyFormat: input.body_format }));
         if (list.length > input.article_limit) {
           payload.articles_note = `Showing the ${input.article_limit} most recent of ${list.length} articles.`;
         }
@@ -616,6 +659,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
   // ------------------------------------------------------------- ancillary ---
   const historyInput = z.object({
     ticket_id: z.number().int().positive(),
+    body_format: bodyFormat,
     on_behalf_of: onBehalfOf,
   });
 
@@ -625,15 +669,16 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       title: "Get a Zammad ticket's change history",
       description:
         'Every recorded change on a ticket — who changed what, when. Useful for auditing and for ' +
-        'reconstructing how a ticket reached its current state.',
+        'reconstructing how a ticket reached its current state. Zammad bundles the referenced articles into the ' +
+        'response, so their bodies are rendered here too.',
       inputSchema: historyInput.shape,
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     guard(async (rawInput) => {
       const input = historyInput.parse(rawInput);
       const context = withOnBehalfOf(base, input.on_behalf_of);
-      const history = await context.client.get<unknown>(`/api/v1/ticket_history/${input.ticket_id}`);
-      return jsonResult(history);
+      const history = await context.client.get<HistoryResponse>(`/api/v1/ticket_history/${input.ticket_id}`);
+      return jsonResult(renderHistoryAssets(history, input.body_format));
     }),
   );
 

@@ -9,6 +9,22 @@
   // fuller standard library, and it costs nothing.
   "compatibility_flags": ["nodejs_compat"],
 
+  // Article bodies are rendered to Markdown with turndown, which needs a DOM.
+  // Turndown ships two builds and picks between them with a `browser` field in
+  // its package.json: the browser build uses the host's `document`, the other
+  // bundles domino, a DOM written in plain JavaScript. Wrangler bundles with
+  // esbuild's browser platform, so without these two aliases it picks the
+  // browser build — and workerd has no `document`, so every article read fails
+  // at runtime with "document is not defined".
+  //
+  // Aliasing both the entry point and domino (which the same `browser` field
+  // otherwise stubs out with `false`) forces the self-contained build. It adds
+  // roughly 100 KB gzipped to the worker and needs no DOM of its own.
+  "alias": {
+    "turndown": "turndown/lib/turndown.cjs.js",
+    "@mixmark-io/domino": "@mixmark-io/domino/lib/index.js"
+  },
+
   "observability": { "enabled": true },
 
   // Lookup cache. Without it each isolate caches in its own memory and re-reads

@@ -1,5 +1,6 @@
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { describeError } from '../util/errors.js';
+import { type BodyFormat, renderArticleBody } from '../zammad/article-body.js';
 
 /**
  * Tool results are returned as pretty-printed JSON inside a single text block.
@@ -126,12 +127,26 @@ export interface ArticleLike {
   [key: string]: unknown;
 }
 
+/**
+ * A compact article row: the fields a model needs to read a conversation, with
+ * association names in place of IDs.
+ *
+ * Bodies are not truncated. Zammad's own API returns the stored body in full,
+ * and the 4000-character cap this used to apply was calibrated against that
+ * stored HTML — median 1736 characters, 90th percentile 13177, so it fired on
+ * 43% of articles. Rendered Markdown has a median of 389, which puts the same
+ * threshold above the 99th percentile: across the seven largest tickets on a
+ * live instance it saved 391 characters in total, 0.2%, while cutting the few
+ * longest articles off mid-sentence. `article_limit` bounds how many articles
+ * come back, which is the volume that actually matters.
+ */
 export function summarizeArticle(
   article: ArticleLike,
-  options: { maxBodyChars?: number } = {},
+  options: { bodyFormat?: BodyFormat } = {},
 ): Record<string, unknown> {
-  const limit = options.maxBodyChars ?? 4000;
-  const body = typeof article.body === 'string' ? article.body : undefined;
+  const format = options.bodyFormat ?? 'markdown';
+  const rendered = renderArticleBody(article.body, article.content_type, format);
+  const body = rendered.body || undefined;
 
   return compact({
     id: article.id,
@@ -145,19 +160,47 @@ export function summarizeArticle(
     internal: article.internal,
     created_at: article.created_at,
     created_by: article.created_by ?? article.created_by_id,
-    content_type: article.content_type,
-    body:
-      body && body.length > limit
-        ? `${body.slice(0, limit)}\n…[truncated, ${body.length} chars total]`
-        : body,
+    // Report what the model is actually reading, not how Zammad stored it.
+    content_type: format === 'html' ? article.content_type : 'text/markdown',
+    body,
+    body_omitted: rendered.omitted,
     attachments: article.attachments?.map((a) =>
       compact({
         id: a.id,
         filename: a.filename,
-        size: (a.preferences as Record<string, unknown> | undefined)?.['Content-Type'] ? a.size : a.size,
+        size: a.size,
       }),
     ),
   });
+}
+
+/**
+ * The complete stored article, but with its body rendered.
+ *
+ * For the paths that hand back the whole Zammad object instead of a summary.
+ * Zammad has no representation negotiation of its own — `content_type`
+ * describes what is stored, and asking for `text/plain` via a query parameter
+ * or an Accept header returns byte-identical HTML — so a body that leaves this
+ * server un-rendered cannot be fixed anywhere downstream. Attaching the
+ * rendering to `body_format` rather than to the summary keeps one switch in
+ * charge of the representation, whichever shape the caller asked for.
+ *
+ * Unlike `summarizeArticle` this does not truncate: the caller asked for the
+ * whole object, and the rendering has already removed most of the volume.
+ */
+export function withRenderedBody(
+  article: ArticleLike,
+  format: BodyFormat = 'markdown',
+): Record<string, unknown> {
+  if (format === 'html') return { ...article };
+
+  const rendered = renderArticleBody(article.body, article.content_type, format);
+  return {
+    ...article,
+    body: rendered.body,
+    content_type: 'text/markdown',
+    ...(rendered.omitted.length > 0 ? { body_omitted: rendered.omitted } : {}),
+  };
 }
 
 export function summarizeUser(user: Record<string, unknown>): Record<string, unknown> {

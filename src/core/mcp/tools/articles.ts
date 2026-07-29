@@ -4,24 +4,29 @@ import { bytesToBase64, textFromBytes } from '../../util/base64.js';
 import { rewriteMentions } from '../../zammad/mentions.js';
 import type { ToolContext } from '../context.js';
 import { withOnBehalfOf } from '../context.js';
-import { guard, jsonResult, summarizeArticle, textResult } from '../result.js';
+import { guard, jsonResult, summarizeArticle, textResult, withRenderedBody } from '../result.js';
 
 const onBehalfOf = z
   .string()
   .optional()
   .describe('Perform the action as another Zammad user (login, email or ID). Requires admin privileges.');
 
+/** Shared by every tool that returns article bodies — see zammad/article-body.ts. */
+const bodyFormat = z
+  .enum(['markdown', 'html'])
+  .default('markdown')
+  .describe(
+    'How article bodies are rendered. Leave this at `markdown`: the body comes back as Markdown with the quoted ' +
+      'reply and the signature removed. Headings, lists, tables, links and quotes keep their meaning, and nothing a ' +
+      'reader needs is lost. Pass `html` only when the markup itself is the subject, such as tracing a broken email ' +
+      'template or a rendering problem; it returns the stored HTML in full and is several times larger.',
+  );
+
 export function registerArticleTools(server: McpServer, base: ToolContext): void {
   const listInput = z.object({
     ticket_id: z.number().int().positive(),
     limit: z.number().int().positive().max(200).default(50),
-    body_chars: z
-      .number()
-      .int()
-      .positive()
-      .max(50_000)
-      .default(4000)
-      .describe('Truncate article bodies to this length.'),
+    body_format: bodyFormat,
     include_internal: z.boolean().default(true),
     output: z.enum(['summary', 'full']).default('summary'),
   });
@@ -31,8 +36,8 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
     {
       title: "List a Zammad ticket's articles",
       description:
-        'The full conversation on a ticket, oldest first. Bodies are truncated by default so a long thread stays ' +
-        'readable; raise `body_chars` when the full text matters.',
+        'The full conversation on a ticket, oldest first. Bodies are rendered as Markdown with the quoted reply ' +
+        'and signature removed. Bodies are returned in full, as Zammad stores them.',
       inputSchema: listInput.shape,
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
@@ -53,11 +58,16 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
         returned: limited.length,
         articles:
           input.output === 'full'
-            ? limited
-            : limited.map((a) => summarizeArticle(a, { maxBodyChars: input.body_chars })),
+            ? limited.map((a) => withRenderedBody(a, input.body_format))
+            : limited.map((a) => summarizeArticle(a, { bodyFormat: input.body_format })),
       });
     }),
   );
+
+  const getArticleInput = z.object({
+    article_id: z.number().int().positive(),
+    body_format: bodyFormat,
+  });
 
   server.registerTool(
     'zammad_get_article',
@@ -66,27 +76,19 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
       description:
         'Fetch one article by ID with its full body and attachment metadata. Attachment IDs from here are what ' +
         'zammad_download_attachment takes.',
-      inputSchema: {
-        article_id: z.number().int().positive(),
-        body_chars: z.number().int().positive().max(200_000).default(50_000),
-      },
+      inputSchema: getArticleInput.shape,
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     guard(async (rawInput) => {
-      const input = z
-        .object({
-          article_id: z.number().int().positive(),
-          body_chars: z.number().int().positive().max(200_000).default(50_000),
-        })
-        .parse(rawInput);
+      const input = getArticleInput.parse(rawInput);
 
       const article = await base.client.get<Record<string, unknown>>(
         `/api/v1/ticket_articles/${input.article_id}`,
         { expand: true },
       );
       return jsonResult({
-        article: summarizeArticle(article, { maxBodyChars: input.body_chars }),
-        raw_article: article,
+        article: summarizeArticle(article, { bodyFormat: input.body_format }),
+        raw_article: withRenderedBody(article, input.body_format),
       });
     }),
   );
@@ -112,6 +114,7 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
     in_reply_to: z.string().optional(),
     time_unit: z.string().optional(),
     origin_by: z.string().optional().describe('Credit the article to another user (login/email).'),
+    body_format: bodyFormat,
     attachments: z
       .array(
         z.object({
@@ -170,7 +173,7 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
       const article = await context.client.post<Record<string, unknown>>('/api/v1/ticket_articles', body);
       return jsonResult({
         created: true,
-        article: summarizeArticle(article),
+        article: summarizeArticle(article, { bodyFormat: input.body_format }),
         ...(mentions.mentioned.length > 0 ? { mentioned: mentions.mentioned } : {}),
       });
     }),
@@ -181,6 +184,7 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
     internal: z.boolean().optional().describe('Toggle customer visibility.'),
     subject: z.string().optional(),
     body: z.string().optional(),
+    body_format: bodyFormat,
     on_behalf_of: onBehalfOf,
   });
 
@@ -206,7 +210,10 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
         `/api/v1/ticket_articles/${input.article_id}`,
         body,
       );
-      return jsonResult({ updated: true, article: summarizeArticle(article) });
+      return jsonResult({
+        updated: true,
+        article: summarizeArticle(article, { bodyFormat: input.body_format }),
+      });
     }),
   );
 
