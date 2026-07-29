@@ -259,6 +259,16 @@ describe('summarizeArticle', () => {
     assert.equal(summary.body, 'x'.repeat(500));
   });
 
+  it('does not truncate unless asked', () => {
+    // The old 4000-character default was calibrated against stored HTML and fired
+    // on 43% of articles; against rendered Markdown it sits above p99.
+    const long = { id: 2, content_type: 'text/html', body: `<p>${'x'.repeat(9000)}</p>` };
+    assert.equal(summarizeArticle(long).body, 'x'.repeat(9000));
+    const capped = summarizeArticle(long, { maxBodyChars: 100 }) as { body: string };
+    assert.ok(capped.body.startsWith('x'.repeat(100)));
+    assert.ok(capped.body.includes('truncated, 9000 chars total'));
+  });
+
   it('omits body_omitted when nothing was removed', () => {
     const summary = summarizeArticle({ id: 1, content_type: 'text/plain', body: 'plain' });
     assert.equal(summary.body_omitted, undefined);

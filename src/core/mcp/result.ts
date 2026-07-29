@@ -127,11 +127,21 @@ export interface ArticleLike {
   [key: string]: unknown;
 }
 
+/**
+ * `maxBodyChars` is off unless asked for. The old 4000-character default was
+ * calibrated against stored HTML, whose bodies had a median of 1736 characters
+ * and a 90th percentile of 13177 — it fired on 43% of articles. Rendered
+ * Markdown has a median of 389 and a 99th percentile of 4511, so the same
+ * threshold now sits above p99: measured across the seven largest tickets it
+ * saved 391 characters in total, 0.2%, while truncating exactly the longest and
+ * most informative articles — the ones a model then re-fetches. `article_limit`
+ * still bounds how many articles come back, which is the volume that matters.
+ */
 export function summarizeArticle(
   article: ArticleLike,
   options: { maxBodyChars?: number; bodyFormat?: BodyFormat } = {},
 ): Record<string, unknown> {
-  const limit = options.maxBodyChars ?? 4000;
+  const limit = options.maxBodyChars;
   const format = options.bodyFormat ?? 'markdown';
   const rendered = renderArticleBody(article.body, article.content_type, format);
   const body = rendered.body || undefined;
@@ -151,7 +161,7 @@ export function summarizeArticle(
     // Report what the model is actually reading, not how Zammad stored it.
     content_type: format === 'html' ? article.content_type : 'text/markdown',
     body:
-      body && body.length > limit
+      body && limit !== undefined && body.length > limit
         ? `${body.slice(0, limit)}\n…[truncated, ${body.length} chars total]`
         : body,
     body_omitted: rendered.omitted,

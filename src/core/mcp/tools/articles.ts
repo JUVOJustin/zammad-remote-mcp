@@ -30,9 +30,12 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
       .number()
       .int()
       .positive()
-      .max(50_000)
-      .default(4000)
-      .describe('Truncate article bodies to this length.'),
+      .max(200_000)
+      .optional()
+      .describe(
+        'Truncate article bodies to this length. Off by default — rendered bodies have a median of a few hundred ' +
+          'characters, so truncating mostly costs the long articles their ending. Set it only to bound a runaway thread.',
+      ),
     body_format: bodyFormat,
     include_internal: z.boolean().default(true),
     output: z.enum(['summary', 'full']).default('summary'),
@@ -75,7 +78,13 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
 
   const getArticleInput = z.object({
     article_id: z.number().int().positive(),
-    body_chars: z.number().int().positive().max(200_000).default(50_000),
+    body_chars: z
+      .number()
+      .int()
+      .positive()
+      .max(200_000)
+      .optional()
+      .describe('Truncate the body to this length. Off by default.'),
     body_format: bodyFormat,
   });
 
