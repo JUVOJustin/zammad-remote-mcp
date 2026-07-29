@@ -23,7 +23,7 @@ version and a single publish.
 
 | Import | What it is |
 |---|---|
-| `zammad-remote-mcp` | the runtime-agnostic core: Hono app, MCP server, 39 tools, Zammad client, search builder, OAuth proxy. Uses only WebCrypto, `fetch`, `TextEncoder` and `atob`/`btoa`. |
+| `zammad-remote-mcp` | the runtime-agnostic core: Hono app, MCP server, 38 tools, Zammad client, search builder, OAuth proxy. Uses only WebCrypto, `fetch`, `TextEncoder` and `atob`/`btoa`. |
 | `zammad-remote-mcp/node` | Node host: `.env` loading, socket binding, signal handling |
 | `examples/cloudflare` | a deployable Workers host, ~60 lines, consuming the package like any other dependency |
 | `npx zammad-remote-mcp` | the CLI — the Node host with a shebang |
@@ -459,7 +459,7 @@ server — Zammad withholds some catalogues entirely:
 `zammad_search_global`
 
 **Tickets** — `zammad_get_ticket`, `zammad_list_tickets`, `zammad_create_ticket`,
-`zammad_update_ticket`, `zammad_update_ticket_title`, `zammad_update_ticket_customer`,
+`zammad_update_ticket`, `zammad_update_ticket_customer`,
 `zammad_delete_ticket`, `zammad_merge_tickets`, `zammad_mass_update_tickets`, `zammad_apply_macro`,
 `zammad_get_ticket_history`, `zammad_get_related_tickets`, `zammad_get_customer_tickets`,
 `zammad_get_recent_tickets`
