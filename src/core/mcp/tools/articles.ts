@@ -127,6 +127,7 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
     in_reply_to: z.string().optional(),
     time_unit: z.string().optional(),
     origin_by: z.string().optional().describe('Credit the article to another user (login/email).'),
+    body_format: bodyFormat,
     attachments: z
       .array(
         z.object({
@@ -185,7 +186,7 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
       const article = await context.client.post<Record<string, unknown>>('/api/v1/ticket_articles', body);
       return jsonResult({
         created: true,
-        article: summarizeArticle(article),
+        article: summarizeArticle(article, { bodyFormat: input.body_format }),
         ...(mentions.mentioned.length > 0 ? { mentioned: mentions.mentioned } : {}),
       });
     }),
@@ -196,6 +197,7 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
     internal: z.boolean().optional().describe('Toggle customer visibility.'),
     subject: z.string().optional(),
     body: z.string().optional(),
+    body_format: bodyFormat,
     on_behalf_of: onBehalfOf,
   });
 
@@ -221,7 +223,10 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
         `/api/v1/ticket_articles/${input.article_id}`,
         body,
       );
-      return jsonResult({ updated: true, article: summarizeArticle(article) });
+      return jsonResult({
+        updated: true,
+        article: summarizeArticle(article, { bodyFormat: input.body_format }),
+      });
     }),
   );
 
