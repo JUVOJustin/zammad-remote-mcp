@@ -505,6 +505,26 @@ and the share of articles hitting the 4000-character cap fell from 43% to 2% —
 otherwise makes a model re-fetch the same article in full. `body_omitted` on each article records
 what was dropped, and `body_format: "html"` returns the stored markup untouched.
 
+### Ticket and article shape
+
+Both come back as everything Zammad returned, minus two things: its internal bookkeeping (the SLA
+counters, `preferences`, checklist plumbing) and the numeric twin of any field already spelled out —
+`expand=true` returns `group_id: 1` *and* `group: "Users"`, so the number says the same thing twice,
+and the name is what the write tools address anyway.
+
+This is a denylist, deliberately. The curated field list it replaced kept twelve ticket fields and
+dropped thirty-six, which was fine until an instance added an Object Manager attribute: the field
+vanished on read while `custom_fields` still accepted it on write. Naming what to discard means
+anything unknown survives.
+
+On a real ticket that is 729 characters where the previous shape — a summary plus the untouched
+object beside it — was 2936. Article rows land within 2% of the old curated list while carrying
+every field it dropped.
+
+`output: "full"` returns Zammad's object untouched, for the case where something is missing that
+should be there. It replaces the `raw_ticket` and `raw_article` fields, which used to be attached to
+every response whether or not anyone wanted them.
+
 Conversion uses [turndown](https://github.com/mixmark-io/turndown). On Node it works as shipped; on
 Cloudflare Workers it needs its bundled DOM rather than the host's, which the `alias` block in
 `examples/cloudflare/wrangler.jsonc` arranges — see the comment there for why.

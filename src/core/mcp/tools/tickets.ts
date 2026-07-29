@@ -7,14 +7,7 @@ import type { Vocabulary } from '../../zammad/vocabulary.js';
 import type { ToolContext } from '../context.js';
 import { withOnBehalfOf } from '../context.js';
 import type { ArticleLike } from '../result.js';
-import {
-  guard,
-  jsonResult,
-  summarizeArticle,
-  summarizeTicket,
-  textResult,
-  withRenderedBody,
-} from '../result.js';
+import { guard, jsonResult, presentArticle, presentTicket, textResult, withRenderedBody } from '../result.js';
 import { singleReferenceField } from './enrich.js';
 
 /**
@@ -30,6 +23,20 @@ const onBehalfOf = z
   .string()
   .optional()
   .describe('Perform the action as another Zammad user (login, email or ID). Requires admin privileges.');
+
+/**
+ * Whether the caller wants the presented object or Zammad's untouched one.
+ * `full` is the escape hatch the old `raw_ticket` field used to be, except it
+ * is now asked for rather than always attached.
+ */
+const outputShape = z
+  .enum(['summary', 'full'])
+  .default('summary')
+  .describe(
+    'Leave this at `summary`: it is everything Zammad returned minus its internal bookkeeping and the numeric ' +
+      'twins of fields that are already spelled out (`group_id` next to `group`). Custom fields are included. ' +
+      '`full` returns the untouched Zammad object and is only worth it when a field is missing that should be there.',
+  );
 
 /** Shared by every tool that returns article bodies — see zammad/article-body.ts. */
 const bodyFormat = z
@@ -233,6 +240,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       .default(20)
       .describe('Most recent N articles to include.'),
     body_format: bodyFormat,
+    output: outputShape,
     include_tags: z.boolean().default(true),
     include_links: z.boolean().default(false).describe('Include linked tickets (child/parent/normal).'),
     on_behalf_of: onBehalfOf,
@@ -260,7 +268,9 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       const ticket = await context.client.get<Record<string, unknown>>(`/api/v1/tickets/${id}`, {
         expand: true,
       });
-      const payload: Record<string, unknown> = { ticket: summarizeTicket(ticket), raw_ticket: ticket };
+      const payload: Record<string, unknown> = {
+        ticket: input.output === 'full' ? ticket : presentTicket(ticket),
+      };
 
       if (input.include_articles) {
         const articles = await context.client.get<Record<string, unknown>[]>(
@@ -271,7 +281,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
         payload.article_count = list.length;
         payload.articles = list
           .slice(-input.article_limit)
-          .map((a) => summarizeArticle(a, { bodyFormat: input.body_format }));
+          .map((a) => presentArticle(a, { bodyFormat: input.body_format }));
         if (list.length > input.article_limit) {
           payload.articles_note = `Showing the ${input.article_limit} most recent of ${list.length} articles.`;
         }
@@ -336,7 +346,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
             ? rows.map((t) => t.id)
             : input.output === 'full'
               ? rows
-              : rows.map(summarizeTicket),
+              : rows.map(presentTicket),
       });
     }),
   );
@@ -405,7 +415,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       };
 
       const ticket = await context.client.post<Record<string, unknown>>('/api/v1/tickets', body);
-      return jsonResult({ created: true, ticket: summarizeTicket(ticket), raw_ticket: ticket });
+      return jsonResult({ created: true, ticket: presentTicket(ticket) });
     }),
   );
 
@@ -452,7 +462,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       }
 
       const ticket = await context.client.put<Record<string, unknown>>(`/api/v1/tickets/${id}`, body);
-      return jsonResult({ updated: true, ticket: summarizeTicket(ticket), raw_ticket: ticket });
+      return jsonResult({ updated: true, ticket: presentTicket(ticket) });
     }),
   );
 
@@ -478,7 +488,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       const ticket = await context.client.put<Record<string, unknown>>(`/api/v1/tickets/${id}/update_title`, {
         title: input.title,
       });
-      return jsonResult({ updated: true, ticket: summarizeTicket(ticket) });
+      return jsonResult({ updated: true, ticket: presentTicket(ticket) });
     }),
   );
 
@@ -514,7 +524,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
           customer_id: customerId,
         },
       );
-      return jsonResult({ updated: true, ticket: summarizeTicket(ticket) });
+      return jsonResult({ updated: true, ticket: presentTicket(ticket) });
     }),
   );
 

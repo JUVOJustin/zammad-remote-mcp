@@ -4,12 +4,26 @@ import { bytesToBase64, textFromBytes } from '../../util/base64.js';
 import { rewriteMentions } from '../../zammad/mentions.js';
 import type { ToolContext } from '../context.js';
 import { withOnBehalfOf } from '../context.js';
-import { guard, jsonResult, summarizeArticle, textResult, withRenderedBody } from '../result.js';
+import { guard, jsonResult, presentArticle, textResult, withRenderedBody } from '../result.js';
 
 const onBehalfOf = z
   .string()
   .optional()
   .describe('Perform the action as another Zammad user (login, email or ID). Requires admin privileges.');
+
+/**
+ * Whether the caller wants the presented object or Zammad's untouched one.
+ * `full` is the escape hatch the old `raw_article` field used to be, except it
+ * is now asked for rather than always attached.
+ */
+const outputShape = z
+  .enum(['summary', 'full'])
+  .default('summary')
+  .describe(
+    'Leave this at `summary`: it is everything Zammad returned minus its internal bookkeeping and the numeric ' +
+      'twins of fields that are already spelled out (`sender_id` next to `sender`). Custom fields are included. ' +
+      '`full` returns the untouched Zammad object and is only worth it when a field is missing that should be there.',
+  );
 
 /** Shared by every tool that returns article bodies — see zammad/article-body.ts. */
 const bodyFormat = z
@@ -28,7 +42,7 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
     limit: z.number().int().positive().max(200).default(50),
     body_format: bodyFormat,
     include_internal: z.boolean().default(true),
-    output: z.enum(['summary', 'full']).default('summary'),
+    output: outputShape,
   });
 
   server.registerTool(
@@ -59,7 +73,7 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
         articles:
           input.output === 'full'
             ? limited.map((a) => withRenderedBody(a, input.body_format))
-            : limited.map((a) => summarizeArticle(a, { bodyFormat: input.body_format })),
+            : limited.map((a) => presentArticle(a, { bodyFormat: input.body_format })),
       });
     }),
   );
@@ -67,6 +81,7 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
   const getArticleInput = z.object({
     article_id: z.number().int().positive(),
     body_format: bodyFormat,
+    output: outputShape,
   });
 
   server.registerTool(
@@ -87,8 +102,10 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
         { expand: true },
       );
       return jsonResult({
-        article: summarizeArticle(article, { bodyFormat: input.body_format }),
-        raw_article: withRenderedBody(article, input.body_format),
+        article:
+          input.output === 'full'
+            ? withRenderedBody(article, input.body_format)
+            : presentArticle(article, { bodyFormat: input.body_format }),
       });
     }),
   );
@@ -173,7 +190,7 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
       const article = await context.client.post<Record<string, unknown>>('/api/v1/ticket_articles', body);
       return jsonResult({
         created: true,
-        article: summarizeArticle(article, { bodyFormat: input.body_format }),
+        article: presentArticle(article, { bodyFormat: input.body_format }),
         ...(mentions.mentioned.length > 0 ? { mentioned: mentions.mentioned } : {}),
       });
     }),
@@ -212,7 +229,7 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
       );
       return jsonResult({
         updated: true,
-        article: summarizeArticle(article, { bodyFormat: input.body_format }),
+        article: presentArticle(article, { bodyFormat: input.body_format }),
       });
     }),
   );

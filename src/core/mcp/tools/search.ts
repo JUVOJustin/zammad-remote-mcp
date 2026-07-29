@@ -16,7 +16,7 @@ import {
 import type { Vocabulary } from '../../zammad/vocabulary.js';
 import type { ToolContext } from '../context.js';
 import { withOnBehalfOf } from '../context.js';
-import { guard, jsonResult, summarizeOrganization, summarizeTicket, summarizeUser } from '../result.js';
+import { guard, jsonResult, presentTicket, summarizeOrganization, summarizeUser } from '../result.js';
 import { referenceField } from './enrich.js';
 
 /**
@@ -136,7 +136,7 @@ export function registerSearchTools(server: McpServer, base: ToolContext, vocabu
           ? rows.map((row) => row.id)
           : input.output === 'full'
             ? rows
-            : rows.map((row) => summarizeTicket(row));
+            : rows.map((row) => presentTicket(row));
 
       return jsonResult({
         total_count: total,
