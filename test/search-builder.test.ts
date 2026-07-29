@@ -410,3 +410,74 @@ describe('lucene helpers', () => {
     assert.equal(L.combine('AND', ['a:1 OR a:2', 'b:3']), '(a:1 OR a:2) AND b:3');
   });
 });
+
+/**
+ * Zammad has two selector backends and they disagree about numbers.
+ *
+ * With Elasticsearch configured, `condition` runs through the search-index
+ * selector, which answers 500 for `is greater than`, `is less than` and both
+ * `or equal to` forms — verified on a live instance against article_count,
+ * time_unit, the SLA minute columns and ids alike. Without Elasticsearch the SQL
+ * selector handles all four correctly. So an exact count goes to the selector
+ * either way, and a range goes to the Elasticsearch query under `fulltext`.
+ */
+describe('article_count', () => {
+  it('matches one count with `is`', async () => {
+    const built = await buildTicketSearch(parse({ article_count: 8 }), lookup());
+    const found = findLeaf(built.condition, 'ticket.article_count');
+    assert.equal(found?.operator, 'is');
+    assert.equal(found?.value, 8);
+  });
+
+  it('matches a list with `is any of`', async () => {
+    const built = await buildTicketSearch(parse({ article_count: [8, 9, 10] }), lookup());
+    const found = findLeaf(built.condition, 'ticket.article_count');
+    assert.equal(found?.operator, 'is any of');
+    assert.deepEqual(found?.value, [8, 9, 10]);
+  });
+
+  it('compares in the selector when Elasticsearch is not in play', async () => {
+    const built = await buildTicketSearch(parse({ article_count: { min: 8, max: 10 } }), lookup());
+    const root = built.condition as { conditions: Array<{ conditions?: unknown[] }> };
+    const flat = JSON.stringify(root);
+    assert.ok(flat.includes('is greater than or equal to'), 'min becomes >=');
+    assert.ok(flat.includes('is less than or equal to'), 'max becomes <=');
+    assert.equal(built.query, undefined, 'nothing needs the query here');
+  });
+
+  /**
+   * The case that used to answer 500: a range on an Elasticsearch instance.
+   * `fulltext` is the one strategy guaranteed to reach Elasticsearch, so the
+   * range is compiled into the query and must not also reach the selector.
+   */
+  it('puts a range into the query under fulltext, not the selector', async () => {
+    const built = await buildTicketSearch(
+      parse({ article_count: { min: 8, max: 10 }, strategy: 'fulltext' }),
+      lookup(),
+    );
+    assert.ok(built.query?.includes('article_count:[8 TO 10]'), `got ${built.query}`);
+    assert.equal(findLeaf(built.condition, 'ticket.article_count'), undefined);
+  });
+
+  it('leaves an open end open', async () => {
+    const built = await buildTicketSearch(
+      parse({ article_count: { min: 8 }, strategy: 'fulltext' }),
+      lookup(),
+    );
+    assert.ok(built.query?.includes('article_count:[8 TO *]'), `got ${built.query}`);
+  });
+
+  it('keeps exact counts in the query too under fulltext', async () => {
+    const one = await buildTicketSearch(parse({ article_count: 8, strategy: 'fulltext' }), lookup());
+    assert.ok(one.query?.includes('article_count:8'), `got ${one.query}`);
+    const many = await buildTicketSearch(parse({ article_count: [8, 9], strategy: 'fulltext' }), lookup());
+    assert.ok(many.query?.includes('article_count'), `got ${many.query}`);
+  });
+
+  it('rejects counts that cannot exist', () => {
+    assert.throws(() => parse({ article_count: -1 }));
+    assert.throws(() => parse({ article_count: 1.5 }));
+    assert.throws(() => parse({ article_count: [] }));
+    assert.throws(() => parse({ article_count: {} }), 'a range needs at least one bound');
+  });
+});

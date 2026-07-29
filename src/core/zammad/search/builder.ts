@@ -486,14 +486,28 @@ function applyTemporal(input: SearchTicketsInput, collector: FilterCollector): v
     );
   }
 
-  if (input.article_count) {
-    const { min, max, equals } = input.article_count;
-    const parts: ConditionLeaf[] = [];
-    if (equals !== undefined) parts.push(leaf('ticket.article_count', 'is', equals));
-    if (min !== undefined) parts.push(leaf('ticket.article_count', 'is greater than or equal to', min));
-    if (max !== undefined) parts.push(leaf('ticket.article_count', 'is less than or equal to', max));
-    if (parts.length === 0) throw new ToolInputError('article_count needs at least one of min/max/equals.');
-    collector.add(and(...parts), `article_count ${JSON.stringify(input.article_count)}`);
+  if (input.article_count !== undefined) {
+    const counts = input.article_count;
+    if (typeof counts === 'number') {
+      collector.add(leaf('ticket.article_count', 'is', counts), `article_count is ${counts}`);
+    } else if (Array.isArray(counts)) {
+      collector.add(
+        leaf('ticket.article_count', 'is any of', counts),
+        `article_count is any of ${JSON.stringify(counts)}`,
+      );
+    } else if (input.strategy !== 'fulltext') {
+      // The SQL selector compares fine; the Elasticsearch one answers 500. Only
+      // `fulltext` is guaranteed to reach Elasticsearch, so that is where the
+      // range is compiled into the query instead — see `buildFulltextQuery`.
+      const parts: ConditionLeaf[] = [];
+      if (counts.min !== undefined) {
+        parts.push(leaf('ticket.article_count', 'is greater than or equal to', counts.min));
+      }
+      if (counts.max !== undefined) {
+        parts.push(leaf('ticket.article_count', 'is less than or equal to', counts.max));
+      }
+      collector.add(and(...parts), `article_count range ${JSON.stringify(counts)}`);
+    }
   }
 }
 
@@ -596,6 +610,7 @@ function buildFulltextQuery(input: SearchTicketsInput, explanation: string[]): s
   const must: Array<string | undefined> = [
     input.text ? L.freeText(input.text, { prefixWildcard: true }) : undefined,
     input.number ? L.anyOf('number', asArray(input.number)) : undefined,
+    articleCountClause(input),
     input.title ? luceneStringClause('title', input.title) : undefined,
     ...fulltextRefClauses(input),
     ...fulltextDateClauses(input),
@@ -618,6 +633,23 @@ function buildFulltextQuery(input: SearchTicketsInput, explanation: string[]): s
   const query = L.combine('AND', [positive, ...negative]);
   if (query) explanation.push(`elasticsearch query_string: ${query}`);
   return query;
+}
+
+/**
+ * `article_count` as an Elasticsearch clause.
+ *
+ * A range has to come through here: with Elasticsearch configured, Zammad runs
+ * `condition` through its search-index selector, which rejects every numeric
+ * comparison with a 500. Elasticsearch itself handles the range, and the counts
+ * line up — on a live instance `>=8` matched 387 tickets, `>8` matched 325, and
+ * exactly 8 matched 62.
+ */
+function articleCountClause(input: SearchTicketsInput): string | undefined {
+  const counts = input.article_count;
+  if (counts === undefined) return undefined;
+  if (typeof counts === 'number') return L.fieldClause('article_count', String(counts));
+  if (Array.isArray(counts)) return L.anyOf('article_count', counts.map(String));
+  return L.range('article_count', counts.min, counts.max);
 }
 
 /** Association and tag clauses for the fulltext strategy. */
