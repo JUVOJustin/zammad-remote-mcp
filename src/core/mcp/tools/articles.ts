@@ -44,9 +44,7 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
       title: "List a Zammad ticket's articles",
       description:
         'The full conversation on a ticket, oldest first. Bodies are rendered as Markdown with the quoted reply ' +
-        'and signature removed, and truncated at `body_chars` so a long thread stays readable. Note that ' +
-        'zammad_get_ticket already returns the articles — reach for this tool when you need more of them than it ' +
-        'returned, or when you want to exclude internal notes.',
+        'and signature removed, and truncated at `body_chars` so a long thread stays readable.',
       inputSchema: listInput.shape,
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
@@ -87,8 +85,7 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
       title: 'Get a single Zammad article',
       description:
         'Fetch one article by ID with its full body and attachment metadata. Attachment IDs from here are what ' +
-        'zammad_download_attachment takes. Only needed when an article came back truncated elsewhere — ' +
-        'zammad_get_ticket already returns the bodies.',
+        'zammad_download_attachment takes.',
       inputSchema: getArticleInput.shape,
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
@@ -104,6 +101,7 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
           maxBodyChars: input.body_chars,
           bodyFormat: input.body_format,
         }),
+        raw_article: article,
       });
     }),
   );

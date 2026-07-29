@@ -213,12 +213,9 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
     {
       title: 'Get a Zammad ticket',
       description:
-        'Fetch one ticket by ID or by ticket number, together with its articles, tags and links. Association names ' +
-        'are resolved, so the result shows "open" rather than a state ID.\n\n' +
-        'The conversation is included by default — there is no need to follow up with ' +
-        'zammad_list_ticket_articles unless `articles_note` says articles were left out. Article bodies are ' +
-        'rendered as Markdown with the quoted reply and signature removed; pass `body_format: "html"` for the ' +
-        'original markup.',
+        'Fetch one ticket by ID or by ticket number, optionally with its articles, tags and links. Association ' +
+        'names are resolved, so the result shows "open" rather than a state ID. Article bodies are rendered as ' +
+        'Markdown with the quoted reply and signature removed; pass `body_format: "html"` for the original markup.',
       inputSchema: getTicketInput.shape,
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
