@@ -81,29 +81,95 @@ export interface TicketLike {
 }
 
 /**
- * A compact ticket row. Association *names* are preferred over IDs because they
- * are what a model needs to reason about the result; the numeric ID is kept so
- * follow-up calls can address the ticket precisely.
+ * Fields Zammad returns on a ticket that no reader needs.
+ *
+ * Two groups. The SLA counters and checklist plumbing are bookkeeping the web
+ * interface uses and nothing else. The `*_id` entries are the other half of a
+ * pair: with `expand=true` Zammad returns `group_id: 1` *and* `group: "Users"`
+ * side by side, so keeping the number as well says the same thing twice — and
+ * the name is what both a model and this server's own write tools address.
+ *
+ * `article_ids` goes for the same reason: `article_count` already says how
+ * many, and the articles themselves are written out beside it.
  */
-export function summarizeTicket(ticket: TicketLike): Record<string, unknown> {
-  return compact({
-    id: ticket.id,
-    number: ticket.number,
-    title: ticket.title,
-    state: ticket.state ?? ticket.state_id,
-    priority: ticket.priority ?? ticket.priority_id,
-    group: ticket.group ?? ticket.group_id,
-    owner: ticket.owner ?? ticket.owner_id,
-    customer: ticket.customer ?? ticket.customer_id,
-    organization: ticket.organization ?? ticket.organization_id,
-    created_at: ticket.created_at,
-    updated_at: ticket.updated_at,
-    close_at: ticket.close_at,
-    pending_time: ticket.pending_time,
-    escalation_at: ticket.escalation_at,
-    article_count: ticket.article_count,
-    tags: ticket.tags,
-  });
+const TICKET_NOISE = new Set([
+  'first_response_escalation_at',
+  'first_response_in_min',
+  'first_response_diff_in_min',
+  'close_escalation_at',
+  'close_in_min',
+  'close_diff_in_min',
+  'update_escalation_at',
+  'update_in_min',
+  'update_diff_in_min',
+  'last_owner_update_at',
+  'preferences',
+  'checklist_id',
+  'referencing_checklist_ids',
+  'referencing_checklists',
+  'ticket_time_accounting_ids',
+  'ticket_time_accounting',
+  'article_ids',
+]);
+
+/** The same idea for an article: resolved twins, and mail transport internals. */
+const ARTICLE_NOISE = new Set([
+  'origin_by_id',
+  'message_id',
+  'message_id_md5',
+  'in_reply_to',
+  'reply_to',
+  'detected_language',
+  'preferences',
+  // Derived rather than copied: `presentArticle` renders the body, reports the
+  // content type it actually produced, and filters the attachment list. Letting
+  // the generic pass copy Zammad's versions first would mean removing them
+  // again, and forgetting to is how the raw attachment array once survived.
+  'body',
+  'content_type',
+  'attachments',
+]);
+
+/**
+ * Everything Zammad sent, minus what nobody reads.
+ *
+ * A denylist rather than a hand-picked field list. The list this replaced kept
+ * twelve fields and dropped thirty-six, which was fine until an instance added
+ * an Object Manager attribute: the field simply vanished on read while the
+ * write tools still accepted it. Naming what to discard means anything unknown
+ * survives, which is the behaviour a general-purpose server needs.
+ */
+function present(object: Record<string, unknown>, noise: Set<string>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(object)) {
+    if (noise.has(key)) continue;
+    if (isResolvedTwin(key, object)) continue;
+    if (value === undefined || value === null || value === '') continue;
+    if (Array.isArray(value) && value.length === 0) continue;
+    out[key] = value;
+  }
+  return out;
+}
+
+/**
+ * Is this a `<field>_id` whose `<field>` is already spelled out beside it?
+ *
+ * Checked against the object rather than listed by name, because the number is
+ * only redundant when the name is actually there. Zammad resolves associations
+ * only when the request passed `expand=true`; a response without it carries
+ * `state_id: 4` and no `state` at all, and dropping the id by name would leave
+ * the caller with neither. Every write endpoint here asks for `expand`, so this
+ * should not come up — but it costs one lookup to make that a preference rather
+ * than a requirement.
+ */
+function isResolvedTwin(key: string, object: Record<string, unknown>): boolean {
+  if (!key.endsWith('_id')) return false;
+  const resolved = object[key.slice(0, -'_id'.length)];
+  return resolved !== undefined && resolved !== null && resolved !== '';
+}
+
+export function presentTicket(ticket: TicketLike): Record<string, unknown> {
+  return present(ticket, TICKET_NOISE);
 }
 
 export interface ArticleLike {
@@ -128,50 +194,45 @@ export interface ArticleLike {
 }
 
 /**
- * A compact article row: the fields a model needs to read a conversation, with
- * association names in place of IDs.
- *
- * Bodies are not truncated. Zammad's own API returns the stored body in full,
- * and the 4000-character cap this used to apply was calibrated against that
- * stored HTML — median 1736 characters, 90th percentile 13177, so it fired on
- * 43% of articles. Rendered Markdown has a median of 389, which puts the same
- * threshold above the 99th percentile: across the seven largest tickets on a
- * live instance it saved 391 characters in total, 0.2%, while cutting the few
- * longest articles off mid-sentence. `article_limit` bounds how many articles
- * come back, which is the volume that actually matters.
+ * An article as a model should read it: everything Zammad sent minus the noise,
+ * with the body rendered. See `presentTicket` for why this is a denylist.
  */
-export function summarizeArticle(
+export function presentArticle(
   article: ArticleLike,
   options: { bodyFormat?: BodyFormat } = {},
 ): Record<string, unknown> {
   const format = options.bodyFormat ?? 'markdown';
   const rendered = renderArticleBody(article.body, article.content_type, format);
-  const body = rendered.body || undefined;
+  const out = present(article, ARTICLE_NOISE);
 
-  return compact({
-    id: article.id,
-    ticket_id: article.ticket_id,
-    type: article.type ?? article.type_id,
-    sender: article.sender ?? article.sender_id,
-    from: article.from,
-    to: article.to,
-    cc: article.cc,
-    subject: article.subject,
-    internal: article.internal,
-    created_at: article.created_at,
-    created_by: article.created_by ?? article.created_by_id,
-    // Report what the model is actually reading, not how Zammad stored it.
-    content_type: format === 'html' ? article.content_type : 'text/markdown',
-    body,
-    body_omitted: rendered.omitted,
-    attachments: article.attachments?.map((a) =>
-      compact({
-        id: a.id,
-        filename: a.filename,
-        size: a.size,
-      }),
-    ),
-  });
+  if (rendered.body) out.body = rendered.body;
+  // Report what the model is actually reading, not how Zammad stored it.
+  out.content_type = format === 'html' ? article.content_type : 'text/markdown';
+  if (rendered.omitted.length > 0) out.body_omitted = rendered.omitted;
+
+  const attachments = Array.isArray(article.attachments)
+    ? article.attachments
+        .filter((a) => !isAlternativePart(a))
+        .map((a) => present({ id: a.id, filename: a.filename, size: a.size }, new Set()))
+    : [];
+  if (attachments.length > 0) out.attachments = attachments;
+
+  return out;
+}
+
+/**
+ * `message.html` is not an attachment. When a mail arrives as multipart Zammad
+ * stores the HTML alternative as one, so every such article lists a file that is
+ * a copy of the body already printed beside it. Across 60 tickets that was 43%
+ * of all attachment entries.
+ *
+ * Inline images are left in place even though they are a similar share, because
+ * they are the only trace a pasted screenshot leaves once `<img>` is stripped
+ * from the body — an article whose body renders to nothing points at them.
+ */
+function isAlternativePart(attachment: Record<string, unknown>): boolean {
+  const preferences = attachment.preferences as Record<string, unknown> | undefined;
+  return preferences?.['content-alternative'] === true;
 }
 
 /**

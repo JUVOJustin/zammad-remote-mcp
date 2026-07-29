@@ -544,7 +544,10 @@ describe('mcp endpoint', () => {
     assert.equal(payload.created, true);
     assert.equal(payload.ticket.number, '67002');
 
-    const create = requests.find((r) => r.method === 'POST' && r.url === '/api/v1/tickets');
+    // The path carries `?expand=true`, so match the path rather than the whole URL.
+    const create = requests.find((r) => r.method === 'POST' && r.url.startsWith('/api/v1/tickets'));
+    assert.ok(create, 'the create request should have gone out');
+    assert.ok(create.url.includes('expand=true'), 'without expand the response has no association names');
     const body = create!.body as Record<string, any>;
     assert.equal(body.group, '1st Level', 'association names go through untouched');
     assert.equal(body.article.internal, true, 'articles must default to internal');

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { summarizeArticle, withRenderedBody } from '../src/core/mcp/result.js';
+import { presentArticle, presentTicket, withRenderedBody } from '../src/core/mcp/result.js';
 import { renderArticleBody } from '../src/core/zammad/article-body.js';
 
 /** Shapes taken from real articles on a live Zammad instance. */
@@ -227,7 +227,7 @@ describe('renderArticleBody', () => {
   });
 });
 
-describe('summarizeArticle', () => {
+describe('presentArticle', () => {
   const article = {
     id: 7,
     ticket_id: 3,
@@ -236,14 +236,14 @@ describe('summarizeArticle', () => {
   };
 
   it('renders bodies as markdown by default and says so', () => {
-    const summary = summarizeArticle(article);
+    const summary = presentArticle(article);
     assert.equal(summary.body, 'Hello there');
     assert.equal(summary.content_type, 'text/markdown');
     assert.deepEqual(summary.body_omitted, ['quoted_reply', 'signature']);
   });
 
   it('keeps the original markup and content type for html', () => {
-    const summary = summarizeArticle(article, { bodyFormat: 'html' });
+    const summary = presentArticle(article, { bodyFormat: 'html' });
     assert.equal(summary.body, article.body);
     assert.equal(summary.content_type, 'text/html');
     assert.equal(summary.body_omitted, undefined, 'nothing is dropped in html mode');
@@ -255,17 +255,17 @@ describe('summarizeArticle', () => {
       body: `<p>${'x'.repeat(500)}</p><blockquote>${'q'.repeat(9000)}</blockquote>`,
     };
     // 9500 characters of stored markup, 500 characters of message.
-    assert.equal(summarizeArticle(long).body, 'x'.repeat(500));
+    assert.equal(presentArticle(long).body, 'x'.repeat(500));
   });
 
   /** Zammad's own API returns the stored body in full; so does this. */
   it('never truncates the body', () => {
     const long = { id: 2, content_type: 'text/html', body: `<p>${'x'.repeat(9000)}</p>` };
-    assert.equal(summarizeArticle(long).body, 'x'.repeat(9000));
+    assert.equal(presentArticle(long).body, 'x'.repeat(9000));
   });
 
   it('omits body_omitted when nothing was removed', () => {
-    const summary = summarizeArticle({ id: 1, content_type: 'text/plain', body: 'plain' });
+    const summary = presentArticle({ id: 1, content_type: 'text/plain', body: 'plain' });
     assert.equal(summary.body_omitted, undefined);
   });
 });
@@ -316,5 +316,152 @@ describe('withRenderedBody', () => {
   it('omits body_omitted when nothing was removed', () => {
     const full = withRenderedBody({ id: 1, content_type: 'text/html', body: '<p>plain</p>' });
     assert.equal(full.body_omitted, undefined);
+  });
+});
+
+/**
+ * The reason the curated field lists were replaced. They kept twelve ticket
+ * fields and dropped thirty-six, which was fine until an instance added an
+ * Object Manager attribute: it vanished on read while the write tools still
+ * accepted it. A denylist cannot have that failure mode.
+ */
+describe('presentTicket', () => {
+  const ticket = {
+    id: 26909,
+    number: '8126901',
+    title: 'ZG: Error in Workflow',
+    state: 'closed',
+    state_id: 4,
+    group: 'Users',
+    group_id: 1,
+    owner: 'umar.janjua@citation.media',
+    owner_id: 381,
+    note: 'internal remark',
+    last_contact_at: '2026-04-16T11:56:37.931Z',
+    article_count: 47,
+    article_ids: [1, 2, 3],
+    first_response_in_min: null,
+    update_escalation_at: null,
+    preferences: { channel_id: 9 },
+    referencing_checklists: [],
+    // what an Object Manager attribute looks like on the wire
+    kundennummer: 'K-4711',
+    sla_stufe: 2,
+  };
+
+  it('keeps a field it has never heard of', () => {
+    const out = presentTicket(ticket);
+    assert.equal(out.kundennummer, 'K-4711');
+    assert.equal(out.sla_stufe, 2);
+  });
+
+  it('keeps the resolved name and drops its numeric twin', () => {
+    const out = presentTicket(ticket);
+    assert.equal(out.state, 'closed');
+    assert.equal(out.state_id, undefined);
+    assert.equal(out.group, 'Users');
+    assert.equal(out.group_id, undefined);
+    assert.equal(out.owner, 'umar.janjua@citation.media');
+    assert.equal(out.owner_id, undefined);
+  });
+
+  it('keeps content the old field list dropped', () => {
+    const out = presentTicket(ticket);
+    assert.equal(out.note, 'internal remark');
+    assert.equal(out.last_contact_at, '2026-04-16T11:56:37.931Z');
+  });
+
+  it('drops bookkeeping, and article_ids since the count and the articles are there', () => {
+    const out = presentTicket(ticket);
+    for (const key of ['first_response_in_min', 'update_escalation_at', 'preferences', 'article_ids']) {
+      assert.equal(out[key], undefined, `${key} should not survive`);
+    }
+    assert.equal(out.article_count, 47, 'the count stays');
+  });
+
+  it('drops nulls and empty collections', () => {
+    const out = presentTicket(ticket);
+    assert.ok(!('referencing_checklists' in out));
+  });
+});
+
+/**
+ * The shapes these guard against were all introduced together and all passed
+ * the suite as it stood, so each one is pinned by its own case.
+ */
+describe('presented shapes, regressions', () => {
+  /**
+   * Zammad resolves association names only when a request passed `expand=true`.
+   * A response without it carries `state_id: 4` and no `state`, so dropping the
+   * id by name would leave the caller with neither.
+   */
+  it('keeps a numeric id when its name is not there', () => {
+    const unexpanded = {
+      id: 26909,
+      number: '8126901',
+      title: 'ZG: Error in Workflow',
+      state_id: 4,
+      group_id: 1,
+      owner_id: 381,
+      customer_id: 470,
+    };
+    const out = presentTicket(unexpanded);
+    assert.equal(out.state_id, 4, 'without a state name the id has to survive');
+    assert.equal(out.group_id, 1);
+    assert.equal(out.owner_id, 381);
+    assert.equal(out.customer_id, 470);
+  });
+
+  it('still drops the id once the name is there', () => {
+    const expanded = { id: 1, state: 'closed', state_id: 4, group: 'Users', group_id: 1 };
+    const out = presentTicket(expanded);
+    assert.equal(out.state, 'closed');
+    assert.equal(out.state_id, undefined);
+    assert.equal(out.group_id, undefined);
+  });
+
+  /**
+   * `present` copies Zammad's raw attachment array first, so an empty filtered
+   * list must clear it rather than be skipped — otherwise the raw entries, and
+   * the alternative part itself, survive.
+   */
+  it('does not leak raw attachments when every one is filtered out', () => {
+    const article = {
+      id: 7,
+      content_type: 'text/plain',
+      body: 'text',
+      attachments: [
+        {
+          id: 9,
+          store_file_id: 77,
+          filename: 'message.html',
+          size: '100',
+          preferences: { 'content-alternative': true },
+        },
+      ],
+    };
+    const out = presentArticle(article);
+    assert.equal(out.attachments, undefined, 'the alternative part is not an attachment');
+  });
+
+  it('keeps real attachments and strips their internals', () => {
+    const article = {
+      id: 7,
+      content_type: 'text/plain',
+      body: 'text',
+      attachments: [
+        { id: 9, store_file_id: 77, filename: 'message.html', preferences: { 'content-alternative': true } },
+        {
+          id: 10,
+          store_file_id: 78,
+          filename: 'invoice.pdf',
+          size: '2048',
+          preferences: { 'Mime-Type': 'application/pdf' },
+        },
+      ],
+    };
+    const out = presentArticle(article) as { attachments: Array<Record<string, unknown>> };
+    assert.equal(out.attachments.length, 1);
+    assert.deepEqual(out.attachments[0], { id: 10, filename: 'invoice.pdf', size: '2048' });
   });
 });

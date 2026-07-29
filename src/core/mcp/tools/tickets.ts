@@ -7,14 +7,7 @@ import type { Vocabulary } from '../../zammad/vocabulary.js';
 import type { ToolContext } from '../context.js';
 import { withOnBehalfOf } from '../context.js';
 import type { ArticleLike } from '../result.js';
-import {
-  guard,
-  jsonResult,
-  summarizeArticle,
-  summarizeTicket,
-  textResult,
-  withRenderedBody,
-} from '../result.js';
+import { guard, jsonResult, presentArticle, presentTicket, textResult, withRenderedBody } from '../result.js';
 import { singleReferenceField } from './enrich.js';
 
 /**
@@ -30,6 +23,20 @@ const onBehalfOf = z
   .string()
   .optional()
   .describe('Perform the action as another Zammad user (login, email or ID). Requires admin privileges.');
+
+/**
+ * Whether the caller wants the presented object or Zammad's untouched one.
+ * `full` is the escape hatch the old `raw_ticket` field used to be, except it
+ * is now asked for rather than always attached.
+ */
+const outputShape = z
+  .enum(['summary', 'full'])
+  .default('summary')
+  .describe(
+    'Leave this at `summary`: it is everything Zammad returned minus its internal bookkeeping and the numeric ' +
+      'twins of fields that are already spelled out (`group_id` next to `group`). Custom fields are included. ' +
+      '`full` returns the untouched Zammad object and is only worth it when a field is missing that should be there.',
+  );
 
 /** Shared by every tool that returns article bodies — see zammad/article-body.ts. */
 const bodyFormat = z
@@ -76,23 +83,82 @@ const articleInputSchema = z.object({
   attachments: z.array(attachmentSchema).optional(),
 });
 
-/** Attributes shared by create and update. */
+/**
+ * Attributes shared by create and update.
+ *
+ * Every association takes a human identifier — a group name, a state name, an
+ * agent's email. Zammad resolves those itself, its controllers run each payload
+ * through `association_name_to_id_convert`, so no lookup happens here and the
+ * arguments read the way the result does. The `*_id` variants stay for the case
+ * where two records share a name and only a number is unambiguous.
+ *
+ * `organization` is the exception and has no name variant on purpose — see the
+ * comment on `organization_id`.
+ */
 const ticketAttributes = {
   title: z.string().min(1).optional(),
-  group: z.string().optional().describe('Group name, e.g. "1st Level". Use `group_id` for an exact ID.'),
-  group_id: z.number().int().positive().optional(),
-  state: z.string().optional().describe('State name, e.g. "open", "closed", "pending reminder".'),
-  state_id: z.number().int().positive().optional(),
-  priority: z.string().optional().describe('Priority name, e.g. "2 normal".'),
-  priority_id: z.number().int().positive().optional(),
-  owner: z.string().optional().describe('Agent login or email. Pass an empty string to unassign.'),
-  owner_id: z.number().int().min(1).optional().describe('Use 1 to unassign.'),
+  group: z
+    .string()
+    .optional()
+    .describe('Group name, e.g. "1st Level". `group_id` takes a numeric ID instead.'),
+  group_id: z.number().int().positive().optional().describe('Alternative to `group`, which takes a name.'),
+  state: z
+    .string()
+    .optional()
+    .describe(
+      'State name, e.g. "open", "closed", "pending reminder". `state_id` takes a numeric ID instead.',
+    ),
+  state_id: z.number().int().positive().optional().describe('Alternative to `state`, which takes a name.'),
+  priority: z
+    .string()
+    .optional()
+    .describe('Priority name, e.g. "2 normal". `priority_id` takes a numeric ID instead.'),
+  priority_id: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe('Alternative to `priority`, which takes a name.'),
+  owner: z
+    .string()
+    .optional()
+    .describe(
+      'Agent login or email. Pass an empty string to unassign. `owner_id` takes a numeric ID instead.',
+    ),
+  owner_id: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe('Alternative to `owner`, which takes a login or email. Use 1 to unassign.'),
   customer: z
     .string()
     .optional()
-    .describe('Customer login or email. Prefix with `guess:` to create the user if unknown.'),
-  customer_id: z.number().int().positive().optional(),
-  organization_id: z.number().int().positive().optional(),
+    .describe(
+      'Customer login or email. Prefix with `guess:` to create the user if unknown. `customer_id` takes a ' +
+        'numeric ID instead.',
+    ),
+  customer_id: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe('Alternative to `customer`, which takes a login or email.'),
+  // No `organization` counterpart: a ticket's organization is derived from its
+  // customer, and a name is silently ignored here. Verified against a live
+  // instance — passing one returns 201 with the organization unset, which is
+  // worse than an error. `organization_id` only picks between the organizations
+  // the customer already belongs to; it cannot assign an unrelated one.
+  organization_id: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe(
+      'Only for customers who belong to several organizations — it selects which one the ticket counts ' +
+        "against. A ticket's organization otherwise follows its customer automatically, so setting this to " +
+        'an organization the customer does not belong to has no effect.',
+    ),
   pending_time: z
     .string()
     .optional()
@@ -233,6 +299,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       .default(20)
       .describe('Most recent N articles to include.'),
     body_format: bodyFormat,
+    output: outputShape,
     include_tags: z.boolean().default(true),
     include_links: z.boolean().default(false).describe('Include linked tickets (child/parent/normal).'),
     on_behalf_of: onBehalfOf,
@@ -260,7 +327,9 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       const ticket = await context.client.get<Record<string, unknown>>(`/api/v1/tickets/${id}`, {
         expand: true,
       });
-      const payload: Record<string, unknown> = { ticket: summarizeTicket(ticket), raw_ticket: ticket };
+      const payload: Record<string, unknown> = {
+        ticket: input.output === 'full' ? ticket : presentTicket(ticket),
+      };
 
       if (input.include_articles) {
         const articles = await context.client.get<Record<string, unknown>[]>(
@@ -269,9 +338,15 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
         );
         const list = Array.isArray(articles) ? articles : [];
         payload.article_count = list.length;
+        // `output` governs the articles too. Asking for the full shape because
+        // an article field is missing would otherwise change only the ticket.
         payload.articles = list
           .slice(-input.article_limit)
-          .map((a) => summarizeArticle(a, { bodyFormat: input.body_format }));
+          .map((a) =>
+            input.output === 'full'
+              ? withRenderedBody(a, input.body_format)
+              : presentArticle(a, { bodyFormat: input.body_format }),
+          );
         if (list.length > input.article_limit) {
           payload.articles_note = `Showing the ${input.article_limit} most recent of ${list.length} articles.`;
         }
@@ -336,7 +411,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
             ? rows.map((t) => t.id)
             : input.output === 'full'
               ? rows
-              : rows.map(summarizeTicket),
+              : rows.map(presentTicket),
       });
     }),
   );
@@ -404,8 +479,13 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
         article: articlePayload(input.article),
       };
 
-      const ticket = await context.client.post<Record<string, unknown>>('/api/v1/tickets', body);
-      return jsonResult({ created: true, ticket: summarizeTicket(ticket), raw_ticket: ticket });
+      // `expand` is what makes Zammad resolve state/group/owner/customer to names.
+      // Without it the response carries only the numeric ids, which the presented
+      // shape drops — the caller would get a ticket with no associations at all.
+      const ticket = await context.client.post<Record<string, unknown>>('/api/v1/tickets', body, {
+        expand: true,
+      });
+      return jsonResult({ created: true, ticket: presentTicket(ticket) });
     }),
   );
 
@@ -451,8 +531,10 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
         throw new ToolInputError('Nothing to update — pass at least one attribute or an article.');
       }
 
-      const ticket = await context.client.put<Record<string, unknown>>(`/api/v1/tickets/${id}`, body);
-      return jsonResult({ updated: true, ticket: summarizeTicket(ticket), raw_ticket: ticket });
+      const ticket = await context.client.put<Record<string, unknown>>(`/api/v1/tickets/${id}`, body, {
+        expand: true,
+      });
+      return jsonResult({ updated: true, ticket: presentTicket(ticket) });
     }),
   );
 
@@ -475,10 +557,12 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       const input = titleInput.parse(rawInput);
       const context = withOnBehalfOf(base, input.on_behalf_of);
       const id = await resolveTicketId(context, input);
-      const ticket = await context.client.put<Record<string, unknown>>(`/api/v1/tickets/${id}/update_title`, {
-        title: input.title,
-      });
-      return jsonResult({ updated: true, ticket: summarizeTicket(ticket) });
+      const ticket = await context.client.put<Record<string, unknown>>(
+        `/api/v1/tickets/${id}/update_title`,
+        { title: input.title },
+        { expand: true },
+      );
+      return jsonResult({ updated: true, ticket: presentTicket(ticket) });
     }),
   );
 
@@ -510,11 +594,10 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       const customerId = input.customer_id ?? (await context.lookup.resolveUsers([input.customer!]))[0];
       const ticket = await context.client.put<Record<string, unknown>>(
         `/api/v1/tickets/${id}/update_customer`,
-        {
-          customer_id: customerId,
-        },
+        { customer_id: customerId },
+        { expand: true },
       );
-      return jsonResult({ updated: true, ticket: summarizeTicket(ticket) });
+      return jsonResult({ updated: true, ticket: presentTicket(ticket) });
     }),
   );
 
