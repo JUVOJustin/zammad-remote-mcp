@@ -121,6 +121,13 @@ const ARTICLE_NOISE = new Set([
   'reply_to',
   'detected_language',
   'preferences',
+  // Derived rather than copied: `presentArticle` renders the body, reports the
+  // content type it actually produced, and filters the attachment list. Letting
+  // the generic pass copy Zammad's versions first would mean removing them
+  // again, and forgetting to is how the raw attachment array once survived.
+  'body',
+  'content_type',
+  'attachments',
 ]);
 
 /**
@@ -198,24 +205,17 @@ export function presentArticle(
   const rendered = renderArticleBody(article.body, article.content_type, format);
   const out = present(article, ARTICLE_NOISE);
 
-  out.body = rendered.body || undefined;
+  if (rendered.body) out.body = rendered.body;
   // Report what the model is actually reading, not how Zammad stored it.
   out.content_type = format === 'html' ? article.content_type : 'text/markdown';
   if (rendered.omitted.length > 0) out.body_omitted = rendered.omitted;
-  if (out.body === undefined) delete out.body;
 
-  // Assigned unconditionally: `present` has already copied Zammad's raw array
-  // into `out`, so skipping this when the filtered list is empty would leave the
-  // unfiltered one — store_file_id, preferences and the alternative part that
-  // was supposed to disappear. An article whose only attachment is message.html
-  // is the ordinary case, not an edge one.
   const attachments = Array.isArray(article.attachments)
     ? article.attachments
         .filter((a) => !isAlternativePart(a))
         .map((a) => present({ id: a.id, filename: a.filename, size: a.size }, new Set()))
     : [];
   if (attachments.length > 0) out.attachments = attachments;
-  else delete out.attachments;
 
   return out;
 }
