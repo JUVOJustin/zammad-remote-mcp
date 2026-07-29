@@ -27,10 +27,69 @@ describe('renderArticleBody', () => {
     assert.deepEqual(result.omitted, []);
   });
 
-  it('drops the quoted reply', () => {
+  it('drops a quoted reply marked type="cite"', () => {
     const html = 'My answer.<blockquote type="cite">Everything they wrote before</blockquote>';
     const result = renderArticleBody(html, 'text/html');
     assert.equal(result.body, 'My answer.');
+    assert.deepEqual(result.omitted, ['quoted_reply']);
+  });
+
+  it('drops a bare quote that opens with an attribution line', () => {
+    const html =
+      'Danke!<blockquote>Am Freitag, 10. November 2023 um 14:27:05, schrieb Thomas Bartsch: Hi Jannik</blockquote><div>Signature line</div>';
+    const result = renderArticleBody(html, 'text/html');
+    assert.equal(result.body, 'Danke!\n\nSignature line');
+    assert.deepEqual(result.omitted, ['quoted_reply']);
+  });
+
+  it('drops a bare trailing quote, since top-posting puts the reply above it', () => {
+    const html = 'Short answer.<blockquote>the whole thread history</blockquote>';
+    const result = renderArticleBody(html, 'text/html');
+    assert.equal(result.body, 'Short answer.');
+    assert.deepEqual(result.omitted, ['quoted_reply']);
+  });
+
+  /**
+   * The case blanket removal gets wrong: a blockquote used as formatting, to
+   * quote an error message or a document. It is neither marked as a citation,
+   * nor introduced by an attribution line, nor trailing — so it is kept.
+   */
+  it('keeps a mid-body quote that is formatting rather than a reply', () => {
+    const html =
+      '<p>The installer prints this:</p><blockquote>FATAL: role "zammad" does not exist</blockquote><p>Any idea what causes it?</p>';
+    const result = renderArticleBody(html, 'text/html');
+    assert.equal(
+      result.body,
+      'The installer prints this:\n\n> FATAL: role "zammad" does not exist\nAny idea what causes it?',
+    );
+    assert.deepEqual(result.omitted, [], 'nothing was dropped, so nothing may be reported');
+  });
+
+  it('marks every line of a kept quote', () => {
+    const html = '<p>See:</p><blockquote>line one<br>line two</blockquote><p>Thoughts?</p>';
+    assert.equal(renderArticleBody(html, 'text/html').body, 'See:\n\n> line one\n> line two\nThoughts?');
+  });
+
+  /** Reply chains nest; the deepest seen on a live instance was 13 levels. */
+  it('removes a nested reply chain as one unit', () => {
+    const html = [
+      'Latest answer.',
+      '<blockquote type="cite">first level',
+      '<blockquote type="cite">second level',
+      '<blockquote type="cite">third level</blockquote></blockquote></blockquote>',
+    ].join('');
+    const result = renderArticleBody(html, 'text/html');
+    assert.equal(result.body, 'Latest answer.');
+    assert.deepEqual(result.omitted, ['quoted_reply']);
+  });
+
+  it('judges each top-level quote separately', () => {
+    const html = [
+      '<p>Log excerpt:</p><blockquote>ERROR at line 12</blockquote><p>and my reply below</p>',
+      '<blockquote type="cite">Am 1.1.2026 schrieb jemand: alter Text</blockquote>',
+    ].join('');
+    const result = renderArticleBody(html, 'text/html');
+    assert.equal(result.body, 'Log excerpt:\n\n> ERROR at line 12\nand my reply below');
     assert.deepEqual(result.omitted, ['quoted_reply']);
   });
 

@@ -40,14 +40,101 @@ export interface RenderedBody {
   omitted: OmittedPart[];
 }
 
-const QUOTE = /<blockquote[\s\S]*?<\/blockquote>/gi;
 /**
  * Any tag carrying Zammad's signature marker. Tag-agnostic on purpose: the
  * instance emits `<span class="js-signatureMarker">`, `<div data-signature="true"
  * data-signature-id="1">` and a bare `<div data-signature-id="1">`.
+ *
+ * Deliberately not extended with foreign markers such as `gmail_signature` or
+ * `moz-cite-prefix`: Zammad's inbound sanitizer drops class attributes it does
+ * not own. Across 167 inbound articles the only class that survived storage was
+ * `js-signatureMarker`, so matching on other clients' names would be dead code.
  */
 const SIGNATURE = /<[a-z]+[^>]*(?:js-signatureMarker|data-signature)[^>]*>/i;
 const INVISIBLE = /<(script|style|head|title)[\s\S]*?<\/\1>/gi;
+
+const BLOCKQUOTE_TAG = /<(\/)?blockquote\b([^>]*)>/gi;
+const CITE_ATTR = /type=["']?cite/i;
+/**
+ * The line a mail client writes above a quoted reply — "Am … schrieb …",
+ * "On … wrote:", or a forwarded-header block. It sits *inside* the blockquote,
+ * at its start, not before it.
+ */
+const ATTRIBUTION =
+  /^[\s\S]{0,40}?(?:Am\s[\s\S]{0,90}?schrieb|On\s[\s\S]{0,90}?wrote|Le\s[\s\S]{0,90}?écrit|El\s[\s\S]{0,90}?escribió|Op\s[\s\S]{0,90}?schreef|(?:Von|From|Betreff|Subject|Gesendet|Sent|Datum|Date):\s)/i;
+
+interface QuoteSpan {
+  start: number;
+  end: number;
+  attrs: string;
+  inner: string;
+}
+
+/**
+ * Outermost `<blockquote>` elements, found by counting depth rather than by a
+ * non-greedy regex — real reply chains nest, and the deepest seen on a live
+ * instance was 13 levels. A regex would match the outer opening tag against the
+ * innermost closing tag and mangle everything between.
+ */
+function topLevelBlockquotes(html: string): QuoteSpan[] {
+  const spans: QuoteSpan[] = [];
+  let depth = 0;
+  let start = -1;
+  let attrs = '';
+
+  BLOCKQUOTE_TAG.lastIndex = 0;
+  let match = BLOCKQUOTE_TAG.exec(html);
+  while (match !== null) {
+    const closing = match[1] === '/';
+    if (closing) {
+      depth = Math.max(0, depth - 1);
+      if (depth === 0 && start >= 0) {
+        const end = match.index + match[0].length;
+        spans.push({ start, end, attrs, inner: html.slice(start, end) });
+        start = -1;
+      }
+    } else {
+      if (depth === 0) {
+        start = match.index;
+        attrs = match[2] ?? '';
+      }
+      depth += 1;
+    }
+    match = BLOCKQUOTE_TAG.exec(html);
+  }
+  return spans;
+}
+
+function visibleText(html: string): string {
+  return html
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Is this blockquote a quoted reply, or is it the customer quoting something
+ * for emphasis? Only the first is safe to drop, so the ambiguous case is kept.
+ *
+ * Removed when the element says so itself (`type="cite"`), when it opens with a
+ * mail client's attribution line, or when nothing follows it — top-posting puts
+ * the reply above the quote, so a trailing blockquote is the thread history.
+ */
+function isQuotedReply(span: QuoteSpan, html: string): boolean {
+  if (CITE_ATTR.test(span.attrs)) return true;
+  if (ATTRIBUTION.test(visibleText(span.inner))) return true;
+
+  // "Nothing follows" has to look past a trailing signature, which is what
+  // normally sits below a top-posted reply. Anything else counts as content, no
+  // matter how short — a reply can be a single word, and keeping a quote only
+  // costs bytes whereas dropping one loses text. Only the bare "--" delimiter is
+  // tolerated, since that introduces a signature rather than being one.
+  let tail = html.slice(span.end);
+  const signature = SIGNATURE.exec(tail);
+  if (signature) tail = tail.slice(0, signature.index);
+  return /^[-–—.\s]*$/.test(visibleText(tail));
+}
 
 const NAMED_ENTITIES: Record<string, string> = {
   amp: '&',
@@ -132,6 +219,60 @@ function htmlToText(html: string): string {
 }
 
 /**
+ * Stands in for a kept quote while the surrounding markup is turned into text.
+ * NUL delimits it because it cannot appear in article text and is not
+ * whitespace, so neither the tag stripping nor the whitespace collapsing in
+ * `htmlToText` can damage one or accidentally produce one.
+ */
+const KEPT_QUOTE = /\u0000q(\d+)\u0000/g;
+
+/**
+ * Drop the blockquotes that are quoted replies and set the ambiguous ones aside
+ * to be re-inserted as text, so that a customer who used a blockquote to quote a
+ * document or an error message keeps it.
+ */
+function removeQuotedReplies(html: string): { html: string; removed: boolean; kept: string[] } {
+  const spans = topLevelBlockquotes(html);
+  if (spans.length === 0) return { html, removed: false, kept: [] };
+
+  const kept: string[] = [];
+  let out = '';
+  let cursor = 0;
+  let removed = false;
+
+  for (const span of spans) {
+    out += html.slice(cursor, span.start);
+    // A blockquote is a block: whatever replaces it has to keep the line break
+    // it used to provide, or the text either side runs together.
+    out += '\n';
+    if (isQuotedReply(span, html)) {
+      removed = true;
+    } else {
+      out += `\u0000q${kept.length}\u0000`;
+      kept.push(span.inner);
+    }
+    out += '\n';
+    cursor = span.end;
+  }
+  return { html: out + html.slice(cursor), removed, kept };
+}
+
+/** Render the quotes that survived, marked with `>` so they read as quotations. */
+function reinsertKeptQuotes(text: string, kept: string[]): string {
+  if (kept.length === 0) return text;
+  return text
+    .replace(KEPT_QUOTE, (_match, index: string) => {
+      const quoted = htmlToText(kept[Number(index)] ?? '');
+      if (!quoted) return '';
+      return quoted
+        .split('\n')
+        .map((line) => `> ${line}`)
+        .join('\n');
+    })
+    .trim();
+}
+
+/**
  * Render one article body for a model.
  *
  * `format: 'html'` returns the stored body untouched — the escape hatch for
@@ -147,9 +288,9 @@ export function renderArticleBody(
     return { body: format === 'html' ? body : body.trim(), omitted: [] };
   }
 
-  const dequoted = body.replace(QUOTE, '');
-  const marker = SIGNATURE.exec(dequoted);
-  const withoutSignature = marker ? dequoted.slice(0, marker.index) : dequoted;
+  const quotes = removeQuotedReplies(body);
+  const marker = SIGNATURE.exec(quotes.html);
+  const withoutSignature = marker ? quotes.html.slice(0, marker.index) : quotes.html;
 
   /**
    * Progressively put back what was cut, rather than return nothing: an article
@@ -157,20 +298,21 @@ export function renderArticleBody(
    * shown as empty. `omitted` always describes the candidate that won, so it can
    * never claim a removal that was undone.
    */
-  const candidates: Array<{ html: string; omitted: OmittedPart[] }> = [
+  const candidates: Array<{ html: string; kept: string[]; omitted: OmittedPart[] }> = [
     {
       html: withoutSignature,
+      kept: quotes.kept,
       omitted: [
-        ...(dequoted.length !== body.length ? (['quoted_reply'] as const) : []),
+        ...(quotes.removed ? (['quoted_reply'] as const) : []),
         ...(marker ? (['signature'] as const) : []),
       ],
     },
-    { html: dequoted, omitted: dequoted.length !== body.length ? ['quoted_reply'] : [] },
-    { html: body, omitted: [] },
+    { html: quotes.html, kept: quotes.kept, omitted: quotes.removed ? ['quoted_reply'] : [] },
+    { html: body, kept: [], omitted: [] },
   ];
 
   for (const candidate of candidates) {
-    const text = htmlToText(candidate.html);
+    const text = reinsertKeptQuotes(htmlToText(candidate.html), candidate.kept);
     if (text) return { body: text, omitted: candidate.omitted };
   }
 
