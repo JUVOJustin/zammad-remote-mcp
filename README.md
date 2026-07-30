@@ -618,40 +618,6 @@ Two further changes made one build valid on both runtimes:
 
 ## Releasing
 
-One package, one publish. The name is unscoped, so **no npm organisation is needed** — it belongs to
-whoever publishes it first.
-
-### One-time setup: trusted publishing
-
-Releases authenticate over OIDC, so there is no npm token anywhere — not in the repository secrets,
-not in the workflow. npm exchanges a short-lived GitHub-signed token for publish rights at the moment
-of publishing.
-
-There is one ordering constraint: **npm can only accept a trusted publisher for a package that
-already exists.** (PyPI allows pre-registering a name; npm does not.) So the very first version is
-published by hand, and every release after that runs unattended:
-
-```bash
-npm login
-npm publish          # once, to create the package
-```
-
-Then on npmjs.com → the package → **Settings → Trusted Publisher**, add a GitHub Actions publisher:
-
-| Field | Value |
-|---|---|
-| Organization or user | `JUVOJustin` |
-| Repository | `zammad-remote-mcp` |
-| Workflow filename | `deploy.yml` |
-| Environment | *(leave empty)* |
-
-From then on `NPM_TOKEN` is not needed and should not exist. The workflow already declares
-`id-token: write`, which is what makes the exchange possible, and npm generates
-[provenance](https://docs.npmjs.com/generating-provenance-statements) automatically for public
-repositories — which is why `publishConfig` deliberately does *not* set `provenance: true`. Setting
-it explicitly would additionally break any publish outside a CI OIDC environment, including the
-first manual one.
-
 ### Cutting a release
 
 Push a tag. `.github/workflows/deploy.yml` does the rest:
