@@ -8,6 +8,7 @@ import {
   startHarness,
   stopHarness,
 } from './harness.js';
+import { CUSTOMER_EMAIL } from './zammad.js';
 
 /**
  * Every tool's input schema must survive a strict JSON Schema validator.
@@ -266,36 +267,29 @@ describe('tool input schemas stay portable across MCP clients', () => {
   });
 });
 
-describe('closed parameter sets are strict', () => {
+describe('every tool refuses arguments nobody declared', () => {
   /**
-   * A tool whose arguments are a fixed set publishes `additionalProperties: false`
-   * and refuses anything else by name.
+   * All of them, without exception.
    *
-   * The MCP SDK validates arguments before the handler runs, and a permissive
-   * object simply *drops* what it does not recognise — so a caller that misspells
-   * an argument, or reaches for one that was removed, is told the call succeeded
-   * and never learns its intent was discarded. That is the same shape of failure
-   * as an argument Zammad itself ignores.
+   * The MCP SDK runs `safeParseAsync` over the arguments before the handler is
+   * invoked, and a permissive object simply *drops* what it does not recognise —
+   * so a caller that misspells an argument, or reaches for one that was removed,
+   * is told the call succeeded and never learns its intent was discarded. That
+   * is the same shape of failure as an argument Zammad itself ignores, and it is
+   * only catchable here: a handler cannot check for a key the parser deleted.
    *
-   * The tools left permissive are the ones carrying Object Manager passthrough
-   * (`custom_fields`, `custom`, `raw_condition`), listed here so the exception is
-   * deliberate rather than an oversight.
+   * The tools carrying Object Manager passthrough are strict too. Their dynamic
+   * data lives in *declared* fields — `custom_fields` is a record, `custom` an
+   * array of conditions, `raw_condition` a nested selector — none of which a
+   * strict outer object touches. The two tests below hold that apart, because
+   * "strict" and "takes arbitrary attribute names" sound contradictory and are
+   * not.
    */
-  const PERMISSIVE = new Set([
-    'zammad_create_ticket',
-    'zammad_update_ticket',
-    'zammad_mass_update_tickets',
-    'zammad_search_tickets',
-    'zammad_search_users',
-    'zammad_search_organizations',
-  ]);
-
-  it('publishes additionalProperties: false wherever the set is closed', (t) => {
+  it('publishes additionalProperties: false on every tool', (t) => {
     if (!ready) return t.skip(skipReason);
 
     for (const tool of tools) {
       const schema = tool.inputSchema as { additionalProperties?: unknown };
-      if (PERMISSIVE.has(tool.name)) continue;
       assert.equal(schema.additionalProperties, false, `${tool.name} still accepts unknown arguments`);
     }
   });
@@ -303,19 +297,50 @@ describe('closed parameter sets are strict', () => {
   it('refuses an unknown argument by name rather than dropping it', async (t) => {
     if (!ready) return t.skip(skipReason);
 
-    const message = await callToolExpectingError('zammad_get_ticket', {
-      ticket_id: 1,
-      artikel_limit: 5,
-    });
+    // A typo, which is the case that matters: near-miss keys are what a caller
+    // actually produces, and a silent drop reads as success.
+    assert.match(
+      await callToolExpectingError('zammad_get_ticket', { ticket_id: 1, artikel_limit: 5 }),
+      /artikel_limit/,
+    );
+    assert.match(
+      await callToolExpectingError('zammad_search_tickets', { stat: ['open'], output: 'count' }),
+      /stat/,
+    );
+  });
 
-    assert.match(message, /artikel_limit/, `the error should name the key: ${message}`);
+  it('still takes Object Manager attributes by arbitrary name', async (t) => {
+    if (!ready) return t.skip(skipReason);
+
+    // `custom_fields` is a record: its *keys* are whatever the instance defines,
+    // and a strict outer object has no opinion about them.
+    const created = await callTool('zammad_create_ticket', {
+      title: 'Strict with custom fields',
+      group: 'Users',
+      customer: CUSTOMER_EMAIL,
+      custom_fields: { an_attribute_this_instance_does_not_have: 'value' },
+      article: { body: 'x', type: 'note', internal: true },
+    });
+    assert.ok(created.ticket.id, 'a declared record field was refused');
+  });
+
+  it('still takes a raw selector as an escape hatch', async (t) => {
+    if (!ready) return t.skip(skipReason);
+
+    const result = await callTool('zammad_search_tickets', {
+      raw_condition: {
+        operator: 'AND',
+        conditions: [{ name: 'ticket.state_id', operator: 'is', value: [2] }],
+      },
+      output: 'count',
+    });
+    assert.equal(typeof result.total_count, 'number', 'the escape hatch was refused');
   });
 
   it('still takes the arguments it declares', async (t) => {
     if (!ready) return t.skip(skipReason);
 
     // Strictness must not have cost a real argument on the way in.
-    const result = await callTool('zammad_get_recent_tickets', { limit: 3 });
-    assert.ok(result, 'a declared argument was refused');
+    assert.ok(await callTool('zammad_get_recent_tickets', { limit: 3 }));
   });
 });

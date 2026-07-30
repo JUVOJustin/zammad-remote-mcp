@@ -470,7 +470,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
         '(`note`, internal) do not send anything.\n\n' +
         'Mention a colleague in the article body by writing `@@jane@acme.com`, `@@jdoe` or `@@"Jane Doe"` — they ' +
         'are linked and notified. Keep the article `internal: true`, or the customer sees the mention too.',
-      inputSchema: createTicketInput.shape,
+      inputSchema: createTicketInput.strict(),
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -533,7 +533,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
         'a pending state requires `pending_time`.\n\n' +
         'Mention a colleague in the article body by writing `@@jane@acme.com`, `@@jdoe` or `@@"Jane Doe"` — they ' +
         'are linked and notified. Keep the article `internal: true`, or the customer sees the mention too.',
-      inputSchema: updateTicketInput.shape,
+      inputSchema: updateTicketInput.strict(),
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -677,7 +677,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
         'Apply the same attribute changes (and optionally the same article) to a batch of tickets in one request. ' +
         'Zammad processes the batch in the background, so the response confirms acceptance rather than completion. ' +
         'An article body may use `@@jane@acme.com` / `@@jdoe` / `@@"Jane Doe"` to mention and notify a colleague.',
-      inputSchema: massUpdateInput.shape,
+      inputSchema: massUpdateInput.strict(),
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,

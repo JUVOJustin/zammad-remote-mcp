@@ -96,7 +96,7 @@ export function registerSearchTools(server: McpServer, base: ToolContext, vocabu
         'Use `output: "count"` to size a result set cheaply before paging through it. The generated query and ' +
         'selector are echoed back under `search`, so a search that returns too much or too little can be refined ' +
         'directly.',
-      inputSchema: ticketSearchShape,
+      inputSchema: z.object(ticketSearchShape).strict(),
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     guard(async (rawInput) => {
@@ -162,7 +162,7 @@ export function registerSearchTools(server: McpServer, base: ToolContext, vocabu
       description:
         'Find agents and customers by free text or by structured filters (email, login, name, organization, role, ' +
         'active, vip, custom attributes). Useful for resolving a person before filtering tickets by owner or customer.',
-      inputSchema: searchUsersInputSchema.shape,
+      inputSchema: searchUsersInputSchema.strict(),
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     guard(async (rawInput) => {
@@ -210,7 +210,7 @@ export function registerSearchTools(server: McpServer, base: ToolContext, vocabu
       description:
         'Find customer organizations by free text or by structured filters (name, domain, vip, active, custom ' +
         'attributes).',
-      inputSchema: searchOrganizationsInputSchema.shape,
+      inputSchema: searchOrganizationsInputSchema.strict(),
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     guard(async (rawInput) => {
