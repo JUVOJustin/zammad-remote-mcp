@@ -211,7 +211,8 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
       title: 'Update a Zammad article',
       description:
         'Change an existing article. Zammad restricts what may be edited after creation — toggling `internal` is ' +
-        'always allowed, editing the body may not be.',
+        'always allowed, editing the body may not be. Note that `@@name` mentions are only ever resolved on ' +
+        'creation, so adding one here does not link or notify anyone — use zammad_create_article instead.',
       inputSchema: updateInput.shape,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },

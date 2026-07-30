@@ -2,6 +2,8 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { ToolInputError } from '../../util/errors.js';
 import type { BodyFormat } from '../../zammad/article-body.js';
+import type { MentionedUser } from '../../zammad/mentions.js';
+import { rewriteMentions } from '../../zammad/mentions.js';
 import { asTopLevel, leaf } from '../../zammad/selector.js';
 import type { Vocabulary } from '../../zammad/vocabulary.js';
 import type { ToolContext } from '../context.js';
@@ -211,19 +213,33 @@ function ticketPayload(input: Record<string, unknown>): Record<string, unknown> 
   return payload;
 }
 
-function articlePayload(article: z.infer<typeof articleInputSchema>): Record<string, unknown> {
+/**
+ * Builds the article payload and resolves `@@name` mentions in its body — the
+ * same rewrite zammad_create_article applies, needed here too since this is
+ * the other place an article body reaches Zammad. See zammad/mentions.ts.
+ */
+async function articlePayload(
+  article: z.infer<typeof articleInputSchema>,
+  context: ToolContext,
+): Promise<{ payload: Record<string, unknown>; mentioned: MentionedUser[] }> {
+  const mentions = await rewriteMentions(article.body, article.content_type, {
+    client: context.client,
+    lookup: context.lookup,
+    zammadUrl: context.config.ZAMMAD_URL,
+  });
+
   const payload: Record<string, unknown> = {
-    body: article.body,
+    body: mentions.body,
     type: article.type,
     sender: article.sender,
     internal: article.internal,
-    content_type: article.content_type,
+    content_type: mentions.content_type,
   };
   for (const key of ['subject', 'to', 'cc', 'in_reply_to', 'time_unit', 'origin_by'] as const) {
     if (article[key] !== undefined) payload[key] = article[key];
   }
   if (article.attachments?.length) payload.attachments = article.attachments;
-  return payload;
+  return { payload, mentioned: mentions.mentioned };
 }
 
 interface HistoryResponse {
@@ -451,7 +467,9 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       description:
         'Create a ticket together with its first article. `group` and `customer` are required by Zammad. Note that ' +
         'an article with `type: "email"` and `internal: false` is delivered to the customer — the defaults ' +
-        '(`note`, internal) do not send anything.',
+        '(`note`, internal) do not send anything.\n\n' +
+        'Mention a colleague in the article body by writing `@@jane@acme.com`, `@@jdoe` or `@@"Jane Doe"` — they ' +
+        'are linked and notified. Keep the article `internal: true`, or the customer sees the mention too.',
       inputSchema: createTicketInput.shape,
       annotations: {
         readOnlyHint: false,
@@ -473,10 +491,11 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
         );
       }
 
+      const article = await articlePayload(input.article, context);
       const body = {
         ...ticketPayload(input),
         title: input.title,
-        article: articlePayload(input.article),
+        article: article.payload,
       };
 
       // `expand` is what makes Zammad resolve state/group/owner/customer to names.
@@ -485,7 +504,11 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       const ticket = await context.client.post<Record<string, unknown>>('/api/v1/tickets', body, {
         expand: true,
       });
-      return jsonResult({ created: true, ticket: presentTicket(ticket) });
+      return jsonResult({
+        created: true,
+        ticket: presentTicket(ticket),
+        ...(article.mentioned.length > 0 ? { mentioned: article.mentioned } : {}),
+      });
     }),
   );
 
@@ -507,7 +530,9 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       description:
         'Change ticket attributes (state, priority, group, owner, customer, pending time, custom fields) and ' +
         'optionally append an article in the same call. Only the fields you pass are modified. Moving a ticket into ' +
-        'a pending state requires `pending_time`.',
+        'a pending state requires `pending_time`.\n\n' +
+        'Mention a colleague in the article body by writing `@@jane@acme.com`, `@@jdoe` or `@@"Jane Doe"` — they ' +
+        'are linked and notified. Keep the article `internal: true`, or the customer sees the mention too.',
       inputSchema: updateTicketInput.shape,
       annotations: {
         readOnlyHint: false,
@@ -525,7 +550,12 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       const id = await resolveTicketId(context, input);
 
       const body = ticketPayload(input);
-      if (input.article) body.article = articlePayload(input.article);
+      let mentioned: MentionedUser[] = [];
+      if (input.article) {
+        const article = await articlePayload(input.article, context);
+        body.article = article.payload;
+        mentioned = article.mentioned;
+      }
 
       if (Object.keys(body).length === 0) {
         throw new ToolInputError('Nothing to update — pass at least one attribute or an article.');
@@ -534,7 +564,11 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       const ticket = await context.client.put<Record<string, unknown>>(`/api/v1/tickets/${id}`, body, {
         expand: true,
       });
-      return jsonResult({ updated: true, ticket: presentTicket(ticket) });
+      return jsonResult({
+        updated: true,
+        ticket: presentTicket(ticket),
+        ...(mentioned.length > 0 ? { mentioned } : {}),
+      });
     }),
   );
 
@@ -641,7 +675,8 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       title: 'Update many Zammad tickets at once',
       description:
         'Apply the same attribute changes (and optionally the same article) to a batch of tickets in one request. ' +
-        'Zammad processes the batch in the background, so the response confirms acceptance rather than completion.',
+        'Zammad processes the batch in the background, so the response confirms acceptance rather than completion. ' +
+        'An article body may use `@@jane@acme.com` / `@@jdoe` / `@@"Jane Doe"` to mention and notify a colleague.',
       inputSchema: massUpdateInput.shape,
       annotations: {
         readOnlyHint: false,
@@ -655,7 +690,12 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       const context = withOnBehalfOf(base, input.on_behalf_of);
 
       const attributes = ticketPayload(input);
-      if (input.article) attributes.article = articlePayload(input.article);
+      let mentioned: MentionedUser[] = [];
+      if (input.article) {
+        const article = await articlePayload(input.article, context);
+        attributes.article = article.payload;
+        mentioned = article.mentioned;
+      }
       if (Object.keys(attributes).length === 0) {
         throw new ToolInputError('Nothing to update — pass at least one attribute or an article.');
       }
@@ -664,7 +704,12 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
         ticket_ids: input.ticket_ids,
         attributes,
       });
-      return jsonResult({ submitted: true, ticket_count: input.ticket_ids.length, result });
+      return jsonResult({
+        submitted: true,
+        ticket_count: input.ticket_ids.length,
+        result,
+        ...(mentioned.length > 0 ? { mentioned } : {}),
+      });
     }),
   );
 
