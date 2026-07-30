@@ -69,9 +69,17 @@ function startZammad(): Promise<void> {
         case '/api/v1/macros':
           return send(200, [{ id: 9, name: 'Close as spam', active: true }]);
         case '/api/v1/users/search':
-          return send(200, [{ id: 42, login: 'jdoe', email: 'jane@acme.com', firstname: 'Jane', lastname: 'Doe' }]);
+          return send(200, [
+            { id: 42, login: 'jdoe', email: 'jane@acme.com', firstname: 'Jane', lastname: 'Doe' },
+          ]);
         case '/api/v1/users/42':
-          return send(200, { id: 42, login: 'jdoe', email: 'jane@acme.com', firstname: 'Jane', lastname: 'Doe' });
+          return send(200, {
+            id: 42,
+            login: 'jdoe',
+            email: 'jane@acme.com',
+            firstname: 'Jane',
+            lastname: 'Doe',
+          });
         case '/api/v1/tickets/search': {
           // Mirror Zammad's `Selector::Base.migrate_selector`: a condition with
           // no `conditions` key is read as the legacy attribute-keyed form, and
