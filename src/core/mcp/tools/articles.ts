@@ -52,7 +52,7 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
       description:
         'The full conversation on a ticket, oldest first. Bodies are rendered as Markdown with the quoted reply ' +
         'and signature removed. Bodies are returned in full, as Zammad stores them.',
-      inputSchema: listInput.shape,
+      inputSchema: listInput.strict(),
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     guard(async (rawInput) => {
@@ -91,7 +91,7 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
       description:
         'Fetch one article by ID with its full body and attachment metadata. Attachment IDs from here are what ' +
         'zammad_download_attachment takes.',
-      inputSchema: getArticleInput.shape,
+      inputSchema: getArticleInput.strict(),
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     guard(async (rawInput) => {
@@ -154,7 +154,7 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
         'record text without notifying anyone.\n\n' +
         'Mention a colleague by writing `@@jane@acme.com`, `@@jdoe` or `@@"Jane Doe"` in the body — they are ' +
         'linked and notified. Keep such a note `internal: true`, or the customer sees the mention too.',
-      inputSchema: createInput.shape,
+      inputSchema: createInput.strict(),
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -213,7 +213,7 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
         'Change an existing article. Zammad restricts what may be edited after creation — toggling `internal` is ' +
         'always allowed, editing the body may not be. Note that `@@name` mentions are only ever resolved on ' +
         'creation, so adding one here does not link or notify anyone — use zammad_create_article instead.',
-      inputSchema: updateInput.shape,
+      inputSchema: updateInput.strict(),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
     guard(async (rawInput) => {
@@ -242,10 +242,12 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
       description:
         'Remove an article from a ticket. Zammad only permits this within a short window after creation ' +
         '(10 minutes by default) and only for the author.',
-      inputSchema: {
-        article_id: z.number().int().positive(),
-        confirm: z.literal(true).describe('Must be true — deletion cannot be undone.'),
-      },
+      inputSchema: z
+        .object({
+          article_id: z.number().int().positive(),
+          confirm: z.literal(true).describe('Must be true — deletion cannot be undone.'),
+        })
+        .strict(),
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
     },
     guard(async (rawInput) => {
@@ -264,7 +266,7 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
       description:
         'The original RFC822 message for an email article, headers included. Useful for tracing delivery ' +
         'problems.',
-      inputSchema: { article_id: z.number().int().positive() },
+      inputSchema: z.object({ article_id: z.number().int().positive() }).strict(),
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     guard(async (rawInput) => {
@@ -295,7 +297,7 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
       description:
         "Fetch an attachment's contents. Attachment IDs come from the `attachments` array on an article. Large " +
         'files are truncated at `max_bytes`.',
-      inputSchema: attachmentInput.shape,
+      inputSchema: attachmentInput.strict(),
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     guard(async (rawInput) => {

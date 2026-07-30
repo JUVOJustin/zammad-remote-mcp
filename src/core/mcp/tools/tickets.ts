@@ -329,7 +329,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
         'Fetch one ticket by ID or by ticket number, optionally with its articles, tags and links. Association ' +
         'names are resolved, so the result shows "open" rather than a state ID. Article bodies are rendered as ' +
         'Markdown with the quoted reply and signature removed; pass `body_format: "html"` for the original markup.',
-      inputSchema: getTicketInput.shape,
+      inputSchema: getTicketInput.strict(),
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     guard(async (rawInput) => {
@@ -402,7 +402,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       description:
         'Page through every ticket visible to the authenticated user, newest first by default. This is an unfiltered ' +
         'listing — for anything narrower use zammad_search_tickets, which filters server-side.',
-      inputSchema: listTicketsInput.shape,
+      inputSchema: listTicketsInput.strict(),
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     guard(async (rawInput) => {
@@ -586,7 +586,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       title: 'Reassign a Zammad ticket to another customer',
       description:
         "Move a ticket to a different customer. The ticket's organization follows the new customer automatically.",
-      inputSchema: customerInput.shape,
+      inputSchema: customerInput.strict(),
       annotations: { readOnlyHint: false, idempotentHint: true, openWorldHint: true },
     },
     guard(async (rawInput) => {
@@ -623,7 +623,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       description:
         'Permanently delete a ticket. Requires admin rights in Zammad and cannot be undone — in most workflows ' +
         'closing the ticket (`zammad_update_ticket` with `state: "closed"`) is what is actually wanted.',
-      inputSchema: deleteInput.shape,
+      inputSchema: deleteInput.strict(),
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
     },
     guard(async (rawInput) => {
@@ -648,7 +648,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       description:
         'Move every article from the source ticket into the target and set the source to "merged". Note the ' +
         'asymmetry required by Zammad: the source is addressed by ID, the target by ticket number.',
-      inputSchema: mergeInput.shape,
+      inputSchema: mergeInput.strict(),
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     },
     guard(async (rawInput) => {
@@ -736,7 +736,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       description:
         'Run a stored macro against one or more tickets. Macros bundle the attribute changes and notes an agent ' +
         'would otherwise apply by hand.',
-      inputSchema: macroInput.shape,
+      inputSchema: macroInput.strict(),
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -771,7 +771,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
         'Every recorded change on a ticket — who changed what, when. Useful for auditing and for ' +
         'reconstructing how a ticket reached its current state. Zammad bundles the referenced articles into the ' +
         'response, so their bodies are rendered here too.',
-      inputSchema: historyInput.shape,
+      inputSchema: historyInput.strict(),
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     guard(async (rawInput) => {
@@ -794,7 +794,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       description:
         'Tickets Zammad considers similar to the given one, plus its linked tickets. Good for spotting ' +
         'duplicates before answering.',
-      inputSchema: relatedInput.shape,
+      inputSchema: relatedInput.strict(),
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     guard(async (rawInput) => {
@@ -820,7 +820,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       description:
         "Zammad's customer sidebar data: the open and closed tickets belonging to one customer. For arbitrary " +
         'filtering use zammad_search_tickets with `customer`.',
-      inputSchema: customerTicketsInput.shape,
+      inputSchema: customerTicketsInput.strict(),
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     guard(async (rawInput) => {
@@ -847,7 +847,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       description:
         'The tickets the authenticated user opened most recently, newest first. A quick way to answer ' +
         '"what was I just working on" without a search.',
-      inputSchema: { limit: z.number().int().positive().max(50).default(10) },
+      inputSchema: z.object({ limit: z.number().int().positive().max(50).default(10) }).strict(),
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     guard(async (rawInput) => {
@@ -870,7 +870,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       title: 'Add tags to a Zammad ticket',
       description:
         'Attach one or more tags. Tags that do not exist yet are created if the instance allows it.',
-      inputSchema: tagInput.shape,
+      inputSchema: tagInput.strict(),
       annotations: { readOnlyHint: false, idempotentHint: true, openWorldHint: true },
     },
     guard(async (rawInput) => {
@@ -898,7 +898,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       description:
         'Detach one or more tags from a ticket. Tags not present on the ticket are ignored, so this is safe to ' +
         'call speculatively. Returns the remaining tag list.',
-      inputSchema: tagInput.shape,
+      inputSchema: tagInput.strict(),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
     guard(async (rawInput) => {
@@ -947,7 +947,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       description:
         "Create a link between two tickets. `type` describes the target's role relative to the source: `child` makes " +
         'the target a child of the source.',
-      inputSchema: linkInput.shape,
+      inputSchema: linkInput.strict(),
       annotations: { readOnlyHint: false, idempotentHint: true, openWorldHint: true },
     },
     guard(async (rawInput) => {
@@ -977,7 +977,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       description:
         'Remove an existing link between two tickets. The tickets themselves are untouched; only the ' +
         'relationship is deleted.',
-      inputSchema: linkInput.shape,
+      inputSchema: linkInput.strict(),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
     guard(async (rawInput) => {
@@ -1001,7 +1001,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       description:
         'Show the tickets linked to a ticket, grouped by link type (normal, parent, child). Useful for ' +
         'following a chain of related incidents.',
-      inputSchema: { ticket_id: z.number().int().positive() },
+      inputSchema: z.object({ ticket_id: z.number().int().positive() }).strict(),
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     guard(async (rawInput) => {
@@ -1022,7 +1022,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       description:
         'All recorded time units booked against a ticket, with who logged them and when. Use it to check ' +
         'billable effort before invoicing or closing.',
-      inputSchema: { ticket_id: z.number().int().positive() },
+      inputSchema: z.object({ ticket_id: z.number().int().positive() }).strict(),
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     guard(async (rawInput) => {
@@ -1045,7 +1045,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
     {
       title: 'Record time on a Zammad ticket',
       description: 'Book time units against a ticket, optionally tied to a specific article.',
-      inputSchema: timeInput.shape,
+      inputSchema: timeInput.strict(),
       annotations: { readOnlyHint: false, idempotentHint: false, openWorldHint: true },
     },
     guard(async (rawInput) => {

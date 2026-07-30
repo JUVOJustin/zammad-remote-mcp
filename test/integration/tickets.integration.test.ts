@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
-import { callTool, type Json, listTools, skipReason, startHarness, stopHarness } from './harness.js';
+import {
+  callTool,
+  callToolExpectingError,
+  type Json,
+  listTools,
+  skipReason,
+  startHarness,
+  stopHarness,
+} from './harness.js';
 import { AGENT_EMAIL, api, CUSTOMER_EMAIL } from './zammad.js';
 
 /**
@@ -41,6 +49,53 @@ describe('ticket lifecycle against a real Zammad', () => {
     // group and customer arrived as strings and had to be resolved.
     assert.ok(stored.group_id, 'group was not resolved');
     assert.ok(stored.customer_id, 'customer was not resolved');
+  });
+
+  it('refuses a ticket with no group or customer, naming what is missing', async (t) => {
+    if (!ready) return t.skip(skipReason);
+
+    // Zammad requires both. Catching it here means one round trip instead of a
+    // 422 whose body has to be read to find out which field was meant.
+    assert.match(
+      await callToolExpectingError('zammad_create_ticket', {
+        title: 'No group',
+        article: { body: 'hi' },
+      }),
+      /requires a group/,
+    );
+    assert.match(
+      await callToolExpectingError('zammad_create_ticket', {
+        title: 'No customer',
+        group: 'Users',
+        article: { body: 'hi' },
+      }),
+      /requires a customer/,
+    );
+  });
+
+  it('writes the first article as an internal note unless told otherwise', async (t) => {
+    if (!ready) return t.skip(skipReason);
+
+    // The safe default, asserted on what Zammad stored rather than on the
+    // payload we sent: nothing reaches the customer by accident.
+    const created = await callTool('zammad_create_ticket', {
+      title: 'Default article shape',
+      group: 'Users',
+      customer: CUSTOMER_EMAIL,
+      article: { body: 'Something broke' },
+    });
+
+    const listed = await callTool('zammad_list_ticket_articles', { ticket_id: created.ticket.id });
+    const first = listed.articles[0];
+    assert.equal(first.type, 'note', 'articles must default to a note, not an email');
+    assert.equal(first.internal, true, 'articles must default to internal');
+
+    // And the association names went through untouched — Zammad resolved them.
+    const stored = await api<Json>(`/api/v1/tickets/${created.ticket.id}`);
+    assert.equal(
+      stored.group_id,
+      (await api<Json[]>('/api/v1/groups')).find((g: Json) => g.name === 'Users').id,
+    );
   });
 
   it('moves a ticket through states and back', async (t) => {

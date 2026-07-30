@@ -269,7 +269,7 @@ export function registerSearchTools(server: McpServer, base: ToolContext, vocabu
         "Zammad's global search — the one behind the magnifier in the UI. Searches tickets, users, organizations " +
         'and knowledge base answers in one call. Use it for a broad "where does this term appear at all?" sweep; ' +
         'use `zammad_search_tickets` when you need real filtering.',
-      inputSchema: globalSearchInput.shape,
+      inputSchema: globalSearchInput.strict(),
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     guard(async (rawInput) => {

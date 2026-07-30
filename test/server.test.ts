@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { createServer, type Server } from 'node:http';
 import { after, before, describe, it } from 'node:test';
 import { serve } from '@hono/node-server';
 import { createApp } from '../src/core/app.js';
@@ -7,132 +6,26 @@ import { loadConfig } from '../src/core/config.js';
 import { createLogger } from '../src/core/util/logger.js';
 
 /**
- * End-to-end coverage: a stub Zammad, the real Hono app, and MCP traffic over
- * Streamable HTTP. This is what verifies the stateless claim — every request
- * below is independent, with no session header carried between them.
+ * The parts of the server that are the server's own: OAuth discovery, the
+ * dynamic-client-registration proxy, and the Streamable HTTP transport.
+ *
+ * Nothing here talks to Zammad, and nothing here stands in for it. There used to
+ * be a stub Zammad in this file answering canned JSON for the tool calls; every
+ * one of those tests now runs against the real instance in
+ * `test/integration/tools.integration.test.ts`. A fake Zammad can only confirm
+ * what we already assumed about the real one — which is exactly how a silently
+ * ignored `tags` argument and an article nested in the wrong parameter both
+ * survived until someone read the response back off a live instance.
+ *
+ * `DYNAMIC_TOOL_SCHEMAS` is off so no vocabulary fetch is even attempted:
+ * `ZAMMAD_URL` below is used to build redirect targets and is never dialled.
  */
 
-interface RecordedRequest {
-  method: string;
-  url: string;
-  authorization?: string;
-  body?: unknown;
-}
+/** Only ever appears inside URLs that are compared, never requested. */
+const ZAMMAD_URL = 'http://zammad.invalid';
 
-let zammad: Server;
-let zammadPort: number;
 let appServer: ReturnType<typeof serve>;
 let appPort: number;
-const requests: RecordedRequest[] = [];
-
-/** A stub Zammad that answers just enough of the REST API. */
-function startZammad(): Promise<void> {
-  zammad = createServer((req, res) => {
-    let raw = '';
-    req.on('data', (chunk) => (raw += chunk));
-    req.on('end', () => {
-      const url = new URL(req.url ?? '/', 'http://localhost');
-      requests.push({
-        method: req.method ?? 'GET',
-        url: url.pathname + url.search,
-        authorization: req.headers.authorization,
-        body: raw ? JSON.parse(raw) : undefined,
-      });
-
-      const send = (status: number, payload: unknown) => {
-        res.writeHead(status, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(payload));
-      };
-
-      if (req.headers.authorization !== 'Bearer good-token') {
-        return send(401, { error: 'authentication failed' });
-      }
-
-      switch (url.pathname) {
-        case '/api/v1/users/me':
-          return send(200, {
-            id: 3,
-            login: 'agent',
-            firstname: 'Ann',
-            lastname: 'Agent',
-            email: 'ann@example.com',
-          });
-        case '/api/v1/ticket_states':
-          return send(200, [
-            { id: 2, name: 'open', active: true, state_type_id: 2, state_type: 'open' },
-            { id: 4, name: 'closed', active: true, state_type_id: 5, state_type: 'closed' },
-          ]);
-        case '/api/v1/ticket_priorities':
-          return send(200, [{ id: 3, name: '3 high', active: true }]);
-        case '/api/v1/groups':
-          return send(200, [{ id: 2, name: '1st Level', active: true }]);
-        case '/api/v1/macros':
-          return send(200, [{ id: 9, name: 'Close as spam', active: true }]);
-        case '/api/v1/users/search':
-          return send(200, [
-            { id: 42, login: 'jdoe', email: 'jane@acme.com', firstname: 'Jane', lastname: 'Doe' },
-          ]);
-        case '/api/v1/users/42':
-          return send(200, {
-            id: 42,
-            login: 'jdoe',
-            email: 'jane@acme.com',
-            firstname: 'Jane',
-            lastname: 'Doe',
-          });
-        case '/api/v1/tickets/search': {
-          // Mirror Zammad's `Selector::Base.migrate_selector`: a condition with
-          // no `conditions` key is read as the legacy attribute-keyed form, and
-          // a bare leaf makes it merge a String into a Hash — a real 500.
-          const condition = (raw ? JSON.parse(raw) : {}).condition;
-          if (condition && typeof condition === 'object' && !('conditions' in condition)) {
-            const legacyShape = Object.values(condition).every(
-              (v) => v && typeof v === 'object' && !Array.isArray(v),
-            );
-            if (!legacyShape) {
-              return send(500, { error: 'Error ID stub: no implicit conversion of String into Hash' });
-            }
-          }
-          return send(200, {
-            records: [
-              {
-                id: 101,
-                number: '67001',
-                title: 'Printer offline',
-                state: 'open',
-                priority: '3 high',
-                group: '1st Level',
-                customer: 'jane@acme.com',
-                created_at: '2026-07-01T10:00:00Z',
-                updated_at: '2026-07-02T08:00:00Z',
-              },
-            ],
-            total_count: 1,
-          });
-        }
-        case '/api/v1/tickets':
-          if (req.method === 'POST')
-            return send(201, { id: 202, number: '67002', title: 'New ticket', state: 'new' });
-          return send(200, []);
-        case '/api/v1/tickets/101':
-          return send(200, { id: 101, number: '67001', title: 'Printer offline' });
-        case '/api/v1/links/add':
-          return send(201, { id: 1 });
-        case '/api/v1/links/remove':
-          return send(201, {});
-        default:
-          return send(404, { error: `stub has no route for ${url.pathname}` });
-      }
-    });
-  });
-
-  return new Promise((resolve) => {
-    zammad.listen(0, '127.0.0.1', () => {
-      zammadPort = (zammad.address() as { port: number }).port;
-      resolve();
-    });
-  });
-}
 
 /** Issue one MCP JSON-RPC call over Streamable HTTP. */
 async function mcp(
@@ -170,10 +63,8 @@ async function mcp(
 }
 
 before(async () => {
-  await startZammad();
-
   const config = loadConfig({
-    ZAMMAD_URL: `http://127.0.0.1:${zammadPort}`,
+    ZAMMAD_URL,
     ZAMMAD_AUTH_MODE: 'oauth',
     ZAMMAD_OAUTH_MODE: 'proxy',
     ZAMMAD_OAUTH_CLIENT_ID: 'zammad-client-id',
@@ -181,7 +72,7 @@ before(async () => {
     OAUTH_STATE_SECRET: 'test-secret-that-is-long-enough',
     PUBLIC_URL: 'http://127.0.0.1:39999',
     LOG_LEVEL: 'silent',
-    METADATA_CACHE_TTL_SECONDS: '0',
+    DYNAMIC_TOOL_SCHEMAS: 'false',
   } as NodeJS.ProcessEnv);
 
   const app = createApp(config, createLogger('silent'));
@@ -195,7 +86,6 @@ before(async () => {
 
 after(async () => {
   await new Promise<void>((resolve) => appServer.close(() => resolve()));
-  await new Promise<void>((resolve) => zammad.close(() => resolve()));
 });
 
 describe('discovery endpoints', () => {
@@ -267,7 +157,7 @@ describe('dynamic client registration', () => {
 
     assert.equal(authorize.status, 302);
     const location = new URL(authorize.headers.get('location')!);
-    assert.equal(location.origin, `http://127.0.0.1:${zammadPort}`);
+    assert.equal(location.origin, ZAMMAD_URL);
     assert.equal(location.pathname, '/oauth/authorize');
     assert.equal(
       location.searchParams.get('client_id'),
@@ -372,7 +262,7 @@ describe('mcp endpoint', () => {
     // as to which instance it belongs to, so the client has to be told.
     const instructions: string = response.body.result.instructions;
     assert.ok(
-      instructions.includes(`http://127.0.0.1:${zammadPort}`),
+      instructions.includes(ZAMMAD_URL),
       `the instructions do not name the instance: ${instructions.slice(0, 200)}`,
     );
   });
@@ -384,256 +274,5 @@ describe('mcp endpoint', () => {
       clientInfo: { name: 'test', version: '1.0.0' },
     });
     assert.equal(response.headers.get('mcp-session-id'), null);
-  });
-
-  it('lists every tool without a prior initialize on the same connection', async () => {
-    // No handshake first: proof that nothing is remembered between requests.
-    const response = await mcp('tools/list', {}, { id: 7 });
-    assert.equal(response.status, 200);
-
-    const names: string[] = response.body.result.tools.map((t: { name: string }) => t.name);
-    for (const expected of [
-      'zammad_search_tickets',
-      'zammad_search_users',
-      'zammad_search_organizations',
-      'zammad_search_global',
-      'zammad_get_ticket',
-      'zammad_create_ticket',
-      'zammad_update_ticket',
-      'zammad_delete_ticket',
-      'zammad_merge_tickets',
-      'zammad_mass_update_tickets',
-      'zammad_create_article',
-      'zammad_whoami',
-      'zammad_list_custom_attributes',
-    ]) {
-      assert.ok(names.includes(expected), `missing tool ${expected}`);
-    }
-  });
-
-  it("folds the instance's own states, priorities and groups into the tool schema", async () => {
-    // This is what replaces the old zammad_list_ticket_states / _priorities /
-    // _groups tools: the values are in the schema the model is already reading.
-    const response = await mcp('tools/list', {});
-    const search = response.body.result.tools.find(
-      (t: { name: string }) => t.name === 'zammad_search_tickets',
-    );
-
-    const collectEnums = (node: unknown, found: string[] = []): string[] => {
-      if (!node || typeof node !== 'object') return found;
-      const record = node as Record<string, unknown>;
-      if (Array.isArray(record.enum)) found.push(...(record.enum as string[]));
-      for (const value of Object.values(record)) collectEnums(value, found);
-      return found;
-    };
-
-    const stateEnum = collectEnums(search.inputSchema.properties.state);
-    assert.ok(stateEnum.includes('open'), `expected the stub's states, got ${stateEnum.join(',')}`);
-    assert.ok(stateEnum.includes('closed'));
-
-    assert.ok(collectEnums(search.inputSchema.properties.priority).includes('3 high'));
-    assert.ok(collectEnums(search.inputSchema.properties.group).includes('1st Level'));
-  });
-
-  it('still accepts a value that is not in the published enum', async () => {
-    // Schemas get cached by clients, so a state created after discovery must not
-    // be rejected client-side. The enum is a hint; the server resolves.
-    const response = await mcp('tools/call', {
-      name: 'zammad_search_tickets',
-      arguments: { state: 'brand-new-state' },
-    });
-
-    // Rejected by Zammad's value set, not by schema validation — the difference
-    // matters, because the former carries a message the model can act on.
-    assert.equal(response.body.result.isError, true);
-    assert.match(response.body.result.content[0].text, /Unknown ticket state/);
-  });
-
-  it('no longer exposes the superseded discovery tools', async () => {
-    const response = await mcp('tools/list', {});
-    const names: string[] = response.body.result.tools.map((t: { name: string }) => t.name);
-
-    for (const gone of [
-      'zammad_list_ticket_states',
-      'zammad_list_ticket_priorities',
-      'zammad_list_groups',
-      'zammad_list_macros',
-    ]) {
-      assert.ok(!names.includes(gone), `${gone} should have been replaced by schema enums`);
-    }
-  });
-
-  it('takes a macro by name rather than by ID', async () => {
-    const response = await mcp('tools/list', {});
-    const macro = response.body.result.tools.find((t: { name: string }) => t.name === 'zammad_apply_macro');
-
-    assert.ok(macro.inputSchema.properties.macro, 'expected a `macro` argument');
-    assert.ok(!macro.inputSchema.properties.macro_id, '`macro_id` should be gone');
-  });
-
-  it("runs a ticket search and forwards the caller's token to Zammad", async () => {
-    requests.length = 0;
-
-    const response = await mcp('tools/call', {
-      name: 'zammad_search_tickets',
-      arguments: { text: 'printer', state: ['open'], priority: ['3 high'] },
-    });
-
-    assert.equal(response.status, 200);
-    const payload = JSON.parse(response.body.result.content[0].text);
-    assert.equal(payload.total_count, 1);
-    assert.equal(payload.tickets[0].number, '67001');
-    assert.equal(payload.tickets[0].state, 'open');
-
-    // The generated query is echoed back so it can be refined.
-    assert.equal(payload.search.query, 'printer*');
-    assert.ok(payload.search.condition);
-
-    const search = requests.find((r) => r.url.startsWith('/api/v1/tickets/search'));
-    assert.ok(search, 'expected a call to the search endpoint');
-    assert.equal(search.method, 'POST', 'a nested condition has to be POSTed');
-    assert.equal(search.authorization, 'Bearer good-token', "the caller's own token must be used");
-
-    const body = search.body as Record<string, any>;
-    assert.equal(body.query, 'printer*');
-    assert.equal(body.expand, true);
-    assert.equal(body.with_total_count, true);
-    // Names were resolved to IDs against the stub's state/priority lists.
-    const json = JSON.stringify(body.condition);
-    assert.match(json, /"ticket\.state_id"/);
-    assert.match(json, /\[2\]/);
-    assert.match(json, /"ticket\.priority_id"/);
-  });
-
-  it('surfaces a Zammad 401 as a tool error rather than crashing', async () => {
-    const response = await mcp(
-      'tools/call',
-      { name: 'zammad_whoami', arguments: {} },
-      { token: 'bad-token' },
-    );
-
-    assert.equal(response.status, 200);
-    assert.equal(response.body.result.isError, true);
-    assert.match(response.body.result.content[0].text, /HTTP 401/);
-  });
-
-  it('reports invalid filter values with the valid options', async () => {
-    const response = await mcp('tools/call', {
-      name: 'zammad_search_tickets',
-      arguments: { state: ['definitely-not-a-state'] },
-    });
-
-    assert.equal(response.body.result.isError, true);
-    assert.match(response.body.result.content[0].text, /Unknown ticket state/);
-    // The message lists what the instance actually supports, so the model can retry.
-    assert.match(response.body.result.content[0].text, /Available: closed, open/);
-  });
-
-  it('requires group and customer when creating a ticket', async () => {
-    const response = await mcp('tools/call', {
-      name: 'zammad_create_ticket',
-      arguments: { title: 'No group', article: { body: 'hi' } },
-    });
-
-    assert.equal(response.body.result.isError, true);
-    assert.match(response.body.result.content[0].text, /requires a group/);
-  });
-
-  it('creates a ticket with an internal note by default', async () => {
-    requests.length = 0;
-
-    const response = await mcp('tools/call', {
-      name: 'zammad_create_ticket',
-      arguments: {
-        title: 'New ticket',
-        group: '1st Level',
-        customer: 'jane@acme.com',
-        article: { body: 'Something broke' },
-      },
-    });
-
-    const payload = JSON.parse(response.body.result.content[0].text);
-    assert.equal(payload.created, true);
-    assert.equal(payload.ticket.number, '67002');
-
-    // The path carries `?expand=true`, so match the path rather than the whole URL.
-    const create = requests.find((r) => r.method === 'POST' && r.url.startsWith('/api/v1/tickets'));
-    assert.ok(create, 'the create request should have gone out');
-    assert.ok(create.url.includes('expand=true'), 'without expand the response has no association names');
-    const body = create!.body as Record<string, any>;
-    assert.equal(body.group, '1st Level', 'association names go through untouched');
-    assert.equal(body.article.internal, true, 'articles must default to internal');
-    assert.equal(body.article.type, 'note', 'articles must default to a note, not an email');
-  });
-
-  it('resolves @@mentions in the first article of a new ticket', async () => {
-    requests.length = 0;
-
-    const response = await mcp('tools/call', {
-      name: 'zammad_create_ticket',
-      arguments: {
-        title: 'New ticket',
-        group: '1st Level',
-        customer: 'jane@acme.com',
-        article: { body: '@@jane@acme.com please take a look' },
-      },
-    });
-
-    const payload = JSON.parse(response.body.result.content[0].text);
-    assert.deepEqual(payload.mentioned, [{ id: 42, name: 'Jane Doe' }]);
-
-    const create = requests.find((r) => r.method === 'POST' && r.url.startsWith('/api/v1/tickets'));
-    const body = create!.body as Record<string, any>;
-    // Sent verbatim, `@@jane@acme.com` would stay literal text and Zammad
-    // would never create the mention — it has to become the anchor markup.
-    assert.match(body.article.body, /data-mention-user-id="42"/);
-    assert.equal(body.article.content_type, 'text/html');
-  });
-
-  it('links tickets with Zammad’s required ticket number and ID pair', async () => {
-    requests.length = 0;
-
-    const response = await mcp('tools/call', {
-      name: 'zammad_link_tickets',
-      arguments: { ticket_id: 101, target_ticket_id: 102, type: 'child' },
-    });
-
-    assert.equal(response.body.result.isError, undefined);
-    const source = requests.find(
-      (request) => request.method === 'GET' && request.url === '/api/v1/tickets/101',
-    );
-    assert.ok(source, 'expected the source ticket number lookup');
-
-    const link = requests.find((request) => request.method === 'POST' && request.url === '/api/v1/links/add');
-    assert.ok(link, 'expected a link request');
-    assert.deepEqual(link.body, {
-      link_type: 'child',
-      link_object_source: 'Ticket',
-      link_object_source_number: '67001',
-      link_object_target: 'Ticket',
-      link_object_target_value: 102,
-    });
-  });
-
-  it('unlinks tickets using their internal IDs', async () => {
-    requests.length = 0;
-
-    const response = await mcp('tools/call', {
-      name: 'zammad_unlink_tickets',
-      arguments: { ticket_id: 101, target_ticket_id: 102, type: 'child' },
-    });
-
-    assert.equal(response.body.result.isError, undefined);
-    const unlink = requests.find(
-      (request) => request.method === 'DELETE' && request.url === '/api/v1/links/remove',
-    );
-    assert.ok(unlink, 'expected an unlink request');
-    assert.deepEqual(unlink.body, {
-      link_type: 'child',
-      link_object_source: 'Ticket',
-      link_object_source_value: 101,
-      link_object_target: 'Ticket',
-      link_object_target_value: 102,
-    });
   });
 });

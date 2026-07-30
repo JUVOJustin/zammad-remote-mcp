@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
-import { createServer, type Server } from 'node:http';
 import { after, before, describe, it } from 'node:test';
-import { serve } from '@hono/node-server';
-import { createApp } from '../src/core/app.js';
-import { loadConfig } from '../src/core/config.js';
-import { createLogger } from '../src/core/util/logger.js';
+import {
+  callTool,
+  callToolExpectingError,
+  listTools,
+  skipReason,
+  startHarness,
+  stopHarness,
+} from './harness.js';
 
 /**
  * Every tool's input schema must survive a strict JSON Schema validator.
@@ -20,66 +23,24 @@ import { createLogger } from '../src/core/util/logger.js';
  * own behaviour reveals the problem, so it has to be caught here.
  */
 
-let zammad: Server;
-let appServer: ReturnType<typeof serve>;
-let appPort: number;
 let tools: Array<{ name: string; inputSchema: unknown }>;
+let ready = false;
 
-/** A stub answering only what building the tool list requires. */
-function startZammad(): Promise<number> {
-  zammad = createServer((req, res) => {
-    req.resume();
-    const send = (payload: unknown) => {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(payload));
-    };
-    const path = new URL(req.url ?? '/', 'http://localhost').pathname;
-
-    if (path === '/api/v1/ticket_states') {
-      return send([{ id: 2, name: 'open', active: true, state_type: 'open' }]);
-    }
-    if (path === '/api/v1/ticket_priorities') return send([{ id: 3, name: '3 high', active: true }]);
-    if (path === '/api/v1/groups') return send([{ id: 2, name: '1st Level', active: true }]);
-    if (path === '/api/v1/macros') return send([{ id: 9, name: 'Close as spam', active: true }]);
-    res.writeHead(404, { 'Content-Type': 'application/json' });
-    res.end('{}');
-  });
-
-  return new Promise((resolve) => {
-    zammad.listen(0, '127.0.0.1', () => resolve((zammad.address() as { port: number }).port));
-  });
-}
-
+/**
+ * The schemas are read off the running Docker instance, not off a stand-in.
+ *
+ * That matters here more than anywhere: the enums in these schemas are built
+ * from the instance's own states, priorities, groups and macros, so a stub would
+ * be validating shapes derived from values a stub invented. What a client
+ * actually receives is what has to survive the validator.
+ */
 before(async () => {
-  const zammadPort = await startZammad();
-  const config = loadConfig({
-    ZAMMAD_URL: `http://127.0.0.1:${zammadPort}`,
-    ZAMMAD_AUTH_MODE: 'token',
-    ZAMMAD_API_TOKEN: 'stub',
-    LOG_LEVEL: 'silent',
-    METADATA_CACHE_TTL_SECONDS: '0',
-  } as NodeJS.ProcessEnv);
-
-  const app = createApp(config, createLogger('silent'));
-  await new Promise<void>((resolve) => {
-    appServer = serve({ fetch: app.fetch, hostname: '127.0.0.1', port: 0 }, (info) => {
-      appPort = info.port;
-      resolve();
-    });
-  });
-
-  const response = await fetch(`http://127.0.0.1:${appPort}/mcp`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
-  });
-  tools = (await response.json()).result.tools;
+  ready = await startHarness();
+  if (!ready) return;
+  tools = (await listTools()) as Array<{ name: string; inputSchema: unknown }>;
 });
 
-after(async () => {
-  await new Promise<void>((resolve) => appServer.close(() => resolve()));
-  await new Promise<void>((resolve) => zammad.close(() => resolve()));
-});
+after(stopHarness);
 
 /**
  * Keywords whose value is itself a schema, or a container of schemas.
@@ -156,7 +117,8 @@ function findEmptySchemas(schema: unknown): string[] {
 }
 
 describe('tool input schemas stay portable across MCP clients', () => {
-  it('exposes every tool, including the search tools', () => {
+  it('exposes every tool, including the search tools', (t) => {
+    if (!ready) return t.skip(skipReason);
     const names = tools.map((t) => t.name);
     for (const expected of [
       'zammad_search_tickets',
@@ -169,7 +131,8 @@ describe('tool input schemas stay portable across MCP clients', () => {
     assert.ok(tools.length >= 35, `expected the full tool set, got ${tools.length}`);
   });
 
-  it('uses no $ref, definitions or $defs anywhere', () => {
+  it('uses no $ref, definitions or $defs anywhere', (t) => {
+    if (!ready) return t.skip(skipReason);
     // A recursive zod schema (z.lazy) is the way these reappear.
     for (const tool of tools) {
       const hits = findKeys(tool.inputSchema, ['$ref', 'definitions', '$defs']);
@@ -177,7 +140,8 @@ describe('tool input schemas stay portable across MCP clients', () => {
     }
   });
 
-  it('uses no allOf or oneOf', () => {
+  it('uses no allOf or oneOf', (t) => {
+    if (!ready) return t.skip(skipReason);
     // anyOf is fine and is what zod unions produce; allOf/oneOf are not part of
     // the subset the strict validators accept.
     for (const tool of tools) {
@@ -186,7 +150,8 @@ describe('tool input schemas stay portable across MCP clients', () => {
     }
   });
 
-  it('avoids the keywords observed to get a tool dropped', () => {
+  it('avoids the keywords observed to get a tool dropped', (t) => {
+    if (!ready) return t.skip(skipReason);
     // A denylist, not an allowlist, and every entry is grounded:
     //
     //  $ref/definitions/$defs/allOf — the three search tools vanished from Codex
@@ -207,7 +172,8 @@ describe('tool input schemas stay portable across MCP clients', () => {
     }
   });
 
-  it('never renders items as an array', () => {
+  it('never renders items as an array', (t) => {
+    if (!ready) return t.skip(skipReason);
     // z.tuple() emits `items: [schema, schema]`, which is invalid in JSON Schema
     // 2020-12 — that is `prefixItems` — and gets the tool discarded.
     for (const tool of tools) {
@@ -230,7 +196,8 @@ describe('tool input schemas stay portable across MCP clients', () => {
     }
   });
 
-  it('keeps the property count within reach of the tools clients accept', () => {
+  it('keeps the property count within reach of the tools clients accept', (t) => {
+    if (!ready) return t.skip(skipReason);
     // No published limit to cite, but zammad_search_users (75 properties) is
     // accepted where the far larger ticket search was not, so runaway growth is
     // a plausible second cause and worth bounding.
@@ -258,7 +225,8 @@ describe('tool input schemas stay portable across MCP clients', () => {
     }
   });
 
-  it('constrains every sub-schema', () => {
+  it('constrains every sub-schema', (t) => {
+    if (!ready) return t.skip(skipReason);
     // z.unknown() / z.any() produce `{}`, which means "anything".
     for (const tool of tools) {
       const hits = findEmptySchemas(tool.inputSchema);
@@ -266,7 +234,8 @@ describe('tool input schemas stay portable across MCP clients', () => {
     }
   });
 
-  it('declares an object schema with a properties map', () => {
+  it('declares an object schema with a properties map', (t) => {
+    if (!ready) return t.skip(skipReason);
     for (const tool of tools) {
       const schema = tool.inputSchema as { type?: string; properties?: unknown };
       assert.equal(schema.type, 'object', `${tool.name} must take an object`);
@@ -274,7 +243,8 @@ describe('tool input schemas stay portable across MCP clients', () => {
     }
   });
 
-  it('keeps each schema small enough to send to a model', () => {
+  it('keeps each schema small enough to send to a model', (t) => {
+    if (!ready) return t.skip(skipReason);
     // Not a hard protocol limit, but tool lists are sent on every request and
     // some clients cap them. The search schema is the one that grows.
     for (const tool of tools) {
@@ -286,11 +256,66 @@ describe('tool input schemas stay portable across MCP clients', () => {
     assert.ok(total < 256 * 1024, `the whole tool list is ${(total / 1024).toFixed(1)} KB`);
   });
 
-  it('names and describes every tool', () => {
+  it('names and describes every tool', (t) => {
+    if (!ready) return t.skip(skipReason);
     for (const tool of tools) {
       const t = tool as { name: string; description?: string };
       assert.match(t.name, /^zammad_[a-z0-9_]+$/, `${t.name} is not a plain snake_case tool name`);
       assert.ok((t.description?.length ?? 0) > 40, `${t.name} needs a usable description`);
     }
+  });
+});
+
+describe('closed parameter sets are strict', () => {
+  /**
+   * A tool whose arguments are a fixed set publishes `additionalProperties: false`
+   * and refuses anything else by name.
+   *
+   * The MCP SDK validates arguments before the handler runs, and a permissive
+   * object simply *drops* what it does not recognise — so a caller that misspells
+   * an argument, or reaches for one that was removed, is told the call succeeded
+   * and never learns its intent was discarded. That is the same shape of failure
+   * as an argument Zammad itself ignores.
+   *
+   * The tools left permissive are the ones carrying Object Manager passthrough
+   * (`custom_fields`, `custom`, `raw_condition`), listed here so the exception is
+   * deliberate rather than an oversight.
+   */
+  const PERMISSIVE = new Set([
+    'zammad_create_ticket',
+    'zammad_update_ticket',
+    'zammad_mass_update_tickets',
+    'zammad_search_tickets',
+    'zammad_search_users',
+    'zammad_search_organizations',
+  ]);
+
+  it('publishes additionalProperties: false wherever the set is closed', (t) => {
+    if (!ready) return t.skip(skipReason);
+
+    for (const tool of tools) {
+      const schema = tool.inputSchema as { additionalProperties?: unknown };
+      if (PERMISSIVE.has(tool.name)) continue;
+      assert.equal(schema.additionalProperties, false, `${tool.name} still accepts unknown arguments`);
+    }
+  });
+
+  it('refuses an unknown argument by name rather than dropping it', async (t) => {
+    if (!ready) return t.skip(skipReason);
+
+    const message = await callToolExpectingError('zammad_get_ticket', {
+      ticket_id: 1,
+      artikel_limit: 5,
+    });
+
+    assert.match(message, /artikel_limit/, `the error should name the key: ${message}`);
+  });
+
+  it('still takes the arguments it declares', async (t) => {
+    if (!ready) return t.skip(skipReason);
+
+    // Strictness must not have cost a real argument on the way in.
+    const result = await callTool('zammad_get_recent_tickets', { limit: 3 });
+    assert.ok(result, 'a declared argument was refused');
   });
 });
