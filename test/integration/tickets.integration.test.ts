@@ -410,6 +410,416 @@ describe('ticket lifecycle against a real Zammad', () => {
     }
   });
 
+  /**
+   * The signature, against the instance that owns it.
+   *
+   * A unit test can only prove the helpers agree with a fixture. What it cannot
+   * show is that the group really points at that signature, that the placeholders
+   * name attributes this Zammad actually returns, or that Zammad stores the
+   * composed body rather than rewriting it — all of which are only visible from
+   * the article Zammad hands back.
+   */
+  describe('group signatures', () => {
+    /** What the UI would put in the "Send Email" tab: recipient included. */
+    const emailArticle = (overrides: Record<string, unknown> = {}) => ({
+      body: 'Opened by the integration suite.',
+      type: 'email',
+      sender: 'Agent',
+      internal: false,
+      to: CUSTOMER_EMAIL,
+      ...overrides,
+    });
+
+    async function firstArticle(ticketId: number): Promise<Json> {
+      const articles = await api<Json[]>(`/api/v1/ticket_articles/by_ticket/${ticketId}`);
+      return articles[0];
+    }
+
+    it('signs an email article with the signature configured on the group', async (t) => {
+      if (!ready) return t.skip(skipReason);
+
+      const group = await api<Json>('/api/v1/groups/1');
+      assert.ok(group.signature_id, 'the seeded group has no signature to test against');
+      const signature = await api<Json>(`/api/v1/signatures/${group.signature_id}`);
+      assert.match(signature.body, /#\{/, 'the fixture signature has no placeholder to resolve');
+
+      const created = await callTool('zammad_create_ticket', {
+        title: 'Signature applied',
+        group: 'Users',
+        customer: CUSTOMER_EMAIL,
+        article: emailArticle({ content_type: 'text/html' }),
+      });
+
+      assert.equal(created.signature.appended, true);
+      assert.equal(created.signature.signature_id, group.signature_id);
+      assert.equal(created.signature.signature_name, signature.name);
+
+      const body: string = (await firstArticle(created.ticket.id)).body;
+      assert.ok(
+        body.includes(`data-signature-id="${group.signature_id}"`),
+        `Zammad did not store the marker: ${body}`,
+      );
+      // The credential the harness authenticates with is the admin, so this is
+      // the placeholder resolved against a user Zammad really returned.
+      const me = await api<Json>('/api/v1/users/me');
+      assert.ok(body.includes(`${me.firstname} ${me.lastname}`), `the user did not render: ${body}`);
+      assert.ok(!body.includes('#{'), `a placeholder was left unrendered: ${body}`);
+    });
+
+    it('renders it as text for a text/plain article', async (t) => {
+      if (!ready) return t.skip(skipReason);
+
+      const created = await callTool('zammad_create_ticket', {
+        title: 'Signature as text',
+        group: 'Users',
+        customer: CUSTOMER_EMAIL,
+        article: emailArticle(),
+      });
+
+      const article = await firstArticle(created.ticket.id);
+      const me = await api<Json>('/api/v1/users/me');
+      assert.equal(article.content_type, 'text/plain');
+      assert.ok(!article.body.includes('<div'), `markup leaked into a plain article: ${article.body}`);
+      assert.ok(article.body.includes(`${me.firstname} ${me.lastname}`), article.body);
+    });
+
+    it('leaves a note unsigned, as the create screen does', async (t) => {
+      if (!ready) return t.skip(skipReason);
+
+      const created = await newTicket('Signature skipped for a note');
+
+      assert.equal(created.signature.appended, false);
+      assert.equal((await firstArticle(created.ticket.id)).body, 'Opened by the integration suite.');
+    });
+
+    it('honours append_signature: false on the email channel', async (t) => {
+      if (!ready) return t.skip(skipReason);
+
+      const created = await callTool('zammad_create_ticket', {
+        title: 'Signature declined',
+        group: 'Users',
+        customer: CUSTOMER_EMAIL,
+        article: emailArticle({ content_type: 'text/html', append_signature: false }),
+      });
+
+      assert.equal(created.signature, undefined);
+      assert.equal((await firstArticle(created.ticket.id)).body, 'Opened by the integration suite.');
+    });
+
+    it('signs a reply added with zammad_create_article', async (t) => {
+      if (!ready) return t.skip(skipReason);
+
+      const ticket = await newTicket('Signature on a reply');
+      const me = await api<Json>('/api/v1/users/me');
+
+      const created = await callTool('zammad_create_article', {
+        ticket_id: ticket.ticket.id,
+        body: 'Replying from the integration suite.',
+        type: 'email',
+        internal: false,
+        to: CUSTOMER_EMAIL,
+        content_type: 'text/html',
+      });
+
+      assert.equal(created.signature.appended, true);
+
+      // Read back from Zammad, not from the tool's own echo.
+      const articles = await api<Json[]>(`/api/v1/ticket_articles/by_ticket/${ticket.ticket.id}`);
+      const reply = articles[articles.length - 1];
+      assert.ok(reply.body.includes('data-signature-id='), reply.body);
+      assert.ok(reply.body.includes(`${me.firstname} ${me.lastname}`), reply.body);
+    });
+
+    it('signs an article appended through zammad_update_ticket', async (t) => {
+      if (!ready) return t.skip(skipReason);
+
+      const ticket = await newTicket('Signature on an update');
+      const updated = await callTool('zammad_update_ticket', {
+        ticket_id: ticket.ticket.id,
+        state: 'open',
+        article: {
+          body: 'Closing note from the integration suite.',
+          type: 'email',
+          internal: false,
+          to: CUSTOMER_EMAIL,
+          content_type: 'text/html',
+        },
+      });
+
+      assert.equal(updated.signature.appended, true);
+
+      const articles = await api<Json[]>(`/api/v1/ticket_articles/by_ticket/${ticket.ticket.id}`);
+      assert.ok(articles[articles.length - 1].body.includes('data-signature-id='));
+    });
+
+    it('resolves #{ticket.…} against the ticket being replied to', async (t) => {
+      if (!ready) return t.skip(skipReason);
+
+      // The Escalations group's signature is seeded with ticket placeholders,
+      // so this reads what the composer would render on an open ticket: the
+      // number and title Zammad itself assigned.
+      const ticket = await callTool('zammad_create_ticket', {
+        title: 'Signature placeholders',
+        group: 'Escalations',
+        customer: CUSTOMER_EMAIL,
+        article: { body: 'Opened by the integration suite.', type: 'note', internal: false },
+      });
+
+      await callTool('zammad_create_article', {
+        ticket_id: ticket.ticket.id,
+        body: 'Reply',
+        type: 'email',
+        internal: false,
+        to: CUSTOMER_EMAIL,
+        content_type: 'text/html',
+      });
+
+      const articles = await api<Json[]>(`/api/v1/ticket_articles/by_ticket/${ticket.ticket.id}`);
+      const reply = articles[articles.length - 1];
+      assert.ok(
+        reply.body.includes(
+          `Escalations desk — Re ${ticket.ticket.number}: Signature placeholders (Escalations)`,
+        ),
+        reply.body,
+      );
+    });
+
+    it('signs with the group the same update moves the ticket to', async (t) => {
+      if (!ready) return t.skip(skipReason);
+
+      // The ticket is in Users (signature 1) and is moved to Escalations
+      // (signature 2) in the same call. The UI re-renders the signature the
+      // moment the group changes, so the destination group's has to win.
+      const ticket = await newTicket('Signature follows the group');
+      const escalations = await api<Json>('/api/v1/groups/2');
+
+      const updated = await callTool('zammad_update_ticket', {
+        ticket_id: ticket.ticket.id,
+        group: 'Escalations',
+        article: {
+          body: 'Handing over.',
+          type: 'email',
+          internal: false,
+          to: CUSTOMER_EMAIL,
+          content_type: 'text/html',
+        },
+      });
+
+      assert.equal(
+        updated.signature.signature_id,
+        escalations.signature_id,
+        'it signed with the group the ticket was leaving',
+      );
+
+      const articles = await api<Json[]>(`/api/v1/ticket_articles/by_ticket/${ticket.ticket.id}`);
+      assert.ok(articles[articles.length - 1].body.includes('Escalations desk'));
+    });
+
+    it('leaves a note added to an existing ticket unsigned', async (t) => {
+      if (!ready) return t.skip(skipReason);
+
+      const ticket = await newTicket('Signature skipped on a note reply');
+      await callTool('zammad_create_article', { ticket_id: ticket.ticket.id, body: 'An internal note.' });
+
+      const articles = await api<Json[]>(`/api/v1/ticket_articles/by_ticket/${ticket.ticket.id}`);
+      assert.equal(articles[articles.length - 1].body, 'An internal note.');
+    });
+
+    /**
+     * The states a real instance can be in that must produce no signature.
+     *
+     * These are seeded as groups rather than asserted against a stub, because the
+     * thing under test is what Zammad actually stores: a null `signature_id` and
+     * an `active: false` signature are exactly the two an admin creates by
+     * leaving the group form empty or by retiring a signature.
+     */
+    it('adds nothing when the group has no signature configured', async (t) => {
+      if (!ready) return t.skip(skipReason);
+
+      const group = await api<Json[]>('/api/v1/groups');
+      const unsigned = group.find((candidate) => candidate.name === 'Unsigned');
+      assert.equal(unsigned?.signature_id, null, 'the fixture group should have no signature');
+
+      const created = await callTool('zammad_create_ticket', {
+        title: 'Signature absent',
+        group: 'Unsigned',
+        customer: CUSTOMER_EMAIL,
+        article: emailArticle({ content_type: 'text/html' }),
+      });
+
+      assert.equal(created.signature.appended, false);
+      assert.match(created.signature.reason, /no active signature/);
+      assert.equal((await firstArticle(created.ticket.id)).body, 'Opened by the integration suite.');
+    });
+
+    it('adds nothing when the group’s signature is switched off', async (t) => {
+      if (!ready) return t.skip(skipReason);
+
+      const created = await callTool('zammad_create_ticket', {
+        title: 'Signature inactive',
+        group: 'Retired',
+        customer: CUSTOMER_EMAIL,
+        article: emailArticle({ content_type: 'text/html' }),
+      });
+
+      assert.equal(created.signature.appended, false);
+      const body = (await firstArticle(created.ticket.id)).body;
+      assert.equal(body, 'Opened by the integration suite.');
+      assert.ok(!body.includes('Retired team'), 'an inactive signature was sent');
+    });
+
+    it('does not sign a reply twice when the same body comes back', async (t) => {
+      if (!ready) return t.skip(skipReason);
+
+      // What a caller does by reading an article and passing the body back, or by
+      // retrying a call it thought had failed. Zammad's own composer refuses to
+      // stack signatures and so must this.
+      const ticket = await newTicket('Signature not doubled');
+      const first = await callTool('zammad_create_article', {
+        ticket_id: ticket.ticket.id,
+        body: 'First attempt.',
+        type: 'email',
+        internal: false,
+        to: CUSTOMER_EMAIL,
+        content_type: 'text/html',
+      });
+      assert.equal(first.signature.appended, true);
+
+      const stored = await api<Json[]>(`/api/v1/ticket_articles/by_ticket/${ticket.ticket.id}`);
+      const signedBody = stored[stored.length - 1].body;
+
+      const second = await callTool('zammad_create_article', {
+        ticket_id: ticket.ticket.id,
+        body: signedBody,
+        type: 'email',
+        internal: false,
+        to: CUSTOMER_EMAIL,
+        content_type: 'text/html',
+      });
+
+      assert.equal(second.signature.appended, false);
+      assert.match(second.signature.reason, /already carries this signature/);
+
+      const after = await api<Json[]>(`/api/v1/ticket_articles/by_ticket/${ticket.ticket.id}`);
+      const body = after[after.length - 1].body;
+      assert.equal(
+        body.match(/data-signature-id/g)?.length,
+        1,
+        `the signature was stacked: ${body.slice(0, 400)}`,
+      );
+    });
+
+    it('signs as the user it acts on behalf of, not as the credential', async (t) => {
+      if (!ready) return t.skip(skipReason);
+
+      // `signshow` reports the authenticated session even under X-On-Behalf-Of,
+      // so the user has to come from /api/v1/users/me. Getting it wrong signs one
+      // agent's mail with another's name.
+      const agent = (await api<Json[]>(`/api/v1/users/search?query=${AGENT_EMAIL}&limit=1`))[0];
+      const me = await api<Json>('/api/v1/users/me');
+
+      const created = await callTool('zammad_create_ticket', {
+        title: 'Signature on behalf',
+        group: 'Users',
+        customer: CUSTOMER_EMAIL,
+        on_behalf_of: AGENT_EMAIL,
+        article: emailArticle({ content_type: 'text/html' }),
+      });
+
+      const body = (await firstArticle(created.ticket.id)).body;
+      assert.ok(body.includes(`${agent.firstname} ${agent.lastname}`), body);
+      assert.ok(!body.includes(`${me.firstname} ${me.lastname}`), 'it signed as the credential owner');
+    });
+
+    it('reports the closing it added', async (t) => {
+      if (!ready) return t.skip(skipReason);
+
+      const me = await api<Json>('/api/v1/users/me');
+      const created = await callTool('zammad_create_ticket', {
+        title: 'Signature reported',
+        group: 'Users',
+        customer: CUSTOMER_EMAIL,
+        article: emailArticle({ content_type: 'text/html' }),
+      });
+
+      // A doubled sign-off can only be prevented by the caller, so what was
+      // appended has to be visible rather than guessed at.
+      assert.ok(
+        created.signature.appended_text.includes(`${me.firstname} ${me.lastname}`),
+        created.signature.appended_text,
+      );
+      assert.ok(!created.signature.appended_text.includes('<'), 'the preview should be plain text');
+    });
+
+    it('previews the same text it later writes', async (t) => {
+      if (!ready) return t.skip(skipReason);
+
+      // The preview exists so a caller can decide whether the body still needs a
+      // closing. If it ever diverged from what is actually appended it would be
+      // worse than nothing, so the two are compared against a real instance.
+      const preview = await callTool('zammad_get_group_signature', { group: 'Users' });
+      assert.equal(preview.has_signature, true);
+
+      const created = await callTool('zammad_create_ticket', {
+        title: 'Preview parity',
+        group: 'Users',
+        customer: CUSTOMER_EMAIL,
+        article: emailArticle({ content_type: 'text/html' }),
+      });
+
+      const body = (await firstArticle(created.ticket.id)).body;
+      assert.equal(body, `Opened by the integration suite.<br><br>${preview.html}`);
+      assert.equal(created.signature.appended_text, preview.text);
+    });
+
+    it('previews a reply against the ticket it would go on', async (t) => {
+      if (!ready) return t.skip(skipReason);
+
+      const ticket = await callTool('zammad_create_ticket', {
+        title: 'Preview from ticket',
+        group: 'Escalations',
+        customer: CUSTOMER_EMAIL,
+        article: { body: 'Opened by the integration suite.', type: 'note', internal: false },
+      });
+
+      const preview = await callTool('zammad_get_group_signature', { ticket_id: ticket.ticket.id });
+
+      assert.equal(preview.group, 'Escalations');
+      // The seeded signature carries ticket placeholders, which is what makes a
+      // ticket-scoped preview different from a bare group one.
+      assert.ok(preview.text.includes(ticket.ticket.number), preview.text);
+      assert.ok(preview.text.includes('Preview from ticket'), preview.text);
+      assert.equal(preview.note, undefined, 'nothing was left unresolved, so there is no caveat');
+    });
+
+    it('reports the groups that sign nothing', async (t) => {
+      if (!ready) return t.skip(skipReason);
+
+      for (const group of ['Unsigned', 'Retired']) {
+        const preview = await callTool('zammad_get_group_signature', { group });
+        assert.equal(preview.has_signature, false, group);
+        assert.equal(preview.text, undefined, group);
+      }
+    });
+
+    it('offers the flag as enabled by default wherever an article is written', async (t) => {
+      if (!ready) return t.skip(skipReason);
+
+      const tools = await listTools();
+      const schemaFor = (name: string) => tools.find((tool: Json) => tool.name === name)?.inputSchema as Json;
+
+      assert.equal(
+        schemaFor('zammad_create_ticket').properties.article.properties.append_signature.default,
+        true,
+      );
+      assert.equal(
+        schemaFor('zammad_update_ticket').properties.article.properties.append_signature.default,
+        true,
+      );
+      assert.equal(schemaFor('zammad_create_article').properties.append_signature.default, true);
+    });
+  });
+
   it('rejects an unknown group rather than inventing one', async (t) => {
     if (!ready) return t.skip(skipReason);
 
