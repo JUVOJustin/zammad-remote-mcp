@@ -68,6 +68,10 @@ function startZammad(): Promise<void> {
           return send(200, [{ id: 2, name: '1st Level', active: true }]);
         case '/api/v1/macros':
           return send(200, [{ id: 9, name: 'Close as spam', active: true }]);
+        case '/api/v1/users/search':
+          return send(200, [{ id: 42, login: 'jdoe', email: 'jane@acme.com', firstname: 'Jane', lastname: 'Doe' }]);
+        case '/api/v1/users/42':
+          return send(200, { id: 42, login: 'jdoe', email: 'jane@acme.com', firstname: 'Jane', lastname: 'Doe' });
         case '/api/v1/tickets/search': {
           // Mirror Zammad's `Selector::Base.migrate_selector`: a condition with
           // no `conditions` key is read as the legacy attribute-keyed form, and
@@ -552,6 +556,30 @@ describe('mcp endpoint', () => {
     assert.equal(body.group, '1st Level', 'association names go through untouched');
     assert.equal(body.article.internal, true, 'articles must default to internal');
     assert.equal(body.article.type, 'note', 'articles must default to a note, not an email');
+  });
+
+  it('resolves @@mentions in the first article of a new ticket', async () => {
+    requests.length = 0;
+
+    const response = await mcp('tools/call', {
+      name: 'zammad_create_ticket',
+      arguments: {
+        title: 'New ticket',
+        group: '1st Level',
+        customer: 'jane@acme.com',
+        article: { body: '@@jane@acme.com please take a look' },
+      },
+    });
+
+    const payload = JSON.parse(response.body.result.content[0].text);
+    assert.deepEqual(payload.mentioned, [{ id: 42, name: 'Jane Doe' }]);
+
+    const create = requests.find((r) => r.method === 'POST' && r.url.startsWith('/api/v1/tickets'));
+    const body = create!.body as Record<string, any>;
+    // Sent verbatim, `@@jane@acme.com` would stay literal text and Zammad
+    // would never create the mention — it has to become the anchor markup.
+    assert.match(body.article.body, /data-mention-user-id="42"/);
+    assert.equal(body.article.content_type, 'text/html');
   });
 
   it('links tickets with Zammad’s required ticket number and ID pair', async () => {
