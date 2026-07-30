@@ -9,7 +9,7 @@ import {
   startHarness,
   stopHarness,
 } from './harness.js';
-import { AGENT_EMAIL, api, CUSTOMER_EMAIL } from './zammad.js';
+import { AGENT_EMAIL, api, CUSTOMER_EMAIL, mentionsFor, seededAgent } from './zammad.js';
 
 /**
  * The write tools against a real Zammad.
@@ -230,6 +230,168 @@ describe('ticket lifecycle against a real Zammad', () => {
       const stored = await api<Json>(`/api/v1/tickets/${created.ticket.id}`);
       assert.equal(stored.state_id, 4, `ticket ${created.ticket.id} was not closed`);
     }
+  });
+
+  /**
+   * Mass update, against the instance rather than against an assumption.
+   *
+   * The article used to be nested inside `attributes`, where
+   * `TicketsMassController#update` never looks: it reads `params[:article]` and
+   * hands that to `article_create`, while `attributes` goes through
+   * `clean_update_params`, which keeps only ticket columns. The call returned
+   * 200, the tool reported `submitted: true`, and no article was ever written.
+   * Nothing short of reading the articles back off a real Zammad shows that, so
+   * every assertion here does.
+   */
+  describe('mass update articles', () => {
+    async function articleBodies(ticketId: number): Promise<string[]> {
+      const articles = await api<Json[]>(`/api/v1/ticket_articles/by_ticket/${ticketId}`);
+      return articles.map((article: Json) => String(article.body));
+    }
+
+    it('writes the note to every ticket in the batch', async (t) => {
+      if (!ready) return t.skip(skipReason);
+
+      const one = await newTicket('Mass note one');
+      const two = await newTicket('Mass note two');
+
+      const result = await callTool('zammad_mass_update_tickets', {
+        ticket_ids: [one.ticket.id, two.ticket.id],
+        state: 'open',
+        article: { body: 'Bulk note from the integration suite.' },
+      });
+      assert.equal(result.submitted, true);
+
+      for (const created of [one, two]) {
+        const bodies = await articleBodies(created.ticket.id);
+        assert.ok(
+          bodies.some((body) => body.includes('Bulk note from the integration suite.')),
+          `ticket ${created.ticket.id} never got the note: ${JSON.stringify(bodies)}`,
+        );
+        assert.equal((await api<Json>(`/api/v1/tickets/${created.ticket.id}`)).state_id, 2);
+      }
+    });
+
+    it('records the note as an internal note by an agent', async (t) => {
+      if (!ready) return t.skip(skipReason);
+
+      const ticket = await newTicket('Mass note shape');
+      await callTool('zammad_mass_update_tickets', {
+        ticket_ids: [ticket.ticket.id],
+        article: { body: 'Shape check.' },
+      });
+
+      // Read back through the tool, which resolves the numeric type and sender
+      // to the names Zammad itself uses — an assertion on `type_id: 10` would
+      // pass on this instance and mean nothing on another.
+      const listed = await callTool('zammad_list_ticket_articles', { ticket_id: ticket.ticket.id });
+      const note = listed.articles[listed.articles.length - 1];
+
+      assert.equal(note.type, 'note', 'the batch wrote something other than a note');
+      assert.equal(note.sender, 'Agent');
+      assert.equal(note.internal, true, 'internal must default to true here as everywhere');
+    });
+
+    it('honours internal: false', async (t) => {
+      if (!ready) return t.skip(skipReason);
+
+      const ticket = await newTicket('Mass note public');
+      await callTool('zammad_mass_update_tickets', {
+        ticket_ids: [ticket.ticket.id],
+        article: { body: 'Visible to the customer.', internal: false },
+      });
+
+      const articles = await api<Json[]>(`/api/v1/ticket_articles/by_ticket/${ticket.ticket.id}`);
+      assert.equal(articles[articles.length - 1].internal, false);
+    });
+
+    it('resolves @@mentions in the note and notifies the agent', async (t) => {
+      if (!ready) return t.skip(skipReason);
+
+      // The mention rewrite was already wired up here, but it fed the article
+      // into `attributes`, so nothing was ever created and nobody was notified.
+      const agent = await seededAgent();
+      const ticket = await newTicket('Mass note mention');
+
+      const result = await callTool('zammad_mass_update_tickets', {
+        ticket_ids: [ticket.ticket.id],
+        article: { body: `@@${AGENT_EMAIL} please pick this up` },
+      });
+
+      assert.ok(
+        JSON.stringify(result.mentioned ?? []).includes(String(agent.id)),
+        `the mention was not resolved: ${JSON.stringify(result.mentioned)}`,
+      );
+
+      const bodies = await articleBodies(ticket.ticket.id);
+      assert.ok(
+        bodies.some((body) => body.includes('data-mention-user-id')),
+        `the anchor never reached Zammad: ${JSON.stringify(bodies)}`,
+      );
+      const mentions = await mentionsFor(ticket.ticket.id);
+      assert.ok(
+        mentions.some((mention) => mention.user_id === agent.id),
+        'Zammad recorded no mention, so nobody was notified',
+      );
+    });
+
+    it('takes a note with no attribute changes at all', async (t) => {
+      if (!ready) return t.skip(skipReason);
+
+      const ticket = await newTicket('Mass note only');
+      await callTool('zammad_mass_update_tickets', {
+        ticket_ids: [ticket.ticket.id],
+        article: { body: 'Note without attributes.' },
+      });
+
+      const bodies = await articleBodies(ticket.ticket.id);
+      assert.ok(
+        bodies.some((body) => body.includes('Note without attributes.')),
+        JSON.stringify(bodies),
+      );
+    });
+
+    it('refuses the article fields a batch cannot honour', async (t) => {
+      if (!ready) return t.skip(skipReason);
+
+      const ticket = await newTicket('Mass note rejected');
+      // One article goes to every ticket, so a recipient list would be addressed
+      // to each customer in the batch. Zammad's own bulk form offers none of
+      // these, and a strict schema says so rather than dropping them silently.
+      for (const [field, value] of [
+        ['type', 'email'],
+        ['sender', 'Customer'],
+        ['to', CUSTOMER_EMAIL],
+        ['cc', CUSTOMER_EMAIL],
+        ['subject', 'Subject'],
+        ['content_type', 'text/html'],
+        ['in_reply_to', '<x@y>'],
+        ['time_unit', '15'],
+        ['origin_by', AGENT_EMAIL],
+        ['attachments', []],
+      ] as Array<[string, unknown]>) {
+        const message = await callToolExpectingError('zammad_mass_update_tickets', {
+          ticket_ids: [ticket.ticket.id],
+          article: { body: 'x', [field]: value },
+        });
+        assert.match(message, new RegExp(field, 'i'), `${field} was accepted or the error never named it`);
+      }
+
+      // And nothing was written while all of those were being refused.
+      const bodies = await articleBodies(ticket.ticket.id);
+      assert.equal(bodies.length, 1, `a refused call still wrote an article: ${JSON.stringify(bodies)}`);
+    });
+
+    it('offers only body and internal in its schema', async (t) => {
+      if (!ready) return t.skip(skipReason);
+
+      const tools = await listTools();
+      const schema = tools.find((tool: Json) => tool.name === 'zammad_mass_update_tickets')
+        ?.inputSchema as Json;
+
+      assert.deepEqual(Object.keys(schema.properties.article.properties).sort(), ['body', 'internal']);
+      assert.equal(schema.properties.article.additionalProperties, false, 'the article schema is not strict');
+    });
   });
 
   it('advertises the groups of this instance wherever a group is taken', async (t) => {
