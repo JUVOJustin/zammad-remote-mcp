@@ -179,8 +179,16 @@ function openQuotesBefore(html: string, index: number): number {
   return opened - closed;
 }
 
-/** The index just past the `</div>` that closes the element opened at `from`. */
-function endOfElement(html: string, from: number): number {
+/**
+ * The index just past the `</div>` that closes the element opened at `from`, or
+ * undefined when the markup never closes it.
+ *
+ * Undefined rather than "the rest of the body": a truncated or mangled signature
+ * element would otherwise swallow everything the caller wrote after it, and
+ * silently dropping the message is far worse than leaving a stale signature in
+ * place. An element whose end cannot be found is left alone.
+ */
+function endOfElement(html: string, from: number): number | undefined {
   const tag = /<(\/?)div\b[^>]*>/gi;
   tag.lastIndex = from;
   let depth = 1;
@@ -188,9 +196,7 @@ function endOfElement(html: string, from: number): number {
     depth += match[1] ? -1 : 1;
     if (depth === 0) return match.index + match[0].length;
   }
-  // Unbalanced markup: treat the rest of the body as the signature rather than
-  // splicing at a guessed point, which would corrupt what the caller wrote.
-  return html.length;
+  return undefined;
 }
 
 /**
@@ -205,8 +211,12 @@ function locateSignatures(html: string): Located[] {
   SIGNATURE_OPEN.lastIndex = 0;
   for (let match = SIGNATURE_OPEN.exec(html); match; match = SIGNATURE_OPEN.exec(html)) {
     if (openQuotesBefore(html, match.index) > 0) continue;
-    const id = /\bdata-signature-id=(["'])(\d+)\1/i.exec(match[0])?.[2];
+    // An element with no closing tag is skipped rather than removed — see
+    // `endOfElement`. The scan carries on past the opening tag.
     const end = endOfElement(html, match.index + match[0].length);
+    if (end === undefined) continue;
+
+    const id = /\bdata-signature-id=(["'])(\d+)\1/i.exec(match[0])?.[2];
     found.push({ id: id === undefined ? undefined : Number(id), start: match.index, end });
     SIGNATURE_OPEN.lastIndex = end;
   }
@@ -415,6 +425,18 @@ export async function appendGroupSignature(args: {
     // duplicate that can be detected is an identical trailing block. Appending a
     // second copy to a retried call would be worse than missing this case.
     const text = htmlToText(rendered);
+    // A template that is markup only — `<br><br>` passes the non-empty check in
+    // findForGroup but renders to nothing. Without this, `endsWith('')` is always
+    // true and every article would be reported as an already-signed duplicate.
+    if (text === '') {
+      return {
+        body: article.body,
+        appended: false,
+        ...identity,
+        reason: 'this signature renders to nothing once its placeholders are resolved',
+      };
+    }
+
     const trimmed = article.body.replace(/\s+$/, '');
     if (trimmed.endsWith(text)) {
       return {

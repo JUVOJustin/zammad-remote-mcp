@@ -65,8 +65,9 @@ escalations = Group.find_by(name: 'Escalations') || Group.create!(name: 'Escalat
 # instance sits in, and both have to leave the article exactly as it was written.
 unsigned = Group.find_by(name: 'Unsigned') || Group.create!(name: 'Unsigned', active: true)
 retired  = Group.find_by(name: 'Retired') || Group.create!(name: 'Retired', active: true)
-# A signature saved with nothing in it: active, referenced, and still with
-# nothing to append. (A *dangling* signature_id is deliberately not seeded — it
+# A signature that is markup only: non-empty as a template, and empty once
+# rendered. It is the more interesting of the two empty cases — a body of ''
+# never gets past findForGroup, while this one reaches the renderer. (A *dangling* signature_id is deliberately not seeded — it
 # cannot exist. groups.signature_id carries a foreign key, so Postgres refuses
 # one; the guard against it in findForGroup is belt and braces, not a real case.)
 blank = Group.find_by(name: 'Blank') || Group.create!(name: 'Blank', active: true)
@@ -104,7 +105,7 @@ retired.update!(signature_id: inactive.id, email_address_id: address.id)
 unsigned.update!(signature_id: nil, email_address_id: address.id)
 
 empty = Signature.find_by(name: 'Blank') || Signature.create!(name: 'Blank', body: '')
-empty.update!(body: '', active: true)
+empty.update!(body: '<br><br>', active: true)
 blank.update!(signature_id: empty.id, email_address_id: address.id)
 
 Setting.set('product_name', 'Zammad Integration')

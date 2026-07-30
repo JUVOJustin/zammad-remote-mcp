@@ -67,7 +67,7 @@ describe('signature lookup against the states an instance can be in', () => {
   for (const [group, why] of [
     ['Unsigned', 'the group has no signature at all'],
     ['Retired', 'the signature is switched off'],
-    ['Blank', 'the signature is saved with an empty body'],
+    ['Blank', 'the signature renders to nothing once its placeholders are resolved'],
   ] as Array<[string, string]>) {
     it(`writes the article untouched when ${why}`, async (t) => {
       if (!ready) return t.skip(skipReason);
@@ -87,6 +87,35 @@ describe('signature lookup against the states an instance can be in', () => {
       assert.ok(!body.includes('data-signature'), body);
     });
   }
+
+  it('says a signature rendered to nothing, rather than claiming a duplicate', async (t) => {
+    if (!ready) return t.skip(skipReason);
+
+    // The text/plain duplicate check is `endsWith`, and `endsWith('')` is true
+    // for every body — so an empty render would report every article as already
+    // signed. The Blank group's signature is markup only for exactly this.
+    const created = await callTool('zammad_create_ticket', {
+      title: 'Signature renders to nothing',
+      group: 'Blank',
+      customer: CUSTOMER_EMAIL,
+      article: emailArticle({ content_type: 'text/plain' }),
+    });
+
+    assert.equal(created.signature.appended, false);
+    assert.match(created.signature.reason, /renders to nothing/);
+    assert.doesNotMatch(created.signature.reason, /already/i, 'there is no duplicate to report');
+  });
+
+  it('does not offer append_signature on a mass update, which cannot honour it', async (t) => {
+    if (!ready) return t.skip(skipReason);
+
+    // One article goes to the whole batch while a signature belongs to each
+    // ticket's group. Advertising a flag that defaults to true and does nothing
+    // is the worse of the two.
+    const schema = (await listTools()).find((t2: Json) => t2.name === 'zammad_mass_update_tickets')
+      ?.inputSchema as Json;
+    assert.equal(schema.properties.article.properties.append_signature, undefined);
+  });
 
   it('does not sign a phone, web, sms, chat, fax or note article', async (t) => {
     if (!ready) return t.skip(skipReason);

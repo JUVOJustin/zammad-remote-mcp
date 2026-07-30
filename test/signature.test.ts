@@ -180,6 +180,17 @@ describe('placeSignature', () => {
     assert.equal(placeSignature(`Hello<br><br>${single}`, 1, element).changed, false);
   });
 
+  it('leaves a signature whose markup never closes, and everything after it', () => {
+    // Treating "no closing tag" as "the rest of the body is the signature" would
+    // splice the caller's own words out of an outgoing email — far worse than
+    // leaving a stale signature in place.
+    const broken = '<div data-signature="true" data-signature-id="9">old sig<p>Important question?</p>';
+    const placed = placeSignature(`Hello<br><br>${broken}`, 1, element);
+
+    assert.ok(placed.body.includes('Important question?'), `caller content was deleted: ${placed.body}`);
+    assert.ok(placed.body.endsWith(element), placed.body);
+  });
+
   it('treats a marker without an id as someone else’s and replaces it', () => {
     const noId = '<div data-signature="true">Legacy</div>';
     const placed = placeSignature(`Hello<br><br>${noId}`, 1, element);

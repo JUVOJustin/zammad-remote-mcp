@@ -227,6 +227,8 @@ function ticketPayload(input: Record<string, unknown>): Record<string, unknown> 
  * the other place an article body reaches Zammad. See zammad/mentions.ts.
  */
 async function articlePayload(
+  // The flag is not consumed here — signing happens in signArticle() afterwards,
+  // once the mention rewrite has settled the content type.
   article: z.infer<typeof articleInputSchema>,
   context: ToolContext,
 ): Promise<{ payload: Record<string, unknown>; mentioned: MentionedUser[] }> {
