@@ -2,6 +2,12 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { bytesToBase64, textFromBytes } from '../../util/base64.js';
 import { rewriteMentions } from '../../zammad/mentions.js';
+import {
+  appendGroupSignature,
+  appendSignatureFlag,
+  type SignatureOutcome,
+  ticketLoader,
+} from '../../zammad/signature.js';
 import type { ToolContext } from '../context.js';
 import { withOnBehalfOf } from '../context.js';
 import { guard, jsonResult, presentArticle, textResult, withRenderedBody } from '../result.js';
@@ -141,6 +147,7 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
         }),
       )
       .optional(),
+    append_signature: appendSignatureFlag,
     on_behalf_of: onBehalfOf,
   });
 
@@ -153,7 +160,9 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
         '`internal: false` is actually delivered to the addresses in `to`/`cc`; the defaults (`note`, internal) ' +
         'record text without notifying anyone.\n\n' +
         'Mention a colleague by writing `@@jane@acme.com`, `@@jdoe` or `@@"Jane Doe"` in the body — they are ' +
-        'linked and notified. Keep such a note `internal: true`, or the customer sees the mention too.',
+        'linked and notified. Keep such a note `internal: true`, or the customer sees the mention too.\n\n' +
+        "An email article is signed with the group's signature, as the reply composer does, unless " +
+        '`append_signature` is turned off.',
       inputSchema: createInput.strict(),
       annotations: {
         readOnlyHint: false,
@@ -174,9 +183,26 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
         zammadUrl: base.config.ZAMMAD_URL,
       });
 
+      // After the mentions, not before: rewriting them can promote the body to
+      // HTML, and the signature has to be built for the content type that is
+      // actually sent.
+      let text = mentions.body;
+      let signature: SignatureOutcome | undefined;
+      if (input.append_signature) {
+        const { body: signed, ...outcome } = await appendGroupSignature({
+          lookup: context.lookup,
+          logger: context.logger,
+          article: { ...input, body: text, content_type: mentions.content_type },
+          // The reply composer signs with the group of the ticket it is on.
+          loadTicket: ticketLoader(context.client, input.ticket_id),
+        });
+        text = signed;
+        signature = outcome;
+      }
+
       const body: Record<string, unknown> = {
         ticket_id: input.ticket_id,
-        body: mentions.body,
+        body: text,
         type: input.type,
         sender: input.sender,
         internal: input.internal,
@@ -190,6 +216,7 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
       const article = await context.client.post<Record<string, unknown>>('/api/v1/ticket_articles', body);
       return jsonResult({
         created: true,
+        ...(signature ? { signature } : {}),
         article: presentArticle(article, { bodyFormat: input.body_format }),
         ...(mentions.mentioned.length > 0 ? { mentioned: mentions.mentioned } : {}),
       });
