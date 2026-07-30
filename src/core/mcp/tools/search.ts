@@ -89,6 +89,10 @@ export function registerSearchTools(server: McpServer, base: ToolContext, vocabu
         'correct with or without Elasticsearch. `fulltext` compiles everything into one Elasticsearch query_string ' +
         '(wildcards, phrases, nested article fields) and requires Elasticsearch. `structured` skips the text query ' +
         "entirely and forces Zammad's exact database search.\n\n" +
+        'A note on `article_count`: an exact count or a list works under any strategy, but a `{min, max}` range ' +
+        'is compiled into the Elasticsearch query, so on an instance that has Elasticsearch it needs ' +
+        '`strategy: "fulltext"` — the selector backend Zammad uses there rejects numeric comparison. To simply ' +
+        'find the longest threads, sort by `article_count` instead of filtering.\n\n' +
         'Use `output: "count"` to size a result set cheaply before paging through it. The generated query and ' +
         'selector are echoed back under `search`, so a search that returns too much or too little can be refined ' +
         'directly.',

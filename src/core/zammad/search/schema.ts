@@ -88,13 +88,31 @@ export const stringFilterSchema = z
 
 export type StringFilter = z.infer<typeof stringFilterSchema>;
 
-const numberRangeSchema = z
-  .object({
-    min: z.number().optional(),
-    max: z.number().optional(),
-    equals: z.number().optional(),
-  })
-  .strict();
+/**
+ * A count, a list of counts, or a range.
+ *
+ * `min`/`max` reach Zammad through the Elasticsearch query rather than the
+ * selector, because the selector backend that runs when Elasticsearch is
+ * configured rejects every numeric comparison with a 500 — verified on a live
+ * instance for `is greater than`, `is less than` and both `or equal to` forms,
+ * on article_count, time_unit, the SLA minute columns and ids alike. Without
+ * Elasticsearch the SQL selector handles them fine, which is why the range is
+ * still offered; see `applyCounts` in builder.ts for how the two paths split.
+ */
+const countFilterSchema = z.union([
+  z.number().int().nonnegative().describe('An exact count.'),
+  z.array(z.number().int().nonnegative()).min(1).max(50).describe('Any one of these counts.'),
+  z
+    .object({
+      min: z.number().int().nonnegative().optional(),
+      max: z.number().int().nonnegative().optional(),
+    })
+    .strict()
+    .refine((v) => v.min !== undefined || v.max !== undefined, {
+      message: 'a range needs min, max, or both',
+    })
+    .describe('An inclusive range. Needs Elasticsearch — pass strategy: "fulltext".'),
+]);
 
 // ---------------------------------------------------------------- ticket search
 
@@ -307,7 +325,14 @@ export const searchTicketsInputSchema = z
       .optional()
       .describe('true = escalation deadline already passed; false = not currently escalated.'),
 
-    article_count: numberRangeSchema.optional().describe('Number of articles on the ticket.'),
+    article_count: countFilterSchema
+      .optional()
+      .describe(
+        'Number of articles on the ticket. A number matches exactly, an array matches any of them, and ' +
+          '{min, max} is an inclusive range. A range is compiled into the Elasticsearch query, so it needs ' +
+          'strategy: "fulltext" on an instance that has Elasticsearch; without Elasticsearch every form works ' +
+          'as-is. To simply find the longest threads, sort by `article_count` instead of filtering.',
+      ),
 
     // -------------------------------------------------------------- articles
     article: articleFilterSchema.optional(),
