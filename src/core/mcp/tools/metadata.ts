@@ -248,7 +248,7 @@ export function registerMetadataTools(server: McpServer, base: ToolContext): voi
         'differ per instance: some already carry the closing line above the name, others are only a name ' +
         'and a company block, in which case the body still needs a closing of its own. Decide that from ' +
         '`text`. `has_signature: false` means an email article on this group goes out exactly as written.',
-      inputSchema: signatureInput.shape,
+      inputSchema: signatureInput.strict(),
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
     },
     guard(async (rawInput) => {

@@ -405,6 +405,21 @@ export async function appendGroupSignature(args: {
       appended_text: preview(htmlToText(rendered)),
     };
 
+    // Before the branch, not inside the text/plain one: a template that is
+    // markup only — `<br><br>` — passes the non-empty check in findForGroup and
+    // then renders to nothing. On the HTML path that used to append an empty
+    // `<div data-signature>`; on the plain path `endsWith('')` is true for every
+    // body, so each article was reported as an already-signed duplicate.
+    const text = htmlToText(rendered);
+    if (text === '') {
+      return {
+        body: article.body,
+        appended: false,
+        ...identity,
+        reason: 'this signature renders to nothing once its placeholders are resolved',
+      };
+    }
+
     if (article.content_type === 'text/html') {
       const placed = placeSignature(
         article.body,
@@ -424,19 +439,6 @@ export async function appendGroupSignature(args: {
     // text/plain has no `data-signature` marker to recognise, so the only
     // duplicate that can be detected is an identical trailing block. Appending a
     // second copy to a retried call would be worse than missing this case.
-    const text = htmlToText(rendered);
-    // A template that is markup only — `<br><br>` passes the non-empty check in
-    // findForGroup but renders to nothing. Without this, `endsWith('')` is always
-    // true and every article would be reported as an already-signed duplicate.
-    if (text === '') {
-      return {
-        body: article.body,
-        appended: false,
-        ...identity,
-        reason: 'this signature renders to nothing once its placeholders are resolved',
-      };
-    }
-
     const trimmed = article.body.replace(/\s+$/, '');
     if (trimmed.endsWith(text)) {
       return {
