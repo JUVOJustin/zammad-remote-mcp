@@ -439,8 +439,15 @@ export async function appendGroupSignature(args: {
     // text/plain has no `data-signature` marker to recognise, so the only
     // duplicate that can be detected is an identical trailing block. Appending a
     // second copy to a retried call would be worse than missing this case.
+    //
+    // The separator is part of the comparison, not just the text: a signature
+    // that renders to a bare name — Zammad's default shape — otherwise collides
+    // with ordinary prose. A body ending "Please contact Ada Admin" would be
+    // read as already signed and go out with no signature at all. Matching
+    // "\n\n" + text still catches the retry, which is the case this is for,
+    // because that is exactly what the append below writes.
     const trimmed = article.body.replace(/\s+$/, '');
-    if (trimmed.endsWith(text)) {
+    if (trimmed.endsWith(`\n\n${text}`)) {
       return {
         body: article.body,
         appended: false,

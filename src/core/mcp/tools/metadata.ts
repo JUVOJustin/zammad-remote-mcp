@@ -273,16 +273,31 @@ export function registerMetadataTools(server: McpServer, base: ToolContext): voi
       }
 
       const found = await renderGroupSignature({ lookup: context.lookup, group: reference, ticket });
-      if (!found) {
+      // Rendering to nothing counts as unsigned here exactly as it does when
+      // writing. A template of `<br><br>` is non-empty and so survives the
+      // lookup, but produces no text — and a preview that promised a signature
+      // the writer then declines to append is worse than no preview at all.
+      const rendered = found ? htmlToText(found.rendered) : '';
+      if (!found || rendered === '') {
+        // Answer with the group's name even here. Every other field of this tool
+        // speaks in names, and `#3` is an internal id the caller cannot use
+        // anywhere else. A ticket read with `expand` already carries the name; a
+        // numeric `group_id` is resolved through the cached list.
+        const named =
+          (ticket?.group as string | undefined) ??
+          (typeof reference === 'string'
+            ? reference
+            : (await context.lookup.groups().catch(() => [])).find((group) => group.id === reference)?.name);
+
         return jsonResult({
-          group: typeof reference === 'string' ? reference : `#${reference}`,
+          group: named ?? `#${reference}`,
           has_signature: false,
-          reason:
-            'This group has no active signature with a body, so nothing is appended to an email article on it.',
+          reason: found
+            ? "This group's signature renders to nothing once its placeholders are resolved, so nothing is appended."
+            : 'This group has no active signature with a body, so nothing is appended to an email article on it.',
         });
       }
 
-      const text = htmlToText(found.rendered);
       return jsonResult({
         group: found.group.name,
         has_signature: true,
@@ -294,7 +309,7 @@ export function registerMetadataTools(server: McpServer, base: ToolContext): voi
         // prose, in any language, is a guess presented as a fact, and a wrong one
         // would cause exactly the confusion this tool exists to prevent. The
         // caller reading `text` makes that judgement better than a pattern can.
-        text,
+        text: rendered,
         html: buildSignatureElement(found.signature.id, found.rendered),
         // The unrendered template, so a caller can see which placeholders exist.
         template: found.signature.body,

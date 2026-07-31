@@ -85,6 +85,14 @@ describe('signature lookup against the states an instance can be in', () => {
       const body = await firstArticleBody(created.ticket.id);
       assert.equal(body, 'Opened by the integration suite.');
       assert.ok(!body.includes('data-signature'), body);
+
+      // The preview answers with the group's *name* here too. Every other field
+      // of that tool speaks in names, and an internal id is of no use to a caller.
+      for (const args of [{ group }, { ticket_id: created.ticket.id }]) {
+        const preview = await callTool('zammad_get_group_signature', args);
+        assert.equal(preview.has_signature, false, JSON.stringify(args));
+        assert.equal(preview.group, group, `expected the name, got ${preview.group}`);
+      }
     });
   }
 
@@ -115,6 +123,76 @@ describe('signature lookup against the states an instance can be in', () => {
     const schema = (await listTools()).find((t2: Json) => t2.name === 'zammad_mass_update_tickets')
       ?.inputSchema as Json;
     assert.equal(schema.properties.article.properties.append_signature, undefined);
+  });
+
+  it('never promises in the preview what the writer then declines to append', async (t) => {
+    if (!ready) return t.skip(skipReason);
+
+    // The two share a renderer so they cannot drift on the text; they can still
+    // drift on the *verdict*. Blank's template is markup only — non-empty, so it
+    // survives the lookup, and empty once rendered.
+    for (const group of ['Unsigned', 'Retired', 'Blank']) {
+      const preview = await callTool('zammad_get_group_signature', { group });
+      const created = await callTool('zammad_create_ticket', {
+        title: `Preview agrees — ${group}`,
+        group,
+        customer: CUSTOMER_EMAIL,
+        article: emailArticle(),
+      });
+
+      assert.equal(
+        preview.has_signature,
+        created.signature.appended,
+        `${group}: preview said ${preview.has_signature}, the write said ${created.signature.appended}`,
+      );
+    }
+  });
+
+  it('signs prose that merely ends with the same words as the signature', async (t) => {
+    if (!ready) return t.skip(skipReason);
+
+    // The plain-text duplicate check compares the trailing block, and Zammad's
+    // signatures are name-heavy — the stock one opens with the agent's name. A
+    // body whose last sentence happens to name the same person must still be
+    // signed, and must not be reported as an already-signed duplicate.
+    const me = await callTool('zammad_whoami', {});
+    const created = await callTool('zammad_create_ticket', {
+      title: 'Prose ending in the sender name',
+      group: 'Users',
+      customer: CUSTOMER_EMAIL,
+      article: emailArticle({
+        content_type: 'text/plain',
+        body: `For anything further please contact ${me.user.firstname} ${me.user.lastname}`,
+      }),
+    });
+
+    assert.equal(created.signature.appended, true, created.signature.reason);
+  });
+
+  it('leaves a plain-text body that really was signed already', async (t) => {
+    if (!ready) return t.skip(skipReason);
+
+    // The case the check exists for: a caller reads a body back and sends it
+    // again. The separator is what tells this apart from the prose above.
+    const ticket = await callTool('zammad_create_ticket', {
+      title: 'Plain-text retry',
+      group: 'Users',
+      customer: CUSTOMER_EMAIL,
+      article: emailArticle({ content_type: 'text/plain' }),
+    });
+    assert.equal(ticket.signature.appended, true);
+
+    const signed = await callTool('zammad_list_ticket_articles', { ticket_id: ticket.ticket.id });
+    const again = await callTool('zammad_create_article', {
+      ticket_id: ticket.ticket.id,
+      body: String(signed.articles[0].body),
+      type: 'email',
+      internal: false,
+      to: CUSTOMER_EMAIL,
+    });
+
+    assert.equal(again.signature.appended, false);
+    assert.match(again.signature.reason, /already ends with this signature/);
   });
 
   it('does not sign a phone, web, sms, chat, fax or note article', async (t) => {
