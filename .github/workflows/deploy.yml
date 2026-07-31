@@ -99,9 +99,31 @@ jobs:
         # exchanges the short-lived GitHub token for publish rights itself.
         run: npm publish --tag ${{ steps.version.outputs.NPM_TAG }}
 
+      - name: Take the release notes from the changelog
+        # The generated pull-request list says what merged, not what it means for
+        # someone upgrading. This pulls the section for the tag out of
+        # CHANGELOG.md and lets the generated list follow underneath. A tag with
+        # no section still releases — with the generated list alone, which is
+        # what happened before this step existed.
+        id: notes
+        run: |
+          VERSION='${{ steps.version.outputs.VERSION }}'
+          if [ -f CHANGELOG.md ] && awk -v v="## $VERSION" '$0 == v {found=1} END {exit !found}' CHANGELOG.md; then
+            awk -v v="## $VERSION" '
+              $0 == v {inside=1; next}
+              inside && /^## / {exit}
+              inside {print}
+            ' CHANGELOG.md > RELEASE_NOTES.md
+            echo "PATH=RELEASE_NOTES.md" >> $GITHUB_OUTPUT
+          else
+            echo "No CHANGELOG.md section for $VERSION; using the generated notes alone." >&2
+            echo "PATH=" >> $GITHUB_OUTPUT
+          fi
+
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.RAW }}
+          body_path: ${{ steps.notes.outputs.PATH }}
           generate_release_notes: true
           prerelease: ${{ steps.version.outputs.IS_PRERELEASE == 'true' }}
