@@ -662,10 +662,40 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
   );
 
   // ----------------------------------------------------------- mass update ---
+  /**
+   * What the agent UI's bulk form offers, and nothing else.
+   *
+   * `App.TicketBulkForm` filters the article-type select down to a single option
+   * — `articleTypeFilter` returns `[note]` and discards the rest — so a mass
+   * update in Zammad can never send mail. What remains is the Comment textarea
+   * and the public/internal select, which is exactly this schema.
+   *
+   * `.strict()` rather than the usual permissive object: one article is applied
+   * to every ticket in the batch, so `to`/`cc` would address one recipient list
+   * to a hundred different customers, and `attachments` would copy the same file
+   * onto all of them. Dropping those keys quietly — which a non-strict parse does
+   * — would tell the caller the batch succeeded as asked. Refusing them says what
+   * happened.
+   */
+  const massArticleSchema = z
+    .object({
+      body: z.string().min(1).describe('The note to add to every ticket in the batch.'),
+      internal: z
+        .boolean()
+        .default(true)
+        .describe('true keeps the note invisible to the customer. Defaults to true, as elsewhere.'),
+    })
+    .strict();
+
   const massUpdateInput = z.object({
     ticket_ids: z.array(z.number().int().positive()).min(1).max(500),
     ...attributesWithVocabulary,
-    article: articleInputSchema.optional(),
+    article: massArticleSchema
+      .optional()
+      .describe(
+        "A note to add to every ticket in the batch. Only a note: Zammad's own bulk form offers no other " +
+          'article type, so use zammad_create_article per ticket to reply by email.',
+      ),
     on_behalf_of: onBehalfOf,
   });
 
@@ -674,9 +704,11 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
     {
       title: 'Update many Zammad tickets at once',
       description:
-        'Apply the same attribute changes (and optionally the same article) to a batch of tickets in one request. ' +
-        'Zammad processes the batch in the background, so the response confirms acceptance rather than completion. ' +
-        'An article body may use `@@jane@acme.com` / `@@jdoe` / `@@"Jane Doe"` to mention and notify a colleague.',
+        'Apply the same attribute changes (and optionally the same note) to a batch of tickets in one request. ' +
+        'Zammad processes the batch in the background, so the response confirms acceptance rather than completion.\n\n' +
+        "The article is a note and only a note, as in the agent UI's own bulk form — one article is applied to " +
+        'every ticket, so there is no sensible recipient for an email. Reply per ticket with zammad_create_article. ' +
+        'The note body may use `@@jane@acme.com` / `@@jdoe` / `@@"Jane Doe"` to mention and notify a colleague.',
       inputSchema: massUpdateInput.strict(),
       annotations: {
         readOnlyHint: false,
@@ -691,18 +723,39 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
 
       const attributes = ticketPayload(input);
       let mentioned: MentionedUser[] = [];
+      let article: Record<string, unknown> | undefined;
+
       if (input.article) {
-        const article = await articlePayload(input.article, context);
-        attributes.article = article.payload;
-        mentioned = article.mentioned;
+        const mentions = await rewriteMentions(input.article.body, 'text/plain', {
+          client: context.client,
+          lookup: context.lookup,
+          zammadUrl: context.config.ZAMMAD_URL,
+        });
+        article = {
+          body: mentions.body,
+          content_type: mentions.content_type,
+          // Fixed, not taken from the caller: the bulk form has no other choice.
+          type: 'note',
+          sender: 'Agent',
+          internal: input.article.internal,
+        };
+        mentioned = mentions.mentioned;
       }
-      if (Object.keys(attributes).length === 0) {
+
+      if (Object.keys(attributes).length === 0 && !article) {
         throw new ToolInputError('Nothing to update — pass at least one attribute or an article.');
       }
 
+      // `article` is a top-level parameter, not part of `attributes`.
+      // `TicketsMassController#update` reads `params[:article]` and passes it to
+      // `article_create`, while `attributes` goes through `clean_update_params`,
+      // which drops anything that is not a ticket column. Nesting it there —
+      // which is what this did — returned 200 and silently wrote no article at
+      // all. Verified against a real instance both ways.
       const result = await context.client.post<unknown>('/api/v1/tickets/mass_update', {
         ticket_ids: input.ticket_ids,
         attributes,
+        ...(article ? { article } : {}),
       });
       return jsonResult({
         submitted: true,
