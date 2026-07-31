@@ -53,6 +53,16 @@ export interface Group {
   active: boolean;
   /** Present on Zammad instances that use nested groups. */
   name_last?: string;
+  /** The signature the agent UI appends for this group; null when unset. */
+  signature_id?: number | null;
+}
+
+export interface Signature {
+  id: number;
+  name: string;
+  /** HTML, with `#{…}` placeholders left unrendered. */
+  body: string;
+  active: boolean;
 }
 
 export interface ZammadUser {
@@ -77,6 +87,12 @@ export interface Organization {
   name: string;
   active?: boolean;
   domain?: string;
+}
+
+/** What `signshow` is kept for — see `LookupService.session`. */
+interface SessionProjection {
+  config: Record<string, string | number | boolean>;
+  signatures: Record<string, Signature>;
 }
 
 /**
@@ -147,6 +163,59 @@ export class LookupService {
 
   me(): Promise<ZammadUser> {
     return this.cache.read(this.key('me'), () => this.client.get<ZammadUser>('/api/v1/users/me'));
+  }
+
+  /**
+   * The signatures this credential can see.
+   *
+   * `/api/v1/signatures` is readable by agents on a stock Zammad, but the
+   * permission is configurable, so a 403 falls back to the copy the agent UI
+   * itself uses — `signshow` hands the session its `Signature` assets whatever
+   * the REST endpoint allows.
+   */
+  signatures(): Promise<Signature[]> {
+    return this.cache.read(this.key('signatures'), async () => {
+      try {
+        return await this.client.get<Signature[]>('/api/v1/signatures', { per_page: 200 });
+      } catch {
+        return Object.values((await this.session()).signatures);
+      }
+    });
+  }
+
+  /**
+   * Zammad's frontend settings — `fqdn`, `product_name` and the rest of what
+   * `#{config.…}` in a signature can address. There is no REST endpoint for
+   * these that a non-admin may read; `signshow` is where the UI gets them.
+   */
+  async frontendConfig(): Promise<Record<string, string | number | boolean>> {
+    return (await this.session()).config;
+  }
+
+  /**
+   * `/api/v1/signshow` — Zammad's `sessions#show`, the payload the agent UI
+   * boots from. The response is ~130 KB of models and collections, so only the
+   * two parts anything here needs are cached: the scalar settings and the
+   * signature assets.
+   */
+  private session(): Promise<SessionProjection> {
+    return this.cache.read(this.key('signshow'), async () => {
+      const response = await this.client.get<{
+        config?: Record<string, unknown>;
+        assets?: { Signature?: Record<string, Signature> };
+      }>('/api/v1/signshow');
+
+      const config: Record<string, string | number | boolean> = {};
+      for (const [name, value] of Object.entries(response?.config ?? {})) {
+        // Settings are also objects and arrays; a placeholder can only print a scalar.
+        const type = typeof value;
+        if (type === 'string' || type === 'number' || type === 'boolean') {
+          config[name] = value as string | number | boolean;
+        }
+      }
+
+      return { config, signatures: response?.assets?.Signature ?? {} };
+    });
   }
 
   // ------------------------------------------------------------- resolution

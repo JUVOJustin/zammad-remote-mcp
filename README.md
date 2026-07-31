@@ -23,7 +23,7 @@ version and a single publish.
 
 | Import | What it is |
 |---|---|
-| `zammad-remote-mcp` | the runtime-agnostic core: Hono app, MCP server, 38 tools, Zammad client, search builder, OAuth proxy. Uses only WebCrypto, `fetch`, `TextEncoder` and `atob`/`btoa`. |
+| `zammad-remote-mcp` | the runtime-agnostic core: Hono app, MCP server, 39 tools, Zammad client, search builder, OAuth proxy. Uses only WebCrypto, `fetch`, `TextEncoder` and `atob`/`btoa`. |
 | `zammad-remote-mcp/node` | Node host: `.env` loading, socket binding, signal handling |
 | `examples/cloudflare` | a deployable Workers host, ~60 lines, consuming the package like any other dependency |
 | `npx zammad-remote-mcp` | the CLI — the Node host with a shebang |
@@ -473,7 +473,8 @@ server — Zammad withholds some catalogues entirely:
 `zammad_list_time_accounting`, `zammad_create_time_accounting`
 
 **Discovery** — `zammad_whoami`, `zammad_get_user`, `zammad_get_organization`, `zammad_list_tags`,
-`zammad_list_overviews`, `zammad_list_custom_attributes`, `zammad_refresh_metadata_cache`
+`zammad_list_overviews`, `zammad_list_custom_attributes`, `zammad_get_group_signature`,
+`zammad_refresh_metadata_cache`
 
 Write tools default to the safe option: articles are created as internal notes, so nothing reaches a
 customer unless `type: "email"` and `internal: false` are set deliberately. Destructive tools carry
@@ -528,6 +529,75 @@ every response whether or not anyone wanted them.
 Conversion uses [turndown](https://github.com/mixmark-io/turndown). On Node it works as shipped; on
 Cloudflare Workers it needs its bundled DOM rather than the host's, which the `alias` block in
 `examples/cloudflare/wrangler.jsonc` arranges — see the comment there for why.
+### Signatures
+
+Zammad adds no signature server-side — the agent UI composes one into the body before it posts, so an
+article written through the API would otherwise go out unsigned where the same article written by
+hand would not. `append_signature` closes that gap, **on by default**, and sits on the article in
+every tool that writes one:
+
+| Tool | Where the flag lives | What the UI does |
+|---|---|---|
+| `zammad_create_ticket` | `article.append_signature` | New Ticket screen, "Send Email" tab |
+| `zammad_update_ticket` | `article.append_signature` | reply composer, plus the group dropdown |
+| `zammad_create_article` | `append_signature` | reply composer on an open ticket |
+
+The rules are the UI's:
+
+- only on the email channel (`type: "email"`, `sender: "Agent"`). A note or a phone article is never
+  signed, so the safe defaults stay untouched;
+- only when the group has an active signature with a body;
+- **a group changed in the same call wins** over the one the ticket already has — Zammad re-renders
+  the signature the moment the group dropdown moves, and so does this;
+- `#{user.firstname}`, `#{ticket.number}`, `#{config.fqdn}` and friends are resolved the way
+  `App.Utils.replaceTags` resolves them, down to rendering anything unresolved as `-`. On create they
+  see the attributes the ticket is about to be given; on a reply, the ticket as it stands;
+- the result is wrapped in `<div data-signature="true" data-signature-id="…">` and appended after a
+  blank line. That marker is what Zammad's own reply handling looks for — and what the Markdown
+  rendering above strips again on read, so a signed article does not carry its signature into every
+  later quote. A `text/plain` article gets a
+  plain-text rendering instead of markup.
+
+The lookup never fails a write. A group with no signature, a signature an admin switched off, a
+`signature_id` left dangling by a deleted signature, an empty body, a group that cannot be resolved,
+a Zammad that refuses both signature sources — every one of them writes the article exactly as it was
+given and reports why nothing was appended. Group signatures come from `/api/v1/signatures`, falling
+back to the `signshow` assets on instances that restrict it; `#{config.…}` is read from `signshow`,
+which is the only place a non-admin credential can see Zammad's settings.
+
+**Never two signatures.** Both UI call sites check before they write, and so does this: a body that
+already carries the same `data-signature-id` is returned byte for byte, and any *other* top-level
+signature is removed before the new one is appended. A signature inside a `blockquote` is the other
+side's and is left alone. This is what makes a retried call, or a body read back off an earlier
+article, safe.
+
+**The one thing it cannot de-duplicate is prose.** `Kind regards, Jane` typed into the body is
+indistinguishable from the message, so if the caller signs off *and* the signature does, the reader
+sees both. That can only be prevented where the body is written, so every signed result reports the
+`appended_text` it added.
+
+The rule is deliberately about the **name only**. A signature always ends with the sender's name, so
+writing it in the body always duplicates it. The closing line above it is optional — some signatures
+carry one, Zammad's own default does not — so instructing callers to omit the closing would produce
+mail that jumps from the last sentence straight to a name. That judgement needs the actual text, which
+is what `zammad_get_group_signature` is for:
+
+```json
+{ "group": "1st Level" }
+→ { "has_signature": true, "signature_id": 1,
+    "text": "Jane Agent\n\n--\nAcme Support · +49 …",
+    "html": "<div data-signature=\"true\" data-signature-id=\"1\">…</div>",
+    "template": "<br>#{user.firstname} #{user.lastname}<br>…" }
+```
+
+Pass `ticket_id` instead of `group` to resolve `#{ticket.…}` against a real ticket. It renders through
+the same code that writes, so the preview and the article cannot drift — an integration test compares
+them byte for byte. There is deliberately no derived "already has a closing" flag: a regex over prose
+in any language would be a guess presented as a fact, and the caller reading `text` judges it better.
+
+The rule itself is stated in **one** place, the `append_signature` description — not in the body field,
+not in the tool descriptions, and not in the server instructions, which are read on every connection
+whether an article is being written or not.
 
 ---
 

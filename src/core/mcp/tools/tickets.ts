@@ -5,6 +5,13 @@ import type { BodyFormat } from '../../zammad/article-body.js';
 import type { MentionedUser } from '../../zammad/mentions.js';
 import { rewriteMentions } from '../../zammad/mentions.js';
 import { asTopLevel, leaf } from '../../zammad/selector.js';
+import {
+  appendGroupSignature,
+  appendSignatureFlag,
+  type RenderContext,
+  type SignatureOutcome,
+  ticketLoader,
+} from '../../zammad/signature.js';
 import type { Vocabulary } from '../../zammad/vocabulary.js';
 import type { ToolContext } from '../context.js';
 import { withOnBehalfOf } from '../context.js';
@@ -83,6 +90,7 @@ const articleInputSchema = z.object({
     .optional()
     .describe('Attribute the article to another user (login/email). Requires agent rights.'),
   attachments: z.array(attachmentSchema).optional(),
+  append_signature: appendSignatureFlag,
 });
 
 /**
@@ -219,6 +227,8 @@ function ticketPayload(input: Record<string, unknown>): Record<string, unknown> 
  * the other place an article body reaches Zammad. See zammad/mentions.ts.
  */
 async function articlePayload(
+  // The flag is not consumed here — signing happens in signArticle() afterwards,
+  // once the mention rewrite has settled the content type.
   article: z.infer<typeof articleInputSchema>,
   context: ToolContext,
 ): Promise<{ payload: Record<string, unknown>; mentioned: MentionedUser[] }> {
@@ -240,6 +250,43 @@ async function articlePayload(
   }
   if (article.attachments?.length) payload.attachments = article.attachments;
   return { payload, mentioned: mentions.mentioned };
+}
+
+/**
+ * Appends the group signature to an article payload, in place.
+ *
+ * Runs on the payload rather than on the input, and only after `articlePayload`:
+ * rewriting `@@mentions` can promote a body to `text/html`, so reading the
+ * content type off the caller's input would build a plain-text signature for a
+ * body that is now markup. Returns undefined when the caller turned the flag off,
+ * so the result stays silent rather than reporting a decision nobody asked about.
+ */
+async function signArticle(
+  context: ToolContext,
+  input: z.infer<typeof articleInputSchema>,
+  payload: Record<string, unknown>,
+  scope: {
+    group?: string | number;
+    ticket?: RenderContext;
+    loadTicket?: () => Promise<RenderContext>;
+  },
+): Promise<SignatureOutcome | undefined> {
+  if (!input.append_signature) return undefined;
+
+  const { body, ...outcome } = await appendGroupSignature({
+    lookup: context.lookup,
+    logger: context.logger,
+    article: {
+      body: payload.body as string,
+      type: input.type,
+      sender: input.sender,
+      content_type: payload.content_type as string,
+    },
+    ...scope,
+  });
+
+  payload.body = body;
+  return outcome;
 }
 
 interface HistoryResponse {
@@ -469,7 +516,8 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
         'an article with `type: "email"` and `internal: false` is delivered to the customer — the defaults ' +
         '(`note`, internal) do not send anything.\n\n' +
         'Mention a colleague in the article body by writing `@@jane@acme.com`, `@@jdoe` or `@@"Jane Doe"` — they ' +
-        'are linked and notified. Keep the article `internal: true`, or the customer sees the mention too.',
+        'are linked and notified. Keep the article `internal: true`, or the customer sees the mention too.\n\n' +
+        'An email article is signed with the group signature unless `article.append_signature` is turned off.',
       inputSchema: createTicketInput.strict(),
       annotations: {
         readOnlyHint: false,
@@ -492,6 +540,24 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       }
 
       const article = await articlePayload(input.article, context);
+
+      // Zammad never signs an article server-side — the agent UI composes the
+      // signature into the body before it posts. Without this, a ticket opened
+      // through the API goes out unsigned where the same ticket opened by hand
+      // would not.
+      const signature = await signArticle(context, input.article, article.payload, {
+        group: input.group_id ?? input.group,
+        // What the create screen renders against: the ticket does not exist yet,
+        // so placeholders see the attributes it is about to be given. `group` is
+        // filled in from the resolved record.
+        ticket: {
+          title: input.title,
+          customer: input.customer,
+          state: input.state,
+          priority: input.priority,
+        },
+      });
+
       const body = {
         ...ticketPayload(input),
         title: input.title,
@@ -506,6 +572,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       });
       return jsonResult({
         created: true,
+        ...(signature ? { signature } : {}),
         ticket: presentTicket(ticket),
         ...(article.mentioned.length > 0 ? { mentioned: article.mentioned } : {}),
       });
@@ -532,7 +599,8 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
         'optionally append an article in the same call. Only the fields you pass are modified. Moving a ticket into ' +
         'a pending state requires `pending_time`.\n\n' +
         'Mention a colleague in the article body by writing `@@jane@acme.com`, `@@jdoe` or `@@"Jane Doe"` — they ' +
-        'are linked and notified. Keep the article `internal: true`, or the customer sees the mention too.',
+        'are linked and notified. Keep the article `internal: true`, or the customer sees the mention too.\n\n' +
+        'An email article is signed with the group signature unless `article.append_signature` is turned off.',
       inputSchema: updateTicketInput.strict(),
       annotations: {
         readOnlyHint: false,
@@ -551,8 +619,16 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
 
       const body = ticketPayload(input);
       let mentioned: MentionedUser[] = [];
+      let signature: SignatureOutcome | undefined;
       if (input.article) {
         const article = await articlePayload(input.article, context);
+        signature = await signArticle(context, input.article, article.payload, {
+          // A group moved in this same call is the one the UI signs with —
+          // `setArticleTypePost` prefers the pending group over the stored one.
+          group: input.group_id ?? input.group,
+          ticket: { title: input.title, state: input.state, priority: input.priority },
+          loadTicket: ticketLoader(context.client, id),
+        });
         body.article = article.payload;
         mentioned = article.mentioned;
       }
@@ -566,6 +642,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       });
       return jsonResult({
         updated: true,
+        ...(signature ? { signature } : {}),
         ticket: presentTicket(ticket),
         ...(mentioned.length > 0 ? { mentioned } : {}),
       });

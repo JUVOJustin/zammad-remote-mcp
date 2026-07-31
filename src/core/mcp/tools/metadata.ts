@@ -1,8 +1,16 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import { ToolInputError } from '../../util/errors.js';
 import { clearLookupCache } from '../../zammad/lookup.js';
+import { buildSignatureElement, htmlToText, renderGroupSignature } from '../../zammad/signature.js';
 import type { ToolContext } from '../context.js';
+import { withOnBehalfOf } from '../context.js';
 import { compact, guard, jsonResult, summarizeOrganization, summarizeUser, textResult } from '../result.js';
+
+const onBehalfOf = z
+  .string()
+  .optional()
+  .describe('Perform the action as another Zammad user (login, email or ID). Requires admin privileges.');
 
 /**
  * Lookup tools for the things that *cannot* be baked into a tool schema.
@@ -210,6 +218,106 @@ export function registerMetadataTools(server: McpServer, base: ToolContext): voi
             selector_path: `${input.object.toLowerCase()}.${a.name}`,
           }),
         ),
+      });
+    }),
+  );
+
+  const signatureInput = z.object({
+    group: z.string().optional().describe('Group name, e.g. "1st Level".'),
+    group_id: z.number().int().positive().optional(),
+    ticket_id: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe(
+        "Read the signature of this ticket's group, and resolve `#{ticket.…}` placeholders against it. " +
+          'Use this when previewing the signature for a reply.',
+      ),
+    on_behalf_of: onBehalfOf,
+  });
+
+  server.registerTool(
+    'zammad_get_group_signature',
+    {
+      title: "Preview a group's signature",
+      description:
+        'The exact text that `append_signature` would add to an email article on this group, with ' +
+        '`#{user.firstname}` and friends already resolved for the acting user.\n\n' +
+        'Read this before composing an email body when it matters how the message should end. Signatures ' +
+        'differ per instance: some already carry the closing line above the name, others are only a name ' +
+        'and a company block, in which case the body still needs a closing of its own. Decide that from ' +
+        '`text`. `has_signature: false` means an email article on this group goes out exactly as written.',
+      inputSchema: signatureInput.strict(),
+      annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
+    },
+    guard(async (rawInput) => {
+      const input = signatureInput.parse(rawInput);
+      if (input.group === undefined && input.group_id === undefined && input.ticket_id === undefined) {
+        throw new ToolInputError('Pass a `group`, a `group_id` or a `ticket_id`.');
+      }
+      const context = withOnBehalfOf(base, input.on_behalf_of);
+
+      // A ticket resolves both the group and the placeholder context, which is
+      // what makes the preview match what a reply would actually carry.
+      let ticket: Record<string, unknown> | undefined;
+      if (input.ticket_id !== undefined) {
+        ticket = await context.client.get<Record<string, unknown>>(`/api/v1/tickets/${input.ticket_id}`, {
+          expand: true,
+        });
+      }
+
+      const reference = input.group_id ?? input.group ?? (ticket?.group_id as number | undefined);
+      if (reference === undefined) {
+        throw new ToolInputError(`Ticket ${input.ticket_id} has no group, so it has no signature.`);
+      }
+
+      const found = await renderGroupSignature({ lookup: context.lookup, group: reference, ticket });
+      // Rendering to nothing counts as unsigned here exactly as it does when
+      // writing. A template of `<br><br>` is non-empty and so survives the
+      // lookup, but produces no text — and a preview that promised a signature
+      // the writer then declines to append is worse than no preview at all.
+      const rendered = found ? htmlToText(found.rendered) : '';
+      if (!found || rendered === '') {
+        // Answer with the group's name even here. Every other field of this tool
+        // speaks in names, and `#3` is an internal id the caller cannot use
+        // anywhere else. A ticket read with `expand` already carries the name; a
+        // numeric `group_id` is resolved through the cached list.
+        const named =
+          (ticket?.group as string | undefined) ??
+          (typeof reference === 'string'
+            ? reference
+            : (await context.lookup.groups().catch(() => [])).find((group) => group.id === reference)?.name);
+
+        return jsonResult({
+          group: named ?? `#${reference}`,
+          has_signature: false,
+          reason: found
+            ? "This group's signature renders to nothing once its placeholders are resolved, so nothing is appended."
+            : 'This group has no active signature with a body, so nothing is appended to an email article on it.',
+        });
+      }
+
+      return jsonResult({
+        group: found.group.name,
+        has_signature: true,
+        signature_id: found.signature.id,
+        signature_name: found.signature.name,
+        // What the reader ends up seeing, and what the decision turns on.
+        //
+        // Deliberately no derived "already has a closing line" flag: a regex over
+        // prose, in any language, is a guess presented as a fact, and a wrong one
+        // would cause exactly the confusion this tool exists to prevent. The
+        // caller reading `text` makes that judgement better than a pattern can.
+        text: rendered,
+        html: buildSignatureElement(found.signature.id, found.rendered),
+        // The unrendered template, so a caller can see which placeholders exist.
+        template: found.signature.body,
+        ...(input.ticket_id === undefined
+          ? {
+              note: 'No ticket was given, so `#{ticket.…}` placeholders render as "-". Pass `ticket_id` for the text a reply on that ticket would carry.',
+            }
+          : {}),
       });
     }),
   );

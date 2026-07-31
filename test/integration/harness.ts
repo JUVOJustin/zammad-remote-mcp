@@ -7,6 +7,13 @@ import { ADMIN_LOGIN, ADMIN_PASSWORD, BASE_URL, isReachable } from './zammad.js'
 /**
  * Drives the MCP server against the Docker Zammad.
  *
+ * The suite runs one file at a time (`--test-concurrency=1`). Every file talks
+ * to the *same* instance, so running them in parallel makes them contend for it:
+ * counts taken in sequence race tickets another file is creating, Zammad's
+ * mention callback lags behind the request that triggered it, and a busy
+ * Postgres aborts a ticket-creating transaction outright. All three were seen.
+ * Serial costs about 13 seconds and removes the class.
+ *
  * Tools are called over the real /mcp endpoint rather than by importing their
  * handlers, so schema parsing, name resolution and error mapping are all part
  * of what is under test — the layers where a mistake reaches users.
