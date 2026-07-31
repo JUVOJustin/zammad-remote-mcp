@@ -66,7 +66,7 @@
     "prepack": "npm run build",
     "zammad:up": "./test/integration/up.sh",
     "zammad:down": "./test/integration/down.sh",
-    "test:integration": "node --test --import tsx test/integration/*.test.ts"
+    "test:integration": "node --test --test-concurrency=1 --import tsx test/integration/*.test.ts"
   },
   "dependencies": {
     "@cfworker/json-schema": "^4.1.1",
