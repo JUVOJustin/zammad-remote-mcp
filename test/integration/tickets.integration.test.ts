@@ -9,7 +9,7 @@ import {
   startHarness,
   stopHarness,
 } from './harness.js';
-import { AGENT_EMAIL, api, CUSTOMER_EMAIL, mentionsFor, seededAgent } from './zammad.js';
+import { AGENT_EMAIL, api, CUSTOMER_EMAIL, seededAgent, waitForMention } from './zammad.js';
 
 /**
  * The write tools against a real Zammad.
@@ -328,7 +328,7 @@ describe('ticket lifecycle against a real Zammad', () => {
         bodies.some((body) => body.includes('data-mention-user-id')),
         `the anchor never reached Zammad: ${JSON.stringify(bodies)}`,
       );
-      const mentions = await mentionsFor(ticket.ticket.id);
+      const mentions = await waitForMention(ticket.ticket.id, agent.id);
       assert.ok(
         mentions.some((mention) => mention.user_id === agent.id),
         'Zammad recorded no mention, so nobody was notified',

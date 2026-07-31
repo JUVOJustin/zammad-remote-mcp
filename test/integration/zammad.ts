@@ -102,6 +102,24 @@ export async function mentionsFor(ticketId: number): Promise<Mention[]> {
   return result?.mentions ?? [];
 }
 
+/**
+ * Waits for Zammad to record a mention.
+ *
+ * `Mention` rows are written by a model callback, not inside the article
+ * request, so reading straight after the write is a race — one that only shows
+ * up when the suites run in parallel and the instance is busy. Polling removes
+ * the flake without weakening the assertion: the mention still has to appear.
+ */
+export async function waitForMention(ticketId: number, userId: number, attempts = 20): Promise<Mention[]> {
+  let mentions: Mention[] = [];
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    mentions = await mentionsFor(ticketId);
+    if (mentions.some((mention) => mention.user_id === userId)) return mentions;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  return mentions;
+}
+
 export interface OnlineNotification {
   user_id: number;
   /** The id of the object it is about — the ticket, for a mention. */

@@ -9,6 +9,7 @@ import {
   notificationsFor,
   type SeededAgent,
   seededAgent,
+  waitForMention,
 } from './zammad.js';
 
 /**
@@ -55,7 +56,7 @@ describe('@@ mentions against a real Zammad', () => {
     assert.ok(!stored.body.includes('@@'), `the shorthand should be gone: ${stored.body}`);
 
     // The point of the whole exercise: Zammad turned our markup into a mention.
-    const mentions = await mentionsFor(ticket.id);
+    const mentions = await waitForMention(ticket.id, agent.id);
     assert.ok(
       mentions.some((mention) => mention.user_id === agent.id),
       `Zammad recorded no mention for user ${agent.id}: ${JSON.stringify(mentions)}`,
@@ -77,7 +78,7 @@ describe('@@ mentions against a real Zammad', () => {
 
     assert.deepEqual(result.mentioned, [{ id: agent.id, name: `${agent.firstname} ${agent.lastname}` }]);
 
-    const mentions = await mentionsFor(result.ticket.id);
+    const mentions = await waitForMention(result.ticket.id, agent.id);
     assert.ok(
       mentions.some((mention) => mention.user_id === agent.id),
       'Zammad recorded no mention for a ticket created with one',
