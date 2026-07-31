@@ -27,7 +27,7 @@ export function registerMetadataTools(server: McpServer, base: ToolContext): voi
       description:
         'Identity and permissions behind the current credential. Call this first when it matters whether the ' +
         'caller is an agent or a customer — visibility of tickets differs sharply between the two.',
-      inputSchema: {},
+      inputSchema: z.object({}).strict(),
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     guard(async () => {
@@ -48,10 +48,14 @@ export function registerMetadataTools(server: McpServer, base: ToolContext): voi
       description:
         'Fetch one user by ID, login or email address, including their organization and roles. Use it to ' +
         'confirm an identity before filtering tickets by owner or customer.',
-      inputSchema: {
-        user: z.union([z.string().min(1), z.number().int().positive()]).describe('User ID, login or email.'),
-        output: z.enum(['summary', 'full']).default('summary'),
-      },
+      inputSchema: z
+        .object({
+          user: z
+            .union([z.string().min(1), z.number().int().positive()])
+            .describe('User ID, login or email.'),
+          output: z.enum(['summary', 'full']).default('summary'),
+        })
+        .strict(),
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     guard(async (rawInput) => {
@@ -73,10 +77,12 @@ export function registerMetadataTools(server: McpServer, base: ToolContext): voi
     {
       title: 'Get a Zammad organization',
       description: 'Fetch one organization by ID or exact name, including its members.',
-      inputSchema: {
-        organization: z.union([z.string().min(1), z.number().int().positive()]),
-        output: z.enum(['summary', 'full']).default('summary'),
-      },
+      inputSchema: z
+        .object({
+          organization: z.union([z.string().min(1), z.number().int().positive()]),
+          output: z.enum(['summary', 'full']).default('summary'),
+        })
+        .strict(),
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     guard(async (rawInput) => {
@@ -103,12 +109,16 @@ export function registerMetadataTools(server: McpServer, base: ToolContext): voi
         'Find existing tags by prefix — worth doing before tagging so spellings stay consistent. Tags are ' +
         'open-ended and can be created on the fly, so unlike states or groups they are not part of the tool ' +
         'schemas and have to be looked up.',
-      inputSchema: {
-        term: z
-          .string()
-          .min(1)
-          .describe('Prefix to search for. Zammad has no agent-readable endpoint for the complete tag list.'),
-      },
+      inputSchema: z
+        .object({
+          term: z
+            .string()
+            .min(1)
+            .describe(
+              'Prefix to search for. Zammad has no agent-readable endpoint for the complete tag list.',
+            ),
+        })
+        .strict(),
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     guard(async (rawInput) => {
@@ -127,7 +137,7 @@ export function registerMetadataTools(server: McpServer, base: ToolContext): voi
       description:
         'The saved ticket overviews visible to the user (e.g. "My Assigned Tickets", "Unassigned & Open"), with ' +
         'the number of tickets in each. Overviews are a good starting point for "what should I work on" questions.',
-      inputSchema: {},
+      inputSchema: z.object({}).strict(),
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     guard(async () => {
@@ -159,13 +169,15 @@ export function registerMetadataTools(server: McpServer, base: ToolContext): voi
         'Requires an admin-level credential: Zammad only exposes the attribute catalogue to `admin.object_manager`, ' +
         'so an agent token gets 403 here. That is also why custom attributes are not part of the tool schemas the ' +
         'way states, priorities and groups are — the server cannot read them either.',
-      inputSchema: {
-        object: z.enum(['Ticket', 'User', 'Organization', 'Group']).default('Ticket'),
-        only_custom: z
-          .boolean()
-          .default(true)
-          .describe("Hide Zammad's built-in attributes and show only ones added to this instance."),
-      },
+      inputSchema: z
+        .object({
+          object: z.enum(['Ticket', 'User', 'Organization', 'Group']).default('Ticket'),
+          only_custom: z
+            .boolean()
+            .default(true)
+            .describe("Hide Zammad's built-in attributes and show only ones added to this instance."),
+        })
+        .strict(),
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     guard(async (rawInput) => {
@@ -209,7 +221,7 @@ export function registerMetadataTools(server: McpServer, base: ToolContext): voi
       description:
         "Drop this process's cached states, priorities, groups and resolved user/organization lookups. Call it after " +
         'changing configuration in Zammad if a lookup still returns stale values.',
-      inputSchema: {},
+      inputSchema: z.object({}).strict(),
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,

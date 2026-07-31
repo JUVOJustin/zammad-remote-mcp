@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 import { callTool, type Json, skipReason, startHarness, stopHarness } from './harness.js';
-import { api, createTicket, mentionsFor, notificationsFor, type SeededAgent, seededAgent } from './zammad.js';
+import {
+  api,
+  CUSTOMER_EMAIL,
+  createTicket,
+  mentionsFor,
+  notificationsFor,
+  type SeededAgent,
+  seededAgent,
+} from './zammad.js';
 
 /**
  * The @@ rewrite against a real Zammad.
@@ -51,6 +59,28 @@ describe('@@ mentions against a real Zammad', () => {
     assert.ok(
       mentions.some((mention) => mention.user_id === agent.id),
       `Zammad recorded no mention for user ${agent.id}: ${JSON.stringify(mentions)}`,
+    );
+  });
+
+  it('records a mention written into the first article of a new ticket', async (t) => {
+    if (!ready) return t.skip(skipReason);
+
+    // The same body can arrive through zammad_create_ticket, which builds its
+    // own payload. That path was silently skipping the rewrite until #8, so it
+    // is asserted separately rather than assumed to follow from create_article.
+    const result = await callTool('zammad_create_ticket', {
+      title: 'Mention on create',
+      group: 'Users',
+      customer: CUSTOMER_EMAIL,
+      article: { body: `@@${agent.email} please take a look`, internal: true },
+    });
+
+    assert.deepEqual(result.mentioned, [{ id: agent.id, name: `${agent.firstname} ${agent.lastname}` }]);
+
+    const mentions = await mentionsFor(result.ticket.id);
+    assert.ok(
+      mentions.some((mention) => mention.user_id === agent.id),
+      'Zammad recorded no mention for a ticket created with one',
     );
   });
 

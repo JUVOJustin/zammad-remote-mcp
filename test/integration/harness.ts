@@ -52,6 +52,59 @@ export async function stopHarness(): Promise<void> {
   await new Promise<void>((resolve) => closing.close(() => resolve()));
 }
 
+/**
+ * A second server whose credential Zammad rejects, for the paths that only show
+ * themselves on a refusal.
+ *
+ * The password is wrong rather than the URL: that produces a real 401 from the
+ * real instance, which is the thing worth asserting. Pointing at a dead port
+ * would exercise our timeout handling instead and prove nothing about how a
+ * refused credential surfaces.
+ */
+export async function withRejectedCredential<T>(run: (call: Caller) => Promise<T>): Promise<T> {
+  const config = loadConfig({
+    ZAMMAD_URL: BASE_URL,
+    ZAMMAD_AUTH_MODE: 'basic',
+    ZAMMAD_USERNAME: ADMIN_LOGIN,
+    ZAMMAD_PASSWORD: 'definitely-not-the-password',
+    LOG_LEVEL: 'silent',
+    METADATA_CACHE_TTL_SECONDS: '0',
+  } as NodeJS.ProcessEnv);
+
+  const app = createApp(config, createLogger('silent'));
+  let broken: ReturnType<typeof serve> | undefined;
+  const brokenPort: number = await new Promise((resolve) => {
+    broken = serve({ fetch: app.fetch, hostname: '127.0.0.1', port: 0 }, (info) => resolve(info.port));
+  });
+
+  try {
+    return await run((name, args) => rpc(brokenPort, name, args));
+  } finally {
+    await new Promise<void>((resolve) => broken?.close(() => resolve()));
+  }
+}
+
+export type Caller = (name: string, args: unknown) => Promise<Json>;
+
+/** One tools/call against a given port, returning the raw MCP result envelope. */
+async function rpc(onPort: number, name: string, args: unknown): Promise<Json> {
+  const response = await fetch(`http://127.0.0.1:${onPort}/mcp`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
+  });
+
+  const text = await response.text();
+  const payload = response.headers.get('content-type')?.includes('text/event-stream')
+    ? text
+        .split('\n')
+        .find((line) => line.startsWith('data:'))
+        ?.slice(5)
+        .trim()
+    : text;
+  return JSON.parse(payload ?? '{}').result;
+}
+
 export const skipReason = `no Zammad on ${BASE_URL} — run npm run zammad:up`;
 
 /** Calls a tool and returns its parsed payload, throwing on a JSON-RPC error. */
