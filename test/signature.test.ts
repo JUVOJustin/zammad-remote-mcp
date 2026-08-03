@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import type { Logger } from '../src/core/util/logger.js';
+import { text2html } from '../src/core/zammad/compose.js';
+import type { LookupService } from '../src/core/zammad/lookup.js';
 import {
+  appendGroupSignature,
   appendToHtmlBody,
   buildSignatureElement,
   htmlToText,
@@ -207,10 +211,119 @@ describe('htmlToText', () => {
         '<a href="http://www.example.com/">http://www.example.com/</a><br>--',
     );
 
-    assert.equal(text, 'Mira Mentioned\n\n--\n Email: hot@example.com - Web: http://www.example.com/\n--');
+    assert.equal(text, 'Mira Mentioned\n\n--\nEmail: hot@example.com - Web: http://www.example.com/\n--');
   });
 
   it('decodes the entities the renderer introduced', () => {
     assert.equal(htmlToText('Tom &amp; Jerry &lt;hi&gt;&nbsp;there'), 'Tom & Jerry <hi> there');
+  });
+
+  it('breaks once between adjacent blocks, however the source is indented', () => {
+    // The same two paragraphs, formatted three ways. All render alike, so all
+    // three have to come out alike — the old pass turned the source's own
+    // newlines into blank lines.
+    assert.equal(htmlToText('<p>One</p><p>Two</p>'), 'One\nTwo');
+    assert.equal(htmlToText('<p>One</p>\n\n<p>Two</p>'), 'One\nTwo');
+    assert.equal(htmlToText('<p>One</p>\n  <div>Two</div>'), 'One\nTwo');
+  });
+
+  it('leaves a blank line where the author put one', () => {
+    // An empty paragraph and a doubled break are the two ways of asking for it.
+    assert.equal(htmlToText('<p>One</p><p><br></p><p>Two</p>'), 'One\n\nTwo');
+    assert.equal(htmlToText('<p>One</p><p>&nbsp;</p><p>Two</p>'), 'One\n\nTwo');
+    assert.equal(htmlToText('One<br><br>Two'), 'One\n\nTwo');
+    // ...but a break that merely ends a line before a block starts is not one.
+    assert.equal(htmlToText('--<br><p>One</p>'), '--\nOne');
+    // ...nor is a paragraph of collapsible whitespace, which a browser gives no
+    // line box at all. `&nbsp;` above is the spacer that does.
+    assert.equal(htmlToText('<p>One</p><p> </p><p>Two</p>'), 'One\nTwo');
+  });
+
+  it('renders a signature pasted in from a word processor', () => {
+    // Verbatim from a live instance: <div> and <p> mixed within one signature,
+    // inline <span style> wrappers, and stray newlines between the tags.
+    const text = htmlToText(
+      '<div>Viele Grüße</div>  Justin Vogt<br><br>--<br><p><b>Citation Media GmbH </b></p>\n\n' +
+        '<p>Vertreten durch Justin Vogt</p><div>Mülheimer Str. 7</div>' +
+        '<p><span style=" color: var(--text-normal);">40239 Düsseldorf</span></p>' +
+        '<p><span style=" color: var(--text-normal);"><br></span></p>' +
+        '<p><b>Telefon:</b><span style=" color: var(--text-normal);"> +49 211 94253737</span></p><p>\n' +
+        '<b>E-Mail:</b> <a href="mailto:info@citation.media">info@citation.media</a><br>\n' +
+        '<b>Website:</b> <a href="http://citation.media/" target="_blank">citation.media</a> </p>' +
+        '<p><br></p>\n\n<p> </p>\n\n<p><b>Steuernummer:</b> 103/5791/0940<br>\n' +
+        '<b>Umsatzsteuer ID:</b> DE360429258<br>\n' +
+        '<b>Amtsgericht Düsseldorf - HRB 100294</b> </p>\n\n' +
+        '<p>AGB: <a href="http://citation.media/AGB" target="_blank">citation.media/AGB</a> </p>--',
+    );
+
+    assert.equal(
+      text,
+      [
+        'Viele Grüße',
+        'Justin Vogt',
+        '',
+        '--',
+        'Citation Media GmbH',
+        'Vertreten durch Justin Vogt',
+        'Mülheimer Str. 7',
+        '40239 Düsseldorf',
+        '',
+        'Telefon: +49 211 94253737',
+        'E-Mail: info@citation.media',
+        'Website: citation.media',
+        '',
+        'Steuernummer: 103/5791/0940',
+        'Umsatzsteuer ID: DE360429258',
+        'Amtsgericht Düsseldorf - HRB 100294',
+        'AGB: citation.media/AGB',
+        '--',
+      ].join('\n'),
+    );
+  });
+});
+
+describe('appendGroupSignature across the content-type boundary', () => {
+  /** The lookup as a signed group answers it, nothing more. */
+  const lookup = {
+    resolveGroups: async () => [1],
+    groups: async () => [{ id: 1, name: 'Users', signature_id: 9 }],
+    signatures: async () => [
+      { id: 9, name: 'default', active: true, body: 'Viele Grüße<br>#{user.firstname}' },
+    ],
+    me: async () => ({ firstname: 'Ada' }),
+    frontendConfig: async () => ({}),
+  } as unknown as LookupService;
+  const logger = { debug() {}, info() {}, warn() {}, error() {} } as Logger;
+
+  const email = { type: 'email', sender: 'Agent' };
+
+  it('does not re-sign a plain-signed body the HTML conversion re-encoded', async () => {
+    // The retry the README promises to keep safe, crossing formats: an article
+    // an older release signed as text/plain, read back, and resent. The
+    // conversion leaves no data-signature marker to recognise, so only the
+    // trailing text can say it is already signed.
+    const readBack = 'Hallo!\n\nViele Grüße\nAda';
+    const result = await appendGroupSignature({
+      lookup,
+      logger,
+      article: { ...email, body: text2html(readBack) },
+      group: 'Users',
+    });
+
+    assert.equal(result.appended, false);
+    assert.match(result.reason ?? '', /already ends with this signature/);
+    assert.equal(result.body, text2html(readBack), 'the body must be returned untouched');
+  });
+
+  it('still signs prose that does not end with the signature', async () => {
+    const result = await appendGroupSignature({
+      lookup,
+      logger,
+      article: { ...email, body: text2html('Bitte melden Sie sich bei Ada') },
+      group: 'Users',
+    });
+
+    assert.equal(result.appended, true, result.reason);
+    assert.ok(result.body.includes('data-signature-id="9"'), result.body);
   });
 });

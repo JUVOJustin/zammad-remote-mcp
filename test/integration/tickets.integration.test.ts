@@ -447,7 +447,7 @@ describe('ticket lifecycle against a real Zammad', () => {
         title: 'Signature applied',
         group: 'Users',
         customer: CUSTOMER_EMAIL,
-        article: emailArticle({ content_type: 'text/html' }),
+        article: emailArticle(),
       });
 
       assert.equal(created.signature.appended, true);
@@ -466,30 +466,16 @@ describe('ticket lifecycle against a real Zammad', () => {
       assert.ok(!body.includes('#{'), `a placeholder was left unrendered: ${body}`);
     });
 
-    it('renders it as text for a text/plain article', async (t) => {
-      if (!ready) return t.skip(skipReason);
-
-      const created = await callTool('zammad_create_ticket', {
-        title: 'Signature as text',
-        group: 'Users',
-        customer: CUSTOMER_EMAIL,
-        article: emailArticle(),
-      });
-
-      const article = await firstArticle(created.ticket.id);
-      const me = await api<Json>('/api/v1/users/me');
-      assert.equal(article.content_type, 'text/plain');
-      assert.ok(!article.body.includes('<div'), `markup leaked into a plain article: ${article.body}`);
-      assert.ok(article.body.includes(`${me.firstname} ${me.lastname}`), article.body);
-    });
-
     it('leaves a note unsigned, as the create screen does', async (t) => {
       if (!ready) return t.skip(skipReason);
 
       const created = await newTicket('Signature skipped for a note');
 
       assert.equal(created.signature.appended, false);
-      assert.equal((await firstArticle(created.ticket.id)).body, 'Opened by the integration suite.');
+      assert.equal(
+        (await firstArticle(created.ticket.id)).body,
+        '<span>Opened by the integration suite.</span>',
+      );
     });
 
     it('honours append_signature: false on the email channel', async (t) => {
@@ -499,11 +485,14 @@ describe('ticket lifecycle against a real Zammad', () => {
         title: 'Signature declined',
         group: 'Users',
         customer: CUSTOMER_EMAIL,
-        article: emailArticle({ content_type: 'text/html', append_signature: false }),
+        article: emailArticle({ append_signature: false }),
       });
 
       assert.equal(created.signature, undefined);
-      assert.equal((await firstArticle(created.ticket.id)).body, 'Opened by the integration suite.');
+      assert.equal(
+        (await firstArticle(created.ticket.id)).body,
+        '<span>Opened by the integration suite.</span>',
+      );
     });
 
     it('signs a reply added with zammad_create_article', async (t) => {
@@ -518,7 +507,6 @@ describe('ticket lifecycle against a real Zammad', () => {
         type: 'email',
         internal: false,
         to: CUSTOMER_EMAIL,
-        content_type: 'text/html',
       });
 
       assert.equal(created.signature.appended, true);
@@ -542,7 +530,6 @@ describe('ticket lifecycle against a real Zammad', () => {
           type: 'email',
           internal: false,
           to: CUSTOMER_EMAIL,
-          content_type: 'text/html',
         },
       });
 
@@ -571,7 +558,6 @@ describe('ticket lifecycle against a real Zammad', () => {
         type: 'email',
         internal: false,
         to: CUSTOMER_EMAIL,
-        content_type: 'text/html',
       });
 
       const articles = await api<Json[]>(`/api/v1/ticket_articles/by_ticket/${ticket.ticket.id}`);
@@ -601,7 +587,6 @@ describe('ticket lifecycle against a real Zammad', () => {
           type: 'email',
           internal: false,
           to: CUSTOMER_EMAIL,
-          content_type: 'text/html',
         },
       });
 
@@ -622,7 +607,7 @@ describe('ticket lifecycle against a real Zammad', () => {
       await callTool('zammad_create_article', { ticket_id: ticket.ticket.id, body: 'An internal note.' });
 
       const articles = await api<Json[]>(`/api/v1/ticket_articles/by_ticket/${ticket.ticket.id}`);
-      assert.equal(articles[articles.length - 1].body, 'An internal note.');
+      assert.equal(articles[articles.length - 1].body, '<span>An internal note.</span>');
     });
 
     /**
@@ -644,12 +629,15 @@ describe('ticket lifecycle against a real Zammad', () => {
         title: 'Signature absent',
         group: 'Unsigned',
         customer: CUSTOMER_EMAIL,
-        article: emailArticle({ content_type: 'text/html' }),
+        article: emailArticle(),
       });
 
       assert.equal(created.signature.appended, false);
       assert.match(created.signature.reason, /no active signature/);
-      assert.equal((await firstArticle(created.ticket.id)).body, 'Opened by the integration suite.');
+      assert.equal(
+        (await firstArticle(created.ticket.id)).body,
+        '<span>Opened by the integration suite.</span>',
+      );
     });
 
     it('adds nothing when the group’s signature is switched off', async (t) => {
@@ -659,12 +647,12 @@ describe('ticket lifecycle against a real Zammad', () => {
         title: 'Signature inactive',
         group: 'Retired',
         customer: CUSTOMER_EMAIL,
-        article: emailArticle({ content_type: 'text/html' }),
+        article: emailArticle(),
       });
 
       assert.equal(created.signature.appended, false);
       const body = (await firstArticle(created.ticket.id)).body;
-      assert.equal(body, 'Opened by the integration suite.');
+      assert.equal(body, '<span>Opened by the integration suite.</span>');
       assert.ok(!body.includes('Retired team'), 'an inactive signature was sent');
     });
 
@@ -681,7 +669,6 @@ describe('ticket lifecycle against a real Zammad', () => {
         type: 'email',
         internal: false,
         to: CUSTOMER_EMAIL,
-        content_type: 'text/html',
       });
       assert.equal(first.signature.appended, true);
 
@@ -694,7 +681,6 @@ describe('ticket lifecycle against a real Zammad', () => {
         type: 'email',
         internal: false,
         to: CUSTOMER_EMAIL,
-        content_type: 'text/html',
       });
 
       assert.equal(second.signature.appended, false);
@@ -723,7 +709,7 @@ describe('ticket lifecycle against a real Zammad', () => {
         group: 'Users',
         customer: CUSTOMER_EMAIL,
         on_behalf_of: AGENT_EMAIL,
-        article: emailArticle({ content_type: 'text/html' }),
+        article: emailArticle(),
       });
 
       const body = (await firstArticle(created.ticket.id)).body;
@@ -739,7 +725,7 @@ describe('ticket lifecycle against a real Zammad', () => {
         title: 'Signature reported',
         group: 'Users',
         customer: CUSTOMER_EMAIL,
-        article: emailArticle({ content_type: 'text/html' }),
+        article: emailArticle(),
       });
 
       // A doubled sign-off can only be prevented by the caller, so what was
@@ -764,11 +750,11 @@ describe('ticket lifecycle against a real Zammad', () => {
         title: 'Preview parity',
         group: 'Users',
         customer: CUSTOMER_EMAIL,
-        article: emailArticle({ content_type: 'text/html' }),
+        article: emailArticle(),
       });
 
       const body = (await firstArticle(created.ticket.id)).body;
-      assert.equal(body, `Opened by the integration suite.<br><br>${preview.html}`);
+      assert.equal(body, `<span>Opened by the integration suite.</span><br><br>${preview.html}`);
       assert.equal(created.signature.appended_text, preview.text);
     });
 
