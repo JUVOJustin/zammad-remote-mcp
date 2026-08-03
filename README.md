@@ -555,8 +555,23 @@ The rules are the UI's:
 - the result is wrapped in `<div data-signature="true" data-signature-id="…">` and appended after a
   blank line. That marker is what Zammad's own reply handling looks for — and what the Markdown
   rendering above strips again on read, so a signed article does not carry its signature into every
-  later quote. A `text/plain` article gets a
-  plain-text rendering instead of markup.
+  later quote.
+
+**Every article these tools write is `text/html`.** There is no `content_type` argument anywhere —
+a format knob on a model-facing tool is an invitation to pick wrongly, and there is nothing to
+pick: the agent UI composes nothing but HTML, and Zammad itself takes care of the text version.
+Verified against `Channel::EmailBuild` and `TicketArticleCommunicateEmailJob` on stable: the
+article's `content_type` *is* the send format — no flag exists to store one format and send
+another — and a `text/html` article goes out as `multipart/alternative` with a plain-text part
+Zammad generates via its own `html2text`. A text-only reader gets Zammad's rendering of the same
+HTML, so nothing is lost by never writing `text/plain`.
+
+A `body` may still be authored either way: plain prose is converted exactly the way the UI
+converts pasted text (`App.Utils.text2html`: escaped, line breaks kept, each line a `<div>`, an
+empty line a `<div><br></div>`), and a body already carrying a complete HTML tag is stored as it
+is. The signature is appended as HTML, one to one as stored, never pre-rendered to text.
+`htmlToText` survives on the reading side only — the previews, and the check that keeps a body an
+older release signed as `text/plain` from going out signed twice when it is read back and resent.
 
 The lookup never fails a write. A group with no signature, a signature an admin switched off, a
 `signature_id` left dangling by a deleted signature, an empty body, a group that cannot be resolved,

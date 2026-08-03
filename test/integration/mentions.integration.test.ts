@@ -109,7 +109,7 @@ describe('@@ mentions against a real Zammad', () => {
     );
   });
 
-  it('leaves a body without @@ exactly as written', async (t) => {
+  it('stores a body without @@ unchanged in content', async (t) => {
     if (!ready) return t.skip(skipReason);
 
     const ticket = await createTicket('No mention');
@@ -119,9 +119,11 @@ describe('@@ mentions against a real Zammad', () => {
       internal: true,
     });
 
+    // Every article is written as text/html (compose.ts); a single plain line
+    // becomes the UI's own <span> wrap, and reads back as the text it was.
     const stored = await api<Json>(`/api/v1/ticket_articles/${result.article.id}`);
-    assert.equal(stored.body, 'Plain note, nothing to resolve.');
-    assert.equal(stored.content_type, 'text/plain', 'nothing was linked, so nothing forced HTML');
+    assert.equal(stored.body, '<span>Plain note, nothing to resolve.</span>');
+    assert.equal(stored.content_type, 'text/html');
     assert.equal(result.mentioned, undefined);
     assert.deepEqual(await mentionsFor(ticket.id), []);
   });
