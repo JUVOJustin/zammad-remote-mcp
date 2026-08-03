@@ -190,6 +190,33 @@ markdown.addRule('plainEmphasis', {
 });
 
 /**
+ * Fold the div-per-line convention into actual lines.
+ *
+ * Zammad's composer writes one `<div>` per line and `<div><br></div>` for a
+ * deliberately blank one. Turndown's default makes every div a paragraph, so a
+ * single line break read back as a blank line — and the real blank line as the
+ * same thing, erasing the distinction the author typed. A div holding only
+ * inline content is one line; an empty one is the blank line it stood for.
+ *
+ * Divs with block children are excluded: in stored email markup those are
+ * layout wrappers (Gmail's `<div dir="ltr">`, Outlook's nesting) around the
+ * per-line divs, not lines themselves, and they keep the default paragraph
+ * handling.
+ */
+const BLOCK_CHILD =
+  /^(?:ADDRESS|ARTICLE|ASIDE|BLOCKQUOTE|DIV|DL|FIELDSET|FIGURE|FOOTER|FORM|H[1-6]|HEADER|HR|LI|MAIN|NAV|OL|P|PRE|SECTION|TABLE|UL)$/;
+
+markdown.addRule('lineDivs', {
+  filter: (node) =>
+    node.nodeName === 'DIV' &&
+    !Array.prototype.some.call(node.childNodes, (child: Node) => BLOCK_CHILD.test(child.nodeName)),
+  replacement: (content) => {
+    const line = content.trim();
+    return line ? `\n${line}\n` : '\n\n';
+  },
+});
+
+/**
  * Keep a table's rows on their own lines, cells separated by a pipe.
  *
  * Turndown on its own emits one paragraph per cell, which scatters a small data

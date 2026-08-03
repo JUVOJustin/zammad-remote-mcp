@@ -38,7 +38,9 @@ describe('renderArticleBody', () => {
     const html =
       'Danke!<blockquote>Am Freitag, 10. November 2023 um 14:27:05, schrieb Thomas Bartsch: Hi Jannik</blockquote><div>Signature line</div>';
     const result = renderArticleBody(html, 'text/html');
-    assert.equal(result.body, 'Danke!\n\nSignature line');
+    // A single newline, not a paragraph: the div is one line, and the removed
+    // quote between the two contributes a break, not a blank line.
+    assert.equal(result.body, 'Danke!\nSignature line');
     assert.deepEqual(result.omitted, ['quoted_reply']);
   });
 
@@ -197,6 +199,33 @@ describe('renderArticleBody', () => {
   it('drops scripts, styles and inline images', () => {
     const html = '<style>p{color:red}</style><script>alert(1)</script><p>Text</p><img src="cid:1">';
     assert.equal(renderArticleBody(html, 'text/html').body, 'Text');
+  });
+
+  /**
+   * Zammad's composer writes one `<div>` per line and `<div><br></div>` for a
+   * blank one. Turndown's default made both read back as a blank line, erasing
+   * the difference the author typed.
+   */
+  it('folds div-per-line markup into single lines', () => {
+    const html = '<div>Zeile eins</div><div>Zeile zwei</div>';
+    assert.equal(renderArticleBody(html, 'text/html').body, 'Zeile eins\nZeile zwei');
+  });
+
+  it('keeps a deliberate blank line written as an empty div', () => {
+    const html = '<div>Zeile eins</div><div><br></div><div>Zeile zwei</div>';
+    assert.equal(renderArticleBody(html, 'text/html').body, 'Zeile eins\n\nZeile zwei');
+  });
+
+  it('sees through a layout wrapper to the line divs inside it', () => {
+    // Gmail wraps the whole message; the per-line divs sit one level down.
+    const html = '<div dir="ltr"><div>erste Zeile</div><div>zweite Zeile</div></div>';
+    assert.equal(renderArticleBody(html, 'text/html').body, 'erste Zeile\nzweite Zeile');
+  });
+
+  it('keeps paragraph spacing for real paragraph markup', () => {
+    // Only the div convention folds; <p> still means a paragraph.
+    const html = '<p>Absatz eins</p><p>Absatz zwei</p>';
+    assert.equal(renderArticleBody(html, 'text/html').body, 'Absatz eins\n\nAbsatz zwei');
   });
 
   it('trims padding and never runs up more than one blank line', () => {

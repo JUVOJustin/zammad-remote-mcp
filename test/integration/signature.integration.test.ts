@@ -405,11 +405,11 @@ describe('every write is text/html, against what Zammad actually stores', () => 
     const stored = await firstArticleBody(created.ticket.id);
     assert.equal(stored, '<div>Zeile eins</div><div>Zeile zwei</div>');
 
-    // Reading back as Markdown renders each <div> line as a paragraph — the
-    // same reading every UI-written article gets. The text survives; a single
-    // line break widens to a blank line on the way out.
+    // Reading back as Markdown folds each <div> line back into the line it
+    // stood for — the round trip through Zammad's storage keeps the author's
+    // line structure intact.
     const listed = await callTool('zammad_list_ticket_articles', { ticket_id: created.ticket.id });
-    assert.equal(String(listed.articles[0].body), 'Zeile eins\n\nZeile zwei');
+    assert.equal(String(listed.articles[0].body), 'Zeile eins\nZeile zwei');
   });
 
   it('takes a body that already carries markup as it is', async (t) => {
