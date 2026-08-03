@@ -1,6 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { bytesToBase64, textFromBytes } from '../../util/base64.js';
+import { authoredContentType, ensureHtml } from '../../zammad/compose.js';
 import { rewriteMentions } from '../../zammad/mentions.js';
 import {
   appendGroupSignature,
@@ -131,7 +132,6 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
       .describe(
         'true keeps the article hidden from the customer. Defaults to true so nothing is published by accident.',
       ),
-    content_type: z.enum(['text/plain', 'text/html']).default('text/plain'),
     to: z.string().optional().describe('Recipients — required for outbound email articles.'),
     cc: z.string().optional(),
     in_reply_to: z.string().optional(),
@@ -159,6 +159,9 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
         'Append a note, reply or logged phone call to a ticket. An article with `type: "email"` and ' +
         '`internal: false` is actually delivered to the addresses in `to`/`cc`; the defaults (`note`, internal) ' +
         'record text without notifying anyone.\n\n' +
+        'Write `body` as plain text or as HTML — either is stored as HTML, the format the agent UI writes. ' +
+        'Plain text keeps its line breaks; a body containing any HTML tag is taken as HTML wholesale. For an ' +
+        'email, Zammad itself derives the plain-text version of the outgoing mail.\n\n' +
         'Mention a colleague by writing `@@jane@acme.com`, `@@jdoe` or `@@"Jane Doe"` in the body — they are ' +
         'linked and notified. Keep such a note `internal: true`, or the customer sees the mention too.\n\n' +
         "An email article is signed with the group's signature, as the reply composer does, unless " +
@@ -177,22 +180,23 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
 
       // `@@name` is rewritten into the anchor Zammad recognises; its own
       // create-callback turns that into the mention and the notification.
-      const mentions = await rewriteMentions(input.body, input.content_type, {
+      // Mentions read the body as authored — before the HTML conversion, whose
+      // escaping would break the `@@"Jane Doe"` quoting.
+      const mentions = await rewriteMentions(input.body, authoredContentType(input.body), {
         client: context.client,
         lookup: context.lookup,
         zammadUrl: base.config.ZAMMAD_URL,
       });
 
-      // After the mentions, not before: rewriting them can promote the body to
-      // HTML, and the signature has to be built for the content type that is
-      // actually sent.
-      let text = mentions.body;
+      // Every article is written as text/html — see zammad/compose.ts. Plain
+      // prose is converted the way the UI converts pasted text.
+      let text = ensureHtml(mentions.body, mentions.content_type);
       let signature: SignatureOutcome | undefined;
       if (input.append_signature) {
         const { body: signed, ...outcome } = await appendGroupSignature({
           lookup: context.lookup,
           logger: context.logger,
-          article: { ...input, body: text, content_type: mentions.content_type },
+          article: { ...input, body: text },
           // The reply composer signs with the group of the ticket it is on.
           loadTicket: ticketLoader(context.client, input.ticket_id),
         });
@@ -206,7 +210,7 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
         type: input.type,
         sender: input.sender,
         internal: input.internal,
-        content_type: mentions.content_type,
+        content_type: 'text/html',
       };
       for (const key of ['subject', 'to', 'cc', 'in_reply_to', 'time_unit', 'origin_by'] as const) {
         if (input[key] !== undefined) body[key] = input[key];

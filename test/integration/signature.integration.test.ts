@@ -9,7 +9,7 @@ import {
   startHarness,
   stopHarness,
 } from './harness.js';
-import { CUSTOMER_EMAIL } from './zammad.js';
+import { api, CUSTOMER_EMAIL } from './zammad.js';
 
 /**
  * The signature paths that used to be asserted against a stub.
@@ -51,7 +51,6 @@ const emailArticle = (overrides: Record<string, unknown> = {}) => ({
   sender: 'Agent',
   internal: false,
   to: CUSTOMER_EMAIL,
-  content_type: 'text/html',
   ...overrides,
 });
 
@@ -82,8 +81,10 @@ describe('signature lookup against the states an instance can be in', () => {
       assert.equal(created.created, true, 'an unsigned group must not fail the write');
       assert.equal(created.signature.appended, false);
 
+      // "Untouched" means unsigned — the <span> wrap is how a single plain
+      // line is written as HTML in the first place, signature or not.
       const body = await firstArticleBody(created.ticket.id);
-      assert.equal(body, 'Opened by the integration suite.');
+      assert.equal(body, '<span>Opened by the integration suite.</span>');
       assert.ok(!body.includes('data-signature'), body);
 
       // The preview answers with the group's *name* here too. Every other field
@@ -99,14 +100,15 @@ describe('signature lookup against the states an instance can be in', () => {
   it('says a signature rendered to nothing, rather than claiming a duplicate', async (t) => {
     if (!ready) return t.skip(skipReason);
 
-    // The text/plain duplicate check is `endsWith`, and `endsWith('')` is true
-    // for every body — so an empty render would report every article as already
-    // signed. The Blank group's signature is markup only for exactly this.
+    // The trailing-text duplicate check is `endsWith`, and `endsWith('')` is
+    // true for every body — so an empty render would report every article as
+    // already signed. The Blank group's signature is markup only for exactly
+    // this.
     const created = await callTool('zammad_create_ticket', {
       title: 'Signature renders to nothing',
       group: 'Blank',
       customer: CUSTOMER_EMAIL,
-      article: emailArticle({ content_type: 'text/plain' }),
+      article: emailArticle(),
     });
 
     assert.equal(created.signature.appended, false);
@@ -151,17 +153,17 @@ describe('signature lookup against the states an instance can be in', () => {
   it('signs prose that merely ends with the same words as the signature', async (t) => {
     if (!ready) return t.skip(skipReason);
 
-    // The plain-text duplicate check compares the trailing block, and Zammad's
-    // signatures are name-heavy — the stock one opens with the agent's name. A
-    // body whose last sentence happens to name the same person must still be
-    // signed, and must not be reported as an already-signed duplicate.
+    // The already-signed-as-text check compares the trailing block, and
+    // Zammad's signatures are name-heavy — the stock one opens with the
+    // agent's name. A body whose last sentence happens to name the same person
+    // must still be signed, and must not be reported as an already-signed
+    // duplicate.
     const me = await callTool('zammad_whoami', {});
     const created = await callTool('zammad_create_ticket', {
       title: 'Prose ending in the sender name',
       group: 'Users',
       customer: CUSTOMER_EMAIL,
       article: emailArticle({
-        content_type: 'text/plain',
         body: `For anything further please contact ${me.user.firstname} ${me.user.lastname}`,
       }),
     });
@@ -169,29 +171,44 @@ describe('signature lookup against the states an instance can be in', () => {
     assert.equal(created.signature.appended, true, created.signature.reason);
   });
 
-  it('leaves a plain-text body that really was signed already', async (t) => {
+  it('does not re-sign a body an older release signed as text/plain', async (t) => {
     if (!ready) return t.skip(skipReason);
 
-    // The case the check exists for: a caller reads a body back and sends it
-    // again. The separator is what tells this apart from the prose above.
+    // The case the trailing-text check exists for: instances hold articles an
+    // older release signed as plain text — no data-signature marker anywhere —
+    // and a caller reads one back and sends it again. Seeded through the raw
+    // API, because the tools themselves no longer write text/plain.
     const ticket = await callTool('zammad_create_ticket', {
-      title: 'Plain-text retry',
+      title: 'Legacy plain-text retry',
       group: 'Users',
       customer: CUSTOMER_EMAIL,
-      article: emailArticle({ content_type: 'text/plain' }),
+      article: { body: 'Opened for the legacy article below.', type: 'note' },
     });
-    assert.equal(ticket.signature.appended, true);
+    const preview = await callTool('zammad_get_group_signature', { ticket_id: ticket.ticket.id });
+    await api('/api/v1/ticket_articles', {
+      method: 'POST',
+      body: {
+        ticket_id: ticket.ticket.id,
+        type: 'email',
+        sender: 'Agent',
+        internal: false,
+        to: CUSTOMER_EMAIL,
+        content_type: 'text/plain',
+        body: `Opened by the integration suite.\n\n${preview.text}`,
+      },
+    });
 
     const signed = await callTool('zammad_list_ticket_articles', { ticket_id: ticket.ticket.id });
+    const legacy = signed.articles[signed.articles.length - 1];
     const again = await callTool('zammad_create_article', {
       ticket_id: ticket.ticket.id,
-      body: String(signed.articles[0].body),
+      body: String(legacy.body),
       type: 'email',
       internal: false,
       to: CUSTOMER_EMAIL,
     });
 
-    assert.equal(again.signature.appended, false);
+    assert.equal(again.signature.appended, false, again.signature.reason);
     assert.match(again.signature.reason, /already ends with this signature/);
   });
 
@@ -208,7 +225,10 @@ describe('signature lookup against the states an instance can be in', () => {
       });
 
       assert.equal(created.signature.appended, false, `a ${type} article was signed`);
-      assert.equal(await firstArticleBody(created.ticket.id), 'Opened by the integration suite.');
+      assert.equal(
+        await firstArticleBody(created.ticket.id),
+        '<span>Opened by the integration suite.</span>',
+      );
     }
   });
 
@@ -311,5 +331,113 @@ describe('the rule against a doubled sign-off', () => {
       assert.match(tool(name).description, /append_signature/, name);
       assert.doesNotMatch(tool(name).description, /twice/i, name);
     }
+  });
+});
+
+describe('every write is text/html, against what Zammad actually stores', () => {
+  it('stores a plain email body as text/html with the signature appended as markup', async (t) => {
+    if (!ready) return t.skip(skipReason);
+
+    // There is no content-type argument: the body is plain prose, and what
+    // reaches Zammad is the UI's conversion of it — line structure intact —
+    // with the signature as markup. Zammad derives the plain-text part of the
+    // outgoing mail itself.
+    const created = await callTool('zammad_create_ticket', {
+      title: 'Email stored as HTML',
+      group: 'Users',
+      customer: CUSTOMER_EMAIL,
+      article: {
+        body: 'Hallo,\n\ndanke für Ihre Nachricht.',
+        type: 'email',
+        sender: 'Agent',
+        internal: false,
+        to: CUSTOMER_EMAIL,
+      },
+    });
+
+    assert.equal(created.created, true);
+    assert.equal(created.signature.appended, true, created.signature.reason);
+
+    const body = await firstArticleBody(created.ticket.id);
+    assert.ok(body.includes('<div>Hallo,</div>'), body);
+    assert.ok(body.includes('<div><br></div>'), body);
+    assert.ok(body.includes('data-signature="true"'), 'the signature must be appended as markup');
+    assert.ok(!body.includes('&lt;div&gt;'), 'the conversion must not have been escaped again');
+  });
+
+  it('stores a reply as text/html on zammad_create_article too', async (t) => {
+    if (!ready) return t.skip(skipReason);
+
+    const ticket = await callTool('zammad_create_ticket', {
+      title: 'Reply stored as HTML',
+      group: 'Users',
+      customer: CUSTOMER_EMAIL,
+      article: { body: 'Opened for the reply below.', type: 'note' },
+    });
+
+    const reply = await callTool('zammad_create_article', {
+      ticket_id: ticket.ticket.id,
+      body: 'Zeile eins\nZeile zwei',
+      type: 'email',
+      internal: false,
+      to: CUSTOMER_EMAIL,
+      // `html` so the response reports the *stored* content type rather than
+      // the markdown rendering's.
+      body_format: 'html',
+    });
+
+    assert.equal(reply.signature.appended, true, reply.signature.reason);
+    assert.equal(reply.article.content_type, 'text/html');
+    assert.ok(String(reply.article.body).includes('<div>Zeile eins</div>'), reply.article.body);
+  });
+
+  it('stores a note as text/html and keeps its line structure', async (t) => {
+    if (!ready) return t.skip(skipReason);
+
+    // Notes too: the UI's composer writes notes as HTML, and so does this.
+    const created = await callTool('zammad_create_ticket', {
+      title: 'Note stored as HTML',
+      group: 'Users',
+      customer: CUSTOMER_EMAIL,
+      article: { body: 'Zeile eins\nZeile zwei', type: 'note' },
+    });
+
+    const stored = await firstArticleBody(created.ticket.id);
+    assert.equal(stored, '<div>Zeile eins</div><div>Zeile zwei</div>');
+
+    // Reading back as Markdown renders each <div> line as a paragraph — the
+    // same reading every UI-written article gets. The text survives; a single
+    // line break widens to a blank line on the way out.
+    const listed = await callTool('zammad_list_ticket_articles', { ticket_id: created.ticket.id });
+    assert.equal(String(listed.articles[0].body), 'Zeile eins\n\nZeile zwei');
+  });
+
+  it('takes a body that already carries markup as it is', async (t) => {
+    if (!ready) return t.skip(skipReason);
+
+    const created = await callTool('zammad_create_ticket', {
+      title: 'Authored as markup',
+      group: 'Users',
+      customer: CUSTOMER_EMAIL,
+      article: emailArticle({ body: '<p>Hallo,</p><p>danke für Ihre Nachricht.</p>' }),
+    });
+
+    assert.equal(created.signature.appended, true, created.signature.reason);
+    const body = await firstArticleBody(created.ticket.id);
+    assert.ok(body.includes('<p>Hallo,</p>'), body);
+    assert.ok(!body.includes('&lt;p&gt;'), `authored markup must not be escaped: ${body}`);
+  });
+
+  it('refuses a content_type argument — there is no format to pick', async (t) => {
+    if (!ready) return t.skip(skipReason);
+
+    const error = await callToolExpectingError('zammad_create_article', {
+      ticket_id: 1,
+      body: 'Kurz und schmerzlos.',
+      type: 'email',
+      to: CUSTOMER_EMAIL,
+      content_type: 'text/plain',
+    });
+    assert.match(error, /content_type/i);
   });
 });

@@ -2,6 +2,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { ToolInputError } from '../../util/errors.js';
 import type { BodyFormat } from '../../zammad/article-body.js';
+import { authoredContentType, ensureHtml } from '../../zammad/compose.js';
 import type { MentionedUser } from '../../zammad/mentions.js';
 import { rewriteMentions } from '../../zammad/mentions.js';
 import { asTopLevel, leaf } from '../../zammad/selector.js';
@@ -80,7 +81,6 @@ const articleInputSchema = z.object({
     .describe(
       'true keeps the article invisible to the customer. Defaults to true so nothing is published by accident.',
     ),
-  content_type: z.enum(['text/plain', 'text/html']).default('text/plain'),
   to: z.string().optional(),
   cc: z.string().optional(),
   in_reply_to: z.string().optional(),
@@ -228,22 +228,26 @@ function ticketPayload(input: Record<string, unknown>): Record<string, unknown> 
  */
 async function articlePayload(
   // The flag is not consumed here — signing happens in signArticle() afterwards,
-  // once the mention rewrite has settled the content type.
+  // on the finished HTML body.
   article: z.infer<typeof articleInputSchema>,
   context: ToolContext,
 ): Promise<{ payload: Record<string, unknown>; mentioned: MentionedUser[] }> {
-  const mentions = await rewriteMentions(article.body, article.content_type, {
+  // Mentions read the body as authored — before the HTML conversion, whose
+  // escaping would break the `@@"Jane Doe"` quoting.
+  const mentions = await rewriteMentions(article.body, authoredContentType(article.body), {
     client: context.client,
     lookup: context.lookup,
     zammadUrl: context.config.ZAMMAD_URL,
   });
 
   const payload: Record<string, unknown> = {
-    body: mentions.body,
+    // Every article is written as text/html — see zammad/compose.ts. Plain
+    // prose is converted the way the UI converts pasted text.
+    body: ensureHtml(mentions.body, mentions.content_type),
     type: article.type,
     sender: article.sender,
     internal: article.internal,
-    content_type: mentions.content_type,
+    content_type: 'text/html',
   };
   for (const key of ['subject', 'to', 'cc', 'in_reply_to', 'time_unit', 'origin_by'] as const) {
     if (article[key] !== undefined) payload[key] = article[key];
@@ -280,7 +284,6 @@ async function signArticle(
       body: payload.body as string,
       type: input.type,
       sender: input.sender,
-      content_type: payload.content_type as string,
     },
     ...scope,
   });
@@ -493,7 +496,11 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       .optional()
       .describe('Customer login or email. Prefix with `guess:` to create the user if unknown.'),
     customer_id: z.number().int().positive().optional(),
-    article: articleInputSchema.describe('The first article of the ticket.'),
+    article: articleInputSchema.describe(
+      'The first article of the ticket. Write `body` as plain text or as HTML — either is stored as HTML, ' +
+        'the format the agent UI writes. Plain text keeps its line breaks; a body containing any HTML tag ' +
+        'is taken as HTML wholesale.',
+    ),
     state: attributesWithVocabulary.state,
     state_id: ticketAttributes.state_id,
     priority: attributesWithVocabulary.priority,
@@ -586,7 +593,11 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
     ...attributesWithVocabulary,
     article: articleInputSchema
       .optional()
-      .describe('Optional article to append as part of the same update (e.g. a reply plus a state change).'),
+      .describe(
+        'Optional article to append as part of the same update (e.g. a reply plus a state change). Write ' +
+          '`body` as plain text or as HTML — either is stored as HTML, the format the agent UI writes. Plain ' +
+          'text keeps its line breaks; a body containing any HTML tag is taken as HTML wholesale.',
+      ),
     on_behalf_of: onBehalfOf,
   });
 
@@ -803,14 +814,14 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       let article: Record<string, unknown> | undefined;
 
       if (input.article) {
-        const mentions = await rewriteMentions(input.article.body, 'text/plain', {
+        const mentions = await rewriteMentions(input.article.body, authoredContentType(input.article.body), {
           client: context.client,
           lookup: context.lookup,
           zammadUrl: context.config.ZAMMAD_URL,
         });
         article = {
-          body: mentions.body,
-          content_type: mentions.content_type,
+          body: ensureHtml(mentions.body, mentions.content_type),
+          content_type: 'text/html',
           // Fixed, not taken from the caller: the bulk form has no other choice.
           type: 'note',
           sender: 'Agent',
