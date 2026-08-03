@@ -106,3 +106,26 @@ export function authoredContentType(body: string): 'text/plain' | 'text/html' {
 export function ensureHtml(body: string, contentType: string): string {
   return contentType === 'text/html' ? body : text2html(body);
 }
+
+/**
+ * What every writing tool tells the caller about `body`.
+ *
+ * `text2html` is a safety net, not a formatter. It escapes and keeps line
+ * breaks, which is what a body needs to survive at all — but Markdown passes
+ * through it intact and reaches the reader as `**` and `[…](…)`. Reading pulls
+ * the other way: bodies come back as Markdown by default, so a model that
+ * mirrors the format it just read writes exactly the one thing nothing renders.
+ * That asymmetry is the part worth spelling out; inferring it takes reading two
+ * schemas against each other.
+ *
+ * One copy, four tools, as with `append_signature`: the rule lives with the
+ * argument it qualifies. Not in the `body` field — a schema with a description
+ * on every leaf is read as boilerplate — and not in the server instructions,
+ * which are read on every connection whether an article is being written or not.
+ */
+export const HTML_BODY_NOTE =
+  'Write `body` as HTML — `<p>`, `<br>`, `<b>`, `<a href="…">`, `<ul>` — the markup the agent UI composes. ' +
+  'Do not write Markdown: nothing renders it, so `**bold**` reaches the reader as asterisks. Bodies are ' +
+  '*read* as Markdown and *written* as HTML, so do not mirror back the format an article came in. Prose ' +
+  'without any tag is still accepted and keeps its line breaks, but it arrives unformatted; a body carrying ' +
+  'any HTML tag is taken as markup wholesale.';

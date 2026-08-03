@@ -1,7 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { bytesToBase64, textFromBytes } from '../../util/base64.js';
-import { authoredContentType, ensureHtml } from '../../zammad/compose.js';
+import { authoredContentType, ensureHtml, HTML_BODY_NOTE } from '../../zammad/compose.js';
 import { rewriteMentions } from '../../zammad/mentions.js';
 import {
   appendGroupSignature,
@@ -159,9 +159,8 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
         'Append a note, reply or logged phone call to a ticket. An article with `type: "email"` and ' +
         '`internal: false` is actually delivered to the addresses in `to`/`cc`; the defaults (`note`, internal) ' +
         'record text without notifying anyone.\n\n' +
-        'Write `body` as plain text or as HTML — either is stored as HTML, the format the agent UI writes. ' +
-        'Plain text keeps its line breaks; a body containing any HTML tag is taken as HTML wholesale. For an ' +
-        'email, Zammad itself derives the plain-text version of the outgoing mail.\n\n' +
+        `${HTML_BODY_NOTE} For an email, Zammad itself derives the plain-text version of the outgoing ` +
+        'mail.\n\n' +
         'Mention a colleague by writing `@@jane@acme.com`, `@@jdoe` or `@@"Jane Doe"` in the body — they are ' +
         'linked and notified. Keep such a note `internal: true`, or the customer sees the mention too.\n\n' +
         "An email article is signed with the group's signature, as the reply composer does, unless " +

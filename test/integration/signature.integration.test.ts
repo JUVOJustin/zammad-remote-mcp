@@ -428,6 +428,44 @@ describe('every write is text/html, against what Zammad actually stores', () => 
     assert.ok(!body.includes('&lt;p&gt;'), `authored markup must not be escaped: ${body}`);
   });
 
+  it('tells every writing tool to write HTML rather than Markdown', async (t) => {
+    if (!ready) return t.skip(skipReason);
+
+    // The conversion keeps a body intact; it does not format one. Markdown
+    // survives it literally, and reading returns Markdown — so the instruction
+    // has to reach every tool that writes, or the one it misses is the one a
+    // caller reaches for.
+    const tools = await listTools();
+    const at = (name: string, path: (schema: Json) => Json) => {
+      const tool = tools.find((t2: Json) => t2.name === name) as Json;
+      return String(path(tool));
+    };
+
+    // zammad_update_article is deliberately absent: Zammad discards a
+    // replacement `body` outright, so telling a caller how to format one would
+    // be advice about an argument that changes nothing.
+    const where: Array<[string, string]> = [
+      ['zammad_create_article', at('zammad_create_article', (t2) => t2.description)],
+      [
+        'zammad_create_ticket',
+        at('zammad_create_ticket', (t2) => t2.inputSchema.properties.article.description),
+      ],
+      [
+        'zammad_update_ticket',
+        at('zammad_update_ticket', (t2) => t2.inputSchema.properties.article.description),
+      ],
+      [
+        'zammad_mass_update_tickets',
+        at('zammad_mass_update_tickets', (t2) => t2.inputSchema.properties.article.description),
+      ],
+    ];
+
+    for (const [name, description] of where) {
+      assert.match(description, /Do not write Markdown/, name);
+      assert.match(description, /read\* as Markdown and \*written\* as HTML/, name);
+    }
+  });
+
   it('refuses a content_type argument — there is no format to pick', async (t) => {
     if (!ready) return t.skip(skipReason);
 

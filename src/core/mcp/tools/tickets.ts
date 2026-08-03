@@ -2,7 +2,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { ToolInputError } from '../../util/errors.js';
 import type { BodyFormat } from '../../zammad/article-body.js';
-import { authoredContentType, ensureHtml } from '../../zammad/compose.js';
+import { authoredContentType, ensureHtml, HTML_BODY_NOTE } from '../../zammad/compose.js';
 import type { MentionedUser } from '../../zammad/mentions.js';
 import { rewriteMentions } from '../../zammad/mentions.js';
 import { asTopLevel, leaf } from '../../zammad/selector.js';
@@ -496,11 +496,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       .optional()
       .describe('Customer login or email. Prefix with `guess:` to create the user if unknown.'),
     customer_id: z.number().int().positive().optional(),
-    article: articleInputSchema.describe(
-      'The first article of the ticket. Write `body` as plain text or as HTML — either is stored as HTML, ' +
-        'the format the agent UI writes. Plain text keeps its line breaks; a body containing any HTML tag ' +
-        'is taken as HTML wholesale.',
-    ),
+    article: articleInputSchema.describe(`The first article of the ticket. ${HTML_BODY_NOTE}`),
     state: attributesWithVocabulary.state,
     state_id: ticketAttributes.state_id,
     priority: attributesWithVocabulary.priority,
@@ -594,9 +590,8 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
     article: articleInputSchema
       .optional()
       .describe(
-        'Optional article to append as part of the same update (e.g. a reply plus a state change). Write ' +
-          '`body` as plain text or as HTML — either is stored as HTML, the format the agent UI writes. Plain ' +
-          'text keeps its line breaks; a body containing any HTML tag is taken as HTML wholesale.',
+        'Optional article to append as part of the same update (e.g. a reply plus a state change). ' +
+          HTML_BODY_NOTE,
       ),
     on_behalf_of: onBehalfOf,
   });
@@ -782,7 +777,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       .optional()
       .describe(
         "A note to add to every ticket in the batch. Only a note: Zammad's own bulk form offers no other " +
-          'article type, so use zammad_create_article per ticket to reply by email.',
+          `article type, so use zammad_create_article per ticket to reply by email. ${HTML_BODY_NOTE}`,
       ),
     on_behalf_of: onBehalfOf,
   });

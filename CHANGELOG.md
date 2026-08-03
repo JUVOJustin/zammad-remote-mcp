@@ -4,6 +4,41 @@ Notable changes per release. The section matching a tag is used as that release'
 notes, with the pull-request list appended automatically — see
 `.github/workflows/deploy.yml`.
 
+## 3.1.0
+
+3.0.0 made every write HTML. It did not tell the *caller* to write HTML.
+
+### The tools ask for HTML, not Markdown
+
+The conversion 3.0.0 introduced is a safety net, not a formatter: it escapes a
+body and keeps its line breaks, so Markdown passes through intact and reaches
+the reader as `**` and `[…](…)`. Reading pulls the other way — bodies come back
+as Markdown by default — so a caller mirroring the format it just read writes
+the one thing nothing renders. The descriptions said "plain text or HTML, either
+is stored as HTML", which reads as a choice between equals and is not one.
+
+Every writing tool now asks for HTML and names Markdown as the thing not to
+write, in one shared sentence rather than four that drift apart. Prose without
+markup is still accepted and still keeps its line breaks — it simply arrives
+unformatted.
+
+`zammad_mass_update_tickets` was the one writing tool whose article carried no
+note about the body format at all; it has one now. Its behaviour was already
+correct.
+
+`zammad_update_article` deliberately does not carry the note. Its `body` never
+reaches the article in the first place — see below.
+
+### Known, not fixed here
+
+Zammad discards a replacement `body` and `subject` on
+`PUT /api/v1/ticket_articles/:id`: it answers `200` and stores neither. Verified
+against 7.1.1 as admin — only `internal` is applied. `zammad_update_article`
+therefore accepts two arguments it cannot honour and reports `updated: true`
+regardless, which is the same shape of silent no-op that 2.0.0 fixed for
+`zammad_mass_update_tickets`. Removing them changes the tool's surface, so it is
+left for a release that may break callers rather than folded in here.
+
 ## 3.0.0
 
 Every article the writing tools produce is now `text/html`, and the
