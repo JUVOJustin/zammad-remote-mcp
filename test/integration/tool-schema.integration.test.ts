@@ -343,4 +343,46 @@ describe('every tool refuses arguments nobody declared', () => {
     // Strictness must not have cost a real argument on the way in.
     assert.ok(await callTool('zammad_get_recent_tickets', { limit: 3 }));
   });
+
+  it('is strict at every level, not only at the top', async (t) => {
+    if (!ready) return t.skip(skipReason);
+
+    // 2.0.0 made the tools strict and stopped at their outermost object, which
+    // left `article` and `attachments` dropping what they did not recognise —
+    // the very keys where dropping one is worst. `internal` misspelled inside
+    // `article` publishes to the customer and reports success.
+    //
+    // A map whose `additionalProperties` is itself a schema is open on purpose
+    // (`custom_fields` keys are the instance's own attribute names), so it is
+    // the boolean `false` that is asserted, not mere presence.
+    const open: string[] = [];
+    const walk = (schema: unknown, path: string): void => {
+      if (!schema || typeof schema !== 'object') return;
+      const node = schema as Record<string, unknown>;
+      const properties = node.properties as Record<string, unknown> | undefined;
+      if (properties) {
+        if (node.additionalProperties !== false) open.push(path);
+        for (const [key, value] of Object.entries(properties)) walk(value, `${path}.${key}`);
+      }
+      if (node.items) walk(node.items, `${path}[]`);
+      for (const branch of (node.anyOf as unknown[]) ?? []) walk(branch, `${path}|`);
+    };
+
+    for (const tool of tools) walk(tool.inputSchema, tool.name);
+    assert.deepEqual(open, [], `these objects still drop unknown keys: ${open.join(', ')}`);
+  });
+
+  it('names a misspelled key inside a nested article', async (t) => {
+    if (!ready) return t.skip(skipReason);
+
+    // The failure this exists for, end to end: `internl` is not `internal`, and
+    // the default is to hide the article. Dropped, it would have been published.
+    const message = await callToolExpectingError('zammad_create_ticket', {
+      title: 'Misspelled internal',
+      group: 'Users',
+      customer: CUSTOMER_EMAIL,
+      article: { body: 'x', type: 'note', internl: false },
+    });
+    assert.match(message, /internl/, message);
+  });
 });

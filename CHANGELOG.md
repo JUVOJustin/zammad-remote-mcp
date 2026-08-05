@@ -70,6 +70,24 @@ for any argument that takes a login or an email. `roles` joins the user summary
 for the same reason it mattered on `whoami`: it is what separates an agent from
 a customer, and that decides what a credential can see at all.
 
+### Strict at every level, not only at the top
+
+2.0.0 made every tool schema strict and stopped at its outermost object. Five
+nested ones went on dropping what they did not recognise: the `article` of
+`zammad_create_ticket` and `zammad_update_ticket`, and the `attachments` entries
+of those two and of `zammad_create_article`.
+
+Those are the worst places to drop a key. `internal` decides whether a customer
+sees an article at all, and a misspelling of it inside `article` published the
+article and reported success. `mime-type` carries Zammad's hyphen, so
+`mime_type` — the spelling anyone would guess — was discarded and every
+attachment went out as `application/octet-stream`.
+
+All five are strict now, and a test walks every schema the server publishes and
+fails on any object that still accepts unknown keys, so the next nested schema
+cannot repeat this. Maps whose keys are the instance's own (`custom_fields`)
+stay open, which is what they are for.
+
 ### `zammad_update_article` refuses what Zammad would drop
 
 Zammad discards a replacement `body` and `subject` on

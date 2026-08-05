@@ -140,11 +140,16 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
     body_format: bodyFormat,
     attachments: z
       .array(
-        z.object({
-          filename: z.string().min(1),
-          data: z.string().min(1).describe('Base64-encoded content.'),
-          'mime-type': z.string().min(1).default('application/octet-stream'),
-        }),
+        // Strict: `mime_type` is the spelling anyone would guess for Zammad's
+        // hyphenated `mime-type`, and dropped silently it would send every
+        // attachment as `application/octet-stream`.
+        z
+          .object({
+            filename: z.string().min(1),
+            data: z.string().min(1).describe('Base64-encoded content.'),
+            'mime-type': z.string().min(1).default('application/octet-stream'),
+          })
+          .strict(),
       )
       .optional(),
     append_signature: appendSignatureFlag,

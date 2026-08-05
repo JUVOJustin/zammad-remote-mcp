@@ -59,39 +59,58 @@ const bodyFormat = z
       'template or a rendering problem; it returns the stored HTML in full and is several times larger.',
   );
 
-const attachmentSchema = z.object({
-  filename: z.string().min(1),
-  data: z.string().min(1).describe('Base64-encoded file content.'),
-  'mime-type': z.string().min(1).default('application/octet-stream'),
-});
+/**
+ * `.strict()` for the same reason the tools themselves are: a dropped key is a
+ * wrong answer that looks like a right one. The hyphen in `mime-type` is
+ * Zammad's, and `mime_type` is the spelling anyone would guess — silently
+ * discarded, every attachment would arrive as `application/octet-stream`.
+ */
+const attachmentSchema = z
+  .object({
+    filename: z.string().min(1),
+    data: z.string().min(1).describe('Base64-encoded file content.'),
+    'mime-type': z.string().min(1).default('application/octet-stream'),
+  })
+  .strict();
 
-const articleInputSchema = z.object({
-  body: z.string().min(1),
-  subject: z.string().optional(),
-  type: z
-    .enum(['note', 'email', 'phone', 'web', 'sms', 'chat', 'fax'])
-    .default('note')
-    .describe(
-      'Channel. `email` actually sends mail to the customer — use `note` for an internal record unless you mean to.',
-    ),
-  sender: z.enum(['Agent', 'Customer', 'System']).default('Agent'),
-  internal: z
-    .boolean()
-    .default(true)
-    .describe(
-      'true keeps the article invisible to the customer. Defaults to true so nothing is published by accident.',
-    ),
-  to: z.string().optional(),
-  cc: z.string().optional(),
-  in_reply_to: z.string().optional(),
-  time_unit: z.string().optional().describe('Time accounting for this article, e.g. "15".'),
-  origin_by: z
-    .string()
-    .optional()
-    .describe('Attribute the article to another user (login/email). Requires agent rights.'),
-  attachments: z.array(attachmentSchema).optional(),
-  append_signature: appendSignatureFlag,
-});
+/**
+ * Strict at this level too, not only on the tool that contains it.
+ *
+ * `internal` is the flag that decides whether the customer sees an article at
+ * all. Inside an object that drops what it does not recognise, one misspelling
+ * of it publishes the article and reports success — the shape of failure 2.0.0
+ * made the tool schemas strict for, and which the mass update's article has
+ * been strict against since.
+ */
+const articleInputSchema = z
+  .object({
+    body: z.string().min(1),
+    subject: z.string().optional(),
+    type: z
+      .enum(['note', 'email', 'phone', 'web', 'sms', 'chat', 'fax'])
+      .default('note')
+      .describe(
+        'Channel. `email` actually sends mail to the customer — use `note` for an internal record unless you mean to.',
+      ),
+    sender: z.enum(['Agent', 'Customer', 'System']).default('Agent'),
+    internal: z
+      .boolean()
+      .default(true)
+      .describe(
+        'true keeps the article invisible to the customer. Defaults to true so nothing is published by accident.',
+      ),
+    to: z.string().optional(),
+    cc: z.string().optional(),
+    in_reply_to: z.string().optional(),
+    time_unit: z.string().optional().describe('Time accounting for this article, e.g. "15".'),
+    origin_by: z
+      .string()
+      .optional()
+      .describe('Attribute the article to another user (login/email). Requires agent rights.'),
+    attachments: z.array(attachmentSchema).optional(),
+    append_signature: appendSignatureFlag,
+  })
+  .strict();
 
 /**
  * Attributes shared by create and update.
