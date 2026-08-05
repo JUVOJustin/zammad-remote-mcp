@@ -158,13 +158,13 @@ describe('signature lookup against the states an instance can be in', () => {
     // agent's name. A body whose last sentence happens to name the same person
     // must still be signed, and must not be reported as an already-signed
     // duplicate.
-    const me = await callTool('zammad_whoami', {});
+    const me = await callTool('zammad_get_user', { user: 'me' });
     const created = await callTool('zammad_create_ticket', {
       title: 'Prose ending in the sender name',
       group: 'Users',
       customer: CUSTOMER_EMAIL,
       article: emailArticle({
-        body: `For anything further please contact ${me.user.firstname} ${me.user.lastname}`,
+        body: `For anything further please contact ${me.firstname} ${me.lastname}`,
       }),
     });
 

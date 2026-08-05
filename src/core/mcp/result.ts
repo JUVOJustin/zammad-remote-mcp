@@ -273,6 +273,9 @@ export function summarizeUser(user: Record<string, unknown>): Record<string, unk
     email: user.email,
     phone: user.phone,
     organization: user.organization ?? user.organization_id,
+    // Present once Zammad expands the record. It is what separates an agent
+    // from a customer, and that decides what the credential can see at all.
+    roles: user.roles,
     department: user.department,
     active: user.active,
     vip: user.vip,

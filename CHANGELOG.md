@@ -6,7 +6,10 @@ notes, with the pull-request list appended automatically — see
 
 ## 3.1.0
 
-3.0.0 made every write HTML. It did not tell the *caller* to write HTML.
+A pass over what the tools *say* rather than what they do. 3.0.0 made every
+write HTML without telling the caller to write HTML, and the instruction surface
+had grown copies of itself: bullets restating the tool they named, and two tools
+that were presets of a third.
 
 ### The tools ask for HTML, not Markdown
 
@@ -28,6 +31,44 @@ correct.
 
 `zammad_update_article` deliberately does not carry the note. Its `body` never
 reaches the article in the first place — see below.
+
+### The server instructions say only what no tool can
+
+They are read on every connection, whether the tool they mention is reached for
+or not, and every line in them is a second copy to keep in step. Three restated
+the tool they named and are gone — the `zammad_delete_ticket` warning, the
+`zammad_list_tags` spelling hint and the internal-note default, each of which
+the tool itself already says, in more detail and at the point of use.
+
+What is left is the two things no single description can carry, because they are
+about choosing between tools or reading a result: that the schemas hold this
+instance's valid values, and that `zammad_search_tickets` is where filtering
+belongs. One more joins them: which credential is in play changes how every
+search result should be read, and no tool that returns those results says so —
+`zammad_get_user` with `me` answers it.
+
+### Two tools removed, both answerable by one that stays
+
+A minor release rather than a major: neither capability is gone, only the second
+way to reach it. A tool that is a preset of another tool is one more thing to
+choose wrongly between, and the preset is the part a caller can supply.
+
+- **`zammad_get_customer_tickets`** wrapped `/api/v1/ticket_customer`, the
+  customer sidebar's open/closed split. `zammad_search_tickets` answers it with
+  `customer` plus `state` — a filter it already documents and resolves by login
+  or email.
+- **`zammad_whoami`** read `/api/v1/users/me`. `/api/v1/users/:id` with `expand`
+  returns a strict superset of that record — verified field for field against a
+  live instance — and returns roles and group access as *names* where `me` has
+  only ids. Its one irreplaceable part was not needing to know your own id, so
+  `zammad_get_user` now takes `me`, resolved to the authenticated user the way
+  the search filters already resolve `owner: ["me"]`. The `permissions` field
+  `whoami` reported was always null; Zammad puts it on neither endpoint.
+
+`me` is resolved wherever a user is, not only on `zammad_get_user`, so it works
+for any argument that takes a login or an email. `roles` joins the user summary
+for the same reason it mattered on `whoami`: it is what separates an agent from
+a customer, and that decides what a credential can see at all.
 
 ### Known, not fixed here
 

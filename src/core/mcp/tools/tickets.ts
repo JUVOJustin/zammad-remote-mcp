@@ -941,41 +941,12 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
     }),
   );
 
-  const customerTicketsInput = z.object({
-    customer_id: z.number().int().positive().optional(),
-    customer: z.string().optional().describe('Customer login or email.'),
-    page: z.number().int().positive().default(1),
-    per_page: z.number().int().positive().max(100).default(25),
-    on_behalf_of: onBehalfOf,
-  });
-
-  server.registerTool(
-    'zammad_get_customer_tickets',
-    {
-      title: "Get a customer's open and closed ticket counts",
-      description:
-        "Zammad's customer sidebar data: the open and closed tickets belonging to one customer. For arbitrary " +
-        'filtering use zammad_search_tickets with `customer`.',
-      inputSchema: customerTicketsInput.strict(),
-      annotations: { readOnlyHint: true, openWorldHint: true },
-    },
-    guard(async (rawInput) => {
-      const input = customerTicketsInput.parse(rawInput);
-      if (input.customer_id === undefined && !input.customer) {
-        throw new ToolInputError('Provide `customer_id` or `customer`.');
-      }
-      const context = withOnBehalfOf(base, input.on_behalf_of);
-      const customerId = input.customer_id ?? (await context.lookup.resolveUsers([input.customer!]))[0];
-
-      const result = await context.client.get<unknown>('/api/v1/ticket_customer', {
-        customer_id: customerId,
-        page: input.page,
-        per_page: input.per_page,
-      });
-      return jsonResult(result);
-    }),
-  );
-
+  // No `zammad_get_customer_tickets`. It wrapped `/api/v1/ticket_customer` —
+  // the customer sidebar's open/closed split — which `zammad_search_tickets`
+  // already answers with `customer` plus `state`, a filter it documents and
+  // resolves by login or email. A second tool for one preset combination of
+  // arguments is a tool to choose wrongly between, and the preset is the part a
+  // caller can supply.
   server.registerTool(
     'zammad_get_recent_tickets',
     {

@@ -33,7 +33,8 @@ function instructionsFor(zammadUrl: string): string {
   • \`zammad_search_tickets\` is the main entry point: express filters as arguments rather than fetching
     tickets and filtering yourself. Names resolve on their own (\`owner: ["me"]\`, \`group: ["1st Level"]\`),
     \`output: "count"\` sizes a broad query, and the response echoes the generated selector under \`search\`.
-  • \`zammad_whoami\` shows whose credential is in play; agents and customers see different tickets.`;
+  • \`zammad_get_user\` with \`me\` shows whose credential is in play; agents and customers see different
+    tickets.`;
 }
 
 export interface CreateServerOptions {
