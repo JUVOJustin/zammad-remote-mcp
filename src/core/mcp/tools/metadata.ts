@@ -21,46 +21,34 @@ const onBehalfOf = z
  * gone — the values are already in front of the model.
  *
  * What remains here is what genuinely resists that treatment:
- *  - identity and permissions (`whoami`), which govern what is visible at all;
+ *  - identity, which governs what is visible at all — `zammad_get_user` with
+ *    `me` answers it without the caller knowing its own id;
  *  - users and organizations, which are unbounded;
  *  - tags, which are open-ended and whose full list is admin-only;
  *  - Object Manager attributes, which Zammad exposes only to admin credentials,
  *    so neither the model nor this server can enumerate them from an agent token.
  */
 export function registerMetadataTools(server: McpServer, base: ToolContext): void {
-  server.registerTool(
-    'zammad_whoami',
-    {
-      title: 'Show the authenticated Zammad user',
-      description:
-        'Identity and permissions behind the current credential. Call this first when it matters whether the ' +
-        'caller is an agent or a customer — visibility of tickets differs sharply between the two.',
-      inputSchema: z.object({}).strict(),
-      annotations: { readOnlyHint: true, openWorldHint: true },
-    },
-    guard(async () => {
-      const me = await base.client.get<Record<string, unknown>>('/api/v1/users/me');
-      return jsonResult({
-        user: summarizeUser(me),
-        role_ids: me.role_ids,
-        group_ids: me.group_ids,
-        permissions: me.permissions,
-      });
-    }),
-  );
-
+  // No `zammad_whoami`. It read `/api/v1/users/me`, which `/api/v1/users/:id`
+  // with `expand` returns a strict superset of — verified against a live
+  // instance, field for field — and returns in names where `me` has only ids.
+  // Its one irreplaceable part was not needing to know who you are, and `me`
+  // below supplies that. The `permissions` it reported was always null: Zammad
+  // does not put that field on either endpoint.
   server.registerTool(
     'zammad_get_user',
     {
       title: 'Get a Zammad user',
       description:
-        'Fetch one user by ID, login or email address, including their organization and roles. Use it to ' +
-        'confirm an identity before filtering tickets by owner or customer.',
+        'Fetch one user by ID, login or email address, including their organization and roles. Pass `me` for ' +
+        'the user behind the current credential — worth doing when it matters whether the caller is an agent ' +
+        'or a customer, because visibility of tickets differs sharply between the two. Use it to confirm an ' +
+        'identity before filtering tickets by owner or customer; `output: "full"` adds the group access map.',
       inputSchema: z
         .object({
           user: z
             .union([z.string().min(1), z.number().int().positive()])
-            .describe('User ID, login or email.'),
+            .describe('User ID, login or email — or `me` for the authenticated user.'),
           output: z.enum(['summary', 'full']).default('summary'),
         })
         .strict(),

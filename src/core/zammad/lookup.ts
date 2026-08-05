@@ -296,6 +296,14 @@ export class LookupService {
         ids.push(numeric);
         continue;
       }
+      // `me` is the authenticated user, as it already is in the search filters
+      // (`owner: ["me"]`). Claimed here rather than looked up: a login spelled
+      // exactly `me` would otherwise mean two things depending on the tool, and
+      // the token is worth more than that login is likely.
+      if (value.trim().toLowerCase() === 'me') {
+        ids.push((await this.me()).id);
+        continue;
+      }
       ids.push(await this.resolveOneUser(value));
     }
     return ids;

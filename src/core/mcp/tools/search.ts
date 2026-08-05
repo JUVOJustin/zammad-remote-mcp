@@ -250,39 +250,11 @@ export function registerSearchTools(server: McpServer, base: ToolContext, vocabu
     }),
   );
 
-  // -------------------------------------------------------------- global ---
-  const globalSearchInput = z.object({
-    query: z.string().min(1).describe('Free-text query, e.g. "printer offline" or "number:67001".'),
-    objects: z
-      .array(z.enum(['Ticket', 'User', 'Organization', 'KnowledgeBase::Answer::Translation']))
-      .min(1)
-      .optional()
-      .describe('Restrict the search to these object types. Defaults to everything the user may see.'),
-    limit: z.number().int().positive().max(100).default(10),
-  });
-
-  server.registerTool(
-    'zammad_search_global',
-    {
-      title: 'Search across all Zammad objects',
-      description:
-        "Zammad's global search — the one behind the magnifier in the UI. Searches tickets, users, organizations " +
-        'and knowledge base answers in one call. Use it for a broad "where does this term appear at all?" sweep; ' +
-        'use `zammad_search_tickets` when you need real filtering.',
-      inputSchema: globalSearchInput.strict(),
-      annotations: { readOnlyHint: true, openWorldHint: true },
-    },
-    guard(async (rawInput) => {
-      const input = globalSearchInput.parse(rawInput);
-      const path = input.objects?.length === 1 ? `/api/v1/search/${input.objects[0]}` : '/api/v1/search';
-
-      const response = await base.client.post<unknown>(path, {
-        query: input.query,
-        limit: input.limit,
-        ...(input.objects && input.objects.length > 1 ? { objects: input.objects } : {}),
-      });
-
-      return jsonResult({ query: input.query, results: response });
-    }),
-  );
+  // No `zammad_search_global`. It wrapped `/api/v1/search`, whose `objects`
+  // parameter cannot express what its own description promised: Zammad answers
+  // everything or exactly one type, and the multi-type call it advertised was a
+  // 500. What is left of it — one free-text sweep across object types — is
+  // worth having, but as a fan-out over the per-type endpoints rather than as a
+  // wrapper around a parameter that does not work. Removed until that exists,
+  // rather than kept as the narrower thing it had silently become.
 }

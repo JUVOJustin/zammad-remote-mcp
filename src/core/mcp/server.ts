@@ -16,6 +16,13 @@ import { registerTicketTools } from './tools/tickets.js';
  * A Zammad URL in a ticket, a signature or a customer's mail says nothing about
  * which instance it belongs to. The base URL settles that; the link shapes
  * built from it are obvious enough not to spell out.
+ *
+ * What earns a bullet here is what no single tool's description can carry,
+ * because it is about choosing between tools or reading a result. A bullet that
+ * restates one tool is worse than none: it is read on every connection whether
+ * that tool is reached for or not, and it is a second copy to keep in step —
+ * the reason the delete warning, the tag lookup and the internal-note default
+ * are gone. Each is stated where it applies, on the tool itself.
  */
 function instructionsFor(zammadUrl: string): string {
   const base = zammadUrl.replace(/\/+$/, '');
@@ -26,10 +33,8 @@ function instructionsFor(zammadUrl: string): string {
   • \`zammad_search_tickets\` is the main entry point: express filters as arguments rather than fetching
     tickets and filtering yourself. Names resolve on their own (\`owner: ["me"]\`, \`group: ["1st Level"]\`),
     \`output: "count"\` sizes a broad query, and the response echoes the generated selector under \`search\`.
-  • \`zammad_whoami\` shows whose credential is in play; agents and customers see different tickets.
-  • Tags are not in the schemas — \`zammad_list_tags\` checks a spelling.
-  • Articles default to an internal note. \`type: "email"\` with \`internal: false\` sends real mail.
-  • \`zammad_delete_ticket\` is permanent and rarely what is wanted; closing is \`state: "closed"\`.`;
+  • \`zammad_get_user\` with \`me\` shows whose credential is in play; agents and customers see different
+    tickets.`;
 }
 
 export interface CreateServerOptions {

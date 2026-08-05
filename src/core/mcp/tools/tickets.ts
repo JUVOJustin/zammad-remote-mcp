@@ -2,7 +2,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { ToolInputError } from '../../util/errors.js';
 import type { BodyFormat } from '../../zammad/article-body.js';
-import { authoredContentType, ensureHtml } from '../../zammad/compose.js';
+import { authoredContentType, ensureHtml, HTML_BODY_NOTE } from '../../zammad/compose.js';
 import type { MentionedUser } from '../../zammad/mentions.js';
 import { rewriteMentions } from '../../zammad/mentions.js';
 import { asTopLevel, leaf } from '../../zammad/selector.js';
@@ -59,39 +59,58 @@ const bodyFormat = z
       'template or a rendering problem; it returns the stored HTML in full and is several times larger.',
   );
 
-const attachmentSchema = z.object({
-  filename: z.string().min(1),
-  data: z.string().min(1).describe('Base64-encoded file content.'),
-  'mime-type': z.string().min(1).default('application/octet-stream'),
-});
+/**
+ * `.strict()` for the same reason the tools themselves are: a dropped key is a
+ * wrong answer that looks like a right one. The hyphen in `mime-type` is
+ * Zammad's, and `mime_type` is the spelling anyone would guess — silently
+ * discarded, every attachment would arrive as `application/octet-stream`.
+ */
+const attachmentSchema = z
+  .object({
+    filename: z.string().min(1),
+    data: z.string().min(1).describe('Base64-encoded file content.'),
+    'mime-type': z.string().min(1).default('application/octet-stream'),
+  })
+  .strict();
 
-const articleInputSchema = z.object({
-  body: z.string().min(1),
-  subject: z.string().optional(),
-  type: z
-    .enum(['note', 'email', 'phone', 'web', 'sms', 'chat', 'fax'])
-    .default('note')
-    .describe(
-      'Channel. `email` actually sends mail to the customer — use `note` for an internal record unless you mean to.',
-    ),
-  sender: z.enum(['Agent', 'Customer', 'System']).default('Agent'),
-  internal: z
-    .boolean()
-    .default(true)
-    .describe(
-      'true keeps the article invisible to the customer. Defaults to true so nothing is published by accident.',
-    ),
-  to: z.string().optional(),
-  cc: z.string().optional(),
-  in_reply_to: z.string().optional(),
-  time_unit: z.string().optional().describe('Time accounting for this article, e.g. "15".'),
-  origin_by: z
-    .string()
-    .optional()
-    .describe('Attribute the article to another user (login/email). Requires agent rights.'),
-  attachments: z.array(attachmentSchema).optional(),
-  append_signature: appendSignatureFlag,
-});
+/**
+ * Strict at this level too, not only on the tool that contains it.
+ *
+ * `internal` is the flag that decides whether the customer sees an article at
+ * all. Inside an object that drops what it does not recognise, one misspelling
+ * of it publishes the article and reports success — the shape of failure 2.0.0
+ * made the tool schemas strict for, and which the mass update's article has
+ * been strict against since.
+ */
+const articleInputSchema = z
+  .object({
+    body: z.string().min(1),
+    subject: z.string().optional(),
+    type: z
+      .enum(['note', 'email', 'phone', 'web', 'sms', 'chat', 'fax'])
+      .default('note')
+      .describe(
+        'Channel. `email` actually sends mail to the customer — use `note` for an internal record unless you mean to.',
+      ),
+    sender: z.enum(['Agent', 'Customer', 'System']).default('Agent'),
+    internal: z
+      .boolean()
+      .default(true)
+      .describe(
+        'true keeps the article invisible to the customer. Defaults to true so nothing is published by accident.',
+      ),
+    to: z.string().optional(),
+    cc: z.string().optional(),
+    in_reply_to: z.string().optional(),
+    time_unit: z.string().optional().describe('Time accounting for this article, e.g. "15".'),
+    origin_by: z
+      .string()
+      .optional()
+      .describe('Attribute the article to another user (login/email). Requires agent rights.'),
+    attachments: z.array(attachmentSchema).optional(),
+    append_signature: appendSignatureFlag,
+  })
+  .strict();
 
 /**
  * Attributes shared by create and update.
@@ -496,11 +515,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       .optional()
       .describe('Customer login or email. Prefix with `guess:` to create the user if unknown.'),
     customer_id: z.number().int().positive().optional(),
-    article: articleInputSchema.describe(
-      'The first article of the ticket. Write `body` as plain text or as HTML — either is stored as HTML, ' +
-        'the format the agent UI writes. Plain text keeps its line breaks; a body containing any HTML tag ' +
-        'is taken as HTML wholesale.',
-    ),
+    article: articleInputSchema.describe(`The first article of the ticket. ${HTML_BODY_NOTE}`),
     state: attributesWithVocabulary.state,
     state_id: ticketAttributes.state_id,
     priority: attributesWithVocabulary.priority,
@@ -594,9 +609,8 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
     article: articleInputSchema
       .optional()
       .describe(
-        'Optional article to append as part of the same update (e.g. a reply plus a state change). Write ' +
-          '`body` as plain text or as HTML — either is stored as HTML, the format the agent UI writes. Plain ' +
-          'text keeps its line breaks; a body containing any HTML tag is taken as HTML wholesale.',
+        'Optional article to append as part of the same update (e.g. a reply plus a state change). ' +
+          HTML_BODY_NOTE,
       ),
     on_behalf_of: onBehalfOf,
   });
@@ -660,40 +674,13 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
     }),
   );
 
-  const customerInput = z.object({
-    ticket_id: z.number().int().positive().optional(),
-    ticket_number: z.string().min(1).optional(),
-    customer_id: z.number().int().positive().optional(),
-    customer: z.string().optional().describe('Customer login or email.'),
-    on_behalf_of: onBehalfOf,
-  });
-
-  server.registerTool(
-    'zammad_update_ticket_customer',
-    {
-      title: 'Reassign a Zammad ticket to another customer',
-      description:
-        "Move a ticket to a different customer. The ticket's organization follows the new customer automatically.",
-      inputSchema: customerInput.strict(),
-      annotations: { readOnlyHint: false, idempotentHint: true, openWorldHint: true },
-    },
-    guard(async (rawInput) => {
-      const input = customerInput.parse(rawInput);
-      if (input.customer_id === undefined && !input.customer) {
-        throw new ToolInputError('Provide `customer_id` or `customer`.');
-      }
-      const context = withOnBehalfOf(base, input.on_behalf_of);
-      const id = await resolveTicketId(context, input);
-
-      const customerId = input.customer_id ?? (await context.lookup.resolveUsers([input.customer!]))[0];
-      const ticket = await context.client.put<Record<string, unknown>>(
-        `/api/v1/tickets/${id}/update_customer`,
-        { customer_id: customerId },
-        { expand: true },
-      );
-      return jsonResult({ updated: true, ticket: presentTicket(ticket) });
-    }),
-  );
+  // No `zammad_update_ticket_customer`. It called
+  // `PUT /api/v1/tickets/:id/update_customer`, which `zammad_update_ticket`
+  // matches exactly: passing `customer` on the ordinary update moves the ticket
+  // and lets the organization follow, verified against 7.1.1 by reassigning
+  // between two organizations both ways and reading the ticket back. The
+  // identifiers were the same on both tools too — `ticket_id` or
+  // `ticket_number`, a customer by login, email or id.
 
   // --------------------------------------------------------------- delete ---
   const deleteInput = z.object({
@@ -782,7 +769,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       .optional()
       .describe(
         "A note to add to every ticket in the batch. Only a note: Zammad's own bulk form offers no other " +
-          'article type, so use zammad_create_article per ticket to reply by email.',
+          `article type, so use zammad_create_article per ticket to reply by email. ${HTML_BODY_NOTE}`,
       ),
     on_behalf_of: onBehalfOf,
   });
@@ -946,41 +933,12 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
     }),
   );
 
-  const customerTicketsInput = z.object({
-    customer_id: z.number().int().positive().optional(),
-    customer: z.string().optional().describe('Customer login or email.'),
-    page: z.number().int().positive().default(1),
-    per_page: z.number().int().positive().max(100).default(25),
-    on_behalf_of: onBehalfOf,
-  });
-
-  server.registerTool(
-    'zammad_get_customer_tickets',
-    {
-      title: "Get a customer's open and closed ticket counts",
-      description:
-        "Zammad's customer sidebar data: the open and closed tickets belonging to one customer. For arbitrary " +
-        'filtering use zammad_search_tickets with `customer`.',
-      inputSchema: customerTicketsInput.strict(),
-      annotations: { readOnlyHint: true, openWorldHint: true },
-    },
-    guard(async (rawInput) => {
-      const input = customerTicketsInput.parse(rawInput);
-      if (input.customer_id === undefined && !input.customer) {
-        throw new ToolInputError('Provide `customer_id` or `customer`.');
-      }
-      const context = withOnBehalfOf(base, input.on_behalf_of);
-      const customerId = input.customer_id ?? (await context.lookup.resolveUsers([input.customer!]))[0];
-
-      const result = await context.client.get<unknown>('/api/v1/ticket_customer', {
-        customer_id: customerId,
-        page: input.page,
-        per_page: input.per_page,
-      });
-      return jsonResult(result);
-    }),
-  );
-
+  // No `zammad_get_customer_tickets`. It wrapped `/api/v1/ticket_customer` —
+  // the customer sidebar's open/closed split — which `zammad_search_tickets`
+  // already answers with `customer` plus `state`, a filter it documents and
+  // resolves by login or email. A second tool for one preset combination of
+  // arguments is a tool to choose wrongly between, and the preset is the part a
+  // caller can supply.
   server.registerTool(
     'zammad_get_recent_tickets',
     {

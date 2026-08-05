@@ -23,7 +23,7 @@ version and a single publish.
 
 | Import | What it is |
 |---|---|
-| `zammad-remote-mcp` | the runtime-agnostic core: Hono app, MCP server, 39 tools, Zammad client, search builder, OAuth proxy. Uses only WebCrypto, `fetch`, `TextEncoder` and `atob`/`btoa`. |
+| `zammad-remote-mcp` | the runtime-agnostic core: Hono app, MCP server, 35 tools, Zammad client, search builder, OAuth proxy. Uses only WebCrypto, `fetch`, `TextEncoder` and `atob`/`btoa`. |
 | `zammad-remote-mcp/node` | Node host: `.env` loading, socket binding, signal handling |
 | `examples/cloudflare` | a deployable Workers host, ~60 lines, consuming the package like any other dependency |
 | `npx zammad-remote-mcp` | the CLI — the Node host with a shebang |
@@ -174,7 +174,7 @@ Because the server is stateless there is no session to carry — every call stan
 go straight to a tool without repeating the handshake:
 
 ```bash
-curl -s -X POST http://localhost:3000/mcp -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"zammad_whoami","arguments":{}}}'
+curl -s -X POST http://localhost:3000/mcp -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"zammad_get_user","arguments":{"user":"me"}}}'
 ```
 
 A search, with the generated selector echoed back under `search`:
@@ -259,7 +259,7 @@ curl -si -X POST http://localhost:3000/mcp -H 'Content-Type: application/json' -
 Once you hold a Zammad access token, pass it directly and skip the browser flow:
 
 ```bash
-curl -s -X POST http://localhost:3000/mcp -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -H 'Authorization: Bearer YOUR_ZAMMAD_TOKEN' -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"zammad_whoami","arguments":{}}}'
+curl -s -X POST http://localhost:3000/mcp -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -H 'Authorization: Bearer YOUR_ZAMMAD_TOKEN' -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"zammad_get_user","arguments":{"user":"me"}}}'
 ```
 
 ### Without any Zammad at all
@@ -455,14 +455,12 @@ server — Zammad withholds some catalogues entirely:
 
 ## Tools
 
-**Search** — `zammad_search_tickets`, `zammad_search_users`, `zammad_search_organizations`,
-`zammad_search_global`
+**Search** — `zammad_search_tickets`, `zammad_search_users`, `zammad_search_organizations`
 
 **Tickets** — `zammad_get_ticket`, `zammad_list_tickets`, `zammad_create_ticket`,
-`zammad_update_ticket`, `zammad_update_ticket_customer`,
+`zammad_update_ticket`,
 `zammad_delete_ticket`, `zammad_merge_tickets`, `zammad_mass_update_tickets`, `zammad_apply_macro`,
-`zammad_get_ticket_history`, `zammad_get_related_tickets`, `zammad_get_customer_tickets`,
-`zammad_get_recent_tickets`
+`zammad_get_ticket_history`, `zammad_get_related_tickets`, `zammad_get_recent_tickets`
 
 **Articles** — `zammad_list_ticket_articles`, `zammad_get_article`, `zammad_create_article`,
 `zammad_update_article`, `zammad_delete_article`, `zammad_get_article_plain`,
@@ -472,7 +470,7 @@ server — Zammad withholds some catalogues entirely:
 `zammad_link_tickets`, `zammad_unlink_tickets`, `zammad_list_ticket_links`,
 `zammad_list_time_accounting`, `zammad_create_time_accounting`
 
-**Discovery** — `zammad_whoami`, `zammad_get_user`, `zammad_get_organization`, `zammad_list_tags`,
+**Discovery** — `zammad_get_user`, `zammad_get_organization`, `zammad_list_tags`,
 `zammad_list_overviews`, `zammad_list_custom_attributes`, `zammad_get_group_signature`,
 `zammad_refresh_metadata_cache`
 
@@ -570,6 +568,14 @@ A `body` may still be authored either way: plain prose is converted exactly the 
 converts pasted text (`App.Utils.text2html`: escaped, line breaks kept, each line a `<div>`, an
 empty line a `<div><br></div>`), and a body already carrying a complete HTML tag is stored as it
 is. The signature is appended as HTML, one to one as stored, never pre-rendered to text.
+
+That conversion is a safety net, not a formatter, so the schemas **ask for HTML outright**, in one
+shared sentence (`HTML_BODY_NOTE`) rather than four that drift apart. Escaping keeps a body written
+in some other markup intact rather than rendering it — Markdown's `**bold**` reaches the reader as
+asterisks — and the pull towards Markdown is real, since bodies are *read* as Markdown per the
+section above. Describing the alternatives in the schema is what made the earlier wording read as a
+choice between equals, so the note names the one supported format and stops there.
+
 `htmlToText` survives on the reading side only — the previews, and the check that keeps a body an
 older release signed as `text/plain` from going out signed twice when it is read back and resent.
 

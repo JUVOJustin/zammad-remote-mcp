@@ -32,11 +32,14 @@ describe('metadata against a real Zammad', () => {
   it('reports the authenticated user', async (t) => {
     if (!ready) return t.skip(skipReason);
 
-    const me = await callTool('zammad_whoami', {});
-    assert.equal(me.user.email, ADMIN_LOGIN);
+    const me = await callTool('zammad_get_user', { user: 'me' });
+    assert.equal(me.email, ADMIN_LOGIN);
+    // `me` has to resolve to the credential's own id without being told one,
+    // and the roles have to come back as names — that is what says whether the
+    // caller is an agent or a customer.
     assert.ok(
-      JSON.stringify(me).toLowerCase().includes('admin'),
-      'whoami should show what the credential may do',
+      JSON.stringify(me.roles).toLowerCase().includes('admin'),
+      `the roles should say what the credential is: ${JSON.stringify(me)}`,
     );
   });
 
@@ -118,7 +121,7 @@ describe('metadata against a real Zammad', () => {
 
     // The instance is still usable afterwards — a refresh that empties the
     // lookups would only show up on the next call.
-    const me = await callTool('zammad_whoami', {});
-    assert.equal(me.user.email, ADMIN_LOGIN);
+    const me = await callTool('zammad_get_user', { user: 'me' });
+    assert.equal(me.email, ADMIN_LOGIN);
   });
 });

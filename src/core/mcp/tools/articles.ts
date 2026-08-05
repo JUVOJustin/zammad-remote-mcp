@@ -1,7 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { bytesToBase64, textFromBytes } from '../../util/base64.js';
-import { authoredContentType, ensureHtml } from '../../zammad/compose.js';
+import { authoredContentType, ensureHtml, HTML_BODY_NOTE } from '../../zammad/compose.js';
 import { rewriteMentions } from '../../zammad/mentions.js';
 import {
   appendGroupSignature,
@@ -140,11 +140,16 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
     body_format: bodyFormat,
     attachments: z
       .array(
-        z.object({
-          filename: z.string().min(1),
-          data: z.string().min(1).describe('Base64-encoded content.'),
-          'mime-type': z.string().min(1).default('application/octet-stream'),
-        }),
+        // Strict: `mime_type` is the spelling anyone would guess for Zammad's
+        // hyphenated `mime-type`, and dropped silently it would send every
+        // attachment as `application/octet-stream`.
+        z
+          .object({
+            filename: z.string().min(1),
+            data: z.string().min(1).describe('Base64-encoded content.'),
+            'mime-type': z.string().min(1).default('application/octet-stream'),
+          })
+          .strict(),
       )
       .optional(),
     append_signature: appendSignatureFlag,
@@ -159,9 +164,7 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
         'Append a note, reply or logged phone call to a ticket. An article with `type: "email"` and ' +
         '`internal: false` is actually delivered to the addresses in `to`/`cc`; the defaults (`note`, internal) ' +
         'record text without notifying anyone.\n\n' +
-        'Write `body` as plain text or as HTML — either is stored as HTML, the format the agent UI writes. ' +
-        'Plain text keeps its line breaks; a body containing any HTML tag is taken as HTML wholesale. For an ' +
-        'email, Zammad itself derives the plain-text version of the outgoing mail.\n\n' +
+        `${HTML_BODY_NOTE}\n\n` +
         'Mention a colleague by writing `@@jane@acme.com`, `@@jdoe` or `@@"Jane Doe"` in the body — they are ' +
         'linked and notified. Keep such a note `internal: true`, or the customer sees the mention too.\n\n' +
         "An email article is signed with the group's signature, as the reply composer does, unless " +
@@ -227,11 +230,22 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
     }),
   );
 
+  /**
+   * `internal` and nothing else, because that is all Zammad applies.
+   *
+   * A `body` or a `subject` sent to `PUT /api/v1/ticket_articles/:id` is
+   * answered with `200` and stored nowhere — verified against 7.1.1 as admin,
+   * reading the article back after each field on its own. Offering them made
+   * the tool report `updated: true` for a write that never happened, which is
+   * the failure `zammad_mass_update_tickets` was fixed for in 2.0.0: a silent
+   * no-op is worse than a refusal, because nothing downstream can tell.
+   *
+   * `.strict()` on the schema now names them instead — an argument the caller
+   * believed in comes back as `Unrecognized key`, not as a success.
+   */
   const updateInput = z.object({
     article_id: z.number().int().positive(),
-    internal: z.boolean().optional().describe('Toggle customer visibility.'),
-    subject: z.string().optional(),
-    body: z.string().optional(),
+    internal: z.boolean().describe('true hides the article from the customer, false shows it.'),
     body_format: bodyFormat,
     on_behalf_of: onBehalfOf,
   });
@@ -239,11 +253,12 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
   server.registerTool(
     'zammad_update_article',
     {
-      title: 'Update a Zammad article',
+      title: "Change an article's visibility to the customer",
       description:
-        'Change an existing article. Zammad restricts what may be edited after creation — toggling `internal` is ' +
-        'always allowed, editing the body may not be. Note that `@@name` mentions are only ever resolved on ' +
-        'creation, so adding one here does not link or notify anyone — use zammad_create_article instead.',
+        'Show or hide an existing article. `internal` is the only article field Zammad lets the API change ' +
+        'after creation: a replacement `body` or `subject` is answered with `200` and silently discarded, so ' +
+        'neither is accepted here. To correct the text, add a new article with zammad_create_article — which ' +
+        'is also the only place `@@name` mentions are resolved.',
       inputSchema: updateInput.strict(),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
@@ -251,13 +266,9 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
       const input = updateInput.parse(rawInput);
       const context = withOnBehalfOf(base, input.on_behalf_of);
 
-      const body: Record<string, unknown> = {};
-      for (const key of ['internal', 'subject', 'body'] as const) {
-        if (input[key] !== undefined) body[key] = input[key];
-      }
       const article = await context.client.put<Record<string, unknown>>(
         `/api/v1/ticket_articles/${input.article_id}`,
-        body,
+        { internal: input.internal },
       );
       return jsonResult({
         updated: true,

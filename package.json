@@ -1,6 +1,6 @@
 {
   "name": "zammad-remote-mcp",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "description": "Stateless remote MCP server for Zammad — full ticket operations, an intelligent search layer and OAuth 2.1, running on Node.js or Cloudflare Workers from one codebase.",
   "license": "MIT",
   "type": "module",
