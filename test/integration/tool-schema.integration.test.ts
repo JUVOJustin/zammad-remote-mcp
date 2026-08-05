@@ -121,12 +121,7 @@ describe('tool input schemas stay portable across MCP clients', () => {
   it('exposes every tool, including the search tools', (t) => {
     if (!ready) return t.skip(skipReason);
     const names = tools.map((t) => t.name);
-    for (const expected of [
-      'zammad_search_tickets',
-      'zammad_search_users',
-      'zammad_search_organizations',
-      'zammad_search_global',
-    ]) {
+    for (const expected of ['zammad_search_tickets', 'zammad_search_users', 'zammad_search_organizations']) {
       assert.ok(names.includes(expected), `${expected} is missing from tools/list`);
     }
     assert.ok(tools.length >= 35, `expected the full tool set, got ${tools.length}`);

@@ -70,19 +70,23 @@ for any argument that takes a login or an email. `roles` joins the user summary
 for the same reason it mattered on `whoami`: it is what separates an agent from
 a customer, and that decides what a credential can see at all.
 
-### `zammad_search_global` no longer 500s when given two object types
+### `zammad_search_global` is gone
 
-Its `objects` argument was an array, and Zammad's `SearchController` calls
-`.downcase` on that parameter — so naming two types answered
-`500 undefined method 'downcase' for an instance of Array`, and the schema, an
-array with `min(1)`, invited precisely that. A comma-separated string fares no
-better: it is read as one class name nobody has and answers `200` with nothing.
-Both verified against 7.1.1.
+It could not do what it said. Its `objects` argument was an array, and Zammad's
+`SearchController` calls `.downcase` on that parameter, so the multi-type sweep
+the description promised — "tickets, users, organizations and knowledge base
+answers in one call" — answered `500 undefined method 'downcase' for an instance
+of Array`. A comma-separated string is no better: read as one class name nobody
+has, it answers `200` with nothing. Both verified against 7.1.1, the 500 traced
+to the exception in the rails log. `/api/v1/search` restricts to everything or
+to exactly one type, and offers no third option.
 
-Zammad offers everything or exactly one type, and there is no third option. The
-argument is now singular — `object`, an optional enum — which is what the API
-can actually honour, and the type travels in the path where no shape can reach
-`.downcase`.
+What was left once that was true is a tool that searches everything, or one type
+less well than the tool dedicated to it. The idea worth keeping — one free-text
+sweep across object types, knowledge base included — needs a fan-out over the
+per-type endpoints, not a wrapper around a parameter that cannot express it. It
+is removed until that exists rather than kept as the narrower thing it had
+silently become.
 
 ### Strict at every level, not only at the top
 

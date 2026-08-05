@@ -250,49 +250,11 @@ export function registerSearchTools(server: McpServer, base: ToolContext, vocabu
     }),
   );
 
-  // -------------------------------------------------------------- global ---
-  const globalSearchInput = z.object({
-    query: z.string().min(1).describe('Free-text query, e.g. "printer offline" or "number:67001".'),
-    // Singular, because that is all Zammad offers: everything, or exactly one
-    // type. `SearchController` calls `.downcase` on this parameter, so an array
-    // is a 500 (`undefined method 'downcase' for an instance of Array`) and a
-    // comma-separated string is read as one class name nobody has, answering
-    // 200 with nothing. Both verified against 7.1.1. The array this replaced
-    // invited exactly the first case.
-    object: z
-      .enum(['Ticket', 'User', 'Organization', 'KnowledgeBase::Answer::Translation'])
-      .optional()
-      .describe(
-        'Restrict the search to one object type. Omit it for everything the user may see — Zammad has no ' +
-          'way to ask for a subset of two or three.',
-      ),
-    limit: z.number().int().positive().max(100).default(10),
-  });
-
-  server.registerTool(
-    'zammad_search_global',
-    {
-      title: 'Search across all Zammad objects',
-      description:
-        "Zammad's global search — the one behind the magnifier in the UI. Searches tickets, users, organizations " +
-        'and knowledge base answers in one call. Use it for a broad "where does this term appear at all?" sweep; ' +
-        'use `zammad_search_tickets` when you need real filtering.',
-      inputSchema: globalSearchInput.strict(),
-      annotations: { readOnlyHint: true, openWorldHint: true },
-    },
-    guard(async (rawInput) => {
-      const input = globalSearchInput.parse(rawInput);
-      // The type goes in the path rather than the body. Both restrict the same
-      // way on 7.1.1, and the path form cannot be handed a shape the controller
-      // will call `.downcase` on.
-      const path = input.object ? `/api/v1/search/${input.object}` : '/api/v1/search';
-
-      const response = await base.client.post<unknown>(path, {
-        query: input.query,
-        limit: input.limit,
-      });
-
-      return jsonResult({ query: input.query, results: response });
-    }),
-  );
+  // No `zammad_search_global`. It wrapped `/api/v1/search`, whose `objects`
+  // parameter cannot express what its own description promised: Zammad answers
+  // everything or exactly one type, and the multi-type call it advertised was a
+  // 500. What is left of it — one free-text sweep across object types — is
+  // worth having, but as a fan-out over the per-type endpoints rather than as a
+  // wrapper around a parameter that does not work. Removed until that exists,
+  // rather than kept as the narrower thing it had silently become.
 }

@@ -40,7 +40,6 @@ describe('the tool surface of a real instance', () => {
       'zammad_search_tickets',
       'zammad_search_users',
       'zammad_search_organizations',
-      'zammad_search_global',
       'zammad_get_ticket',
       'zammad_create_ticket',
       'zammad_update_ticket',
