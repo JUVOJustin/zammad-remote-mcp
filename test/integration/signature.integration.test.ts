@@ -461,7 +461,7 @@ describe('every write is text/html, against what Zammad actually stores', () => 
     ];
 
     for (const [name, description] of where) {
-      assert.match(description, /Do not write Markdown/, name);
+      assert.match(description, /No other format is supported/, name);
       assert.match(description, /read\* as Markdown and \*written\* as HTML/, name);
     }
   });

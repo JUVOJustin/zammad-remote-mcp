@@ -571,11 +571,11 @@ converts pasted text (`App.Utils.text2html`: escaped, line breaks kept, each lin
 empty line a `<div><br></div>`), and a body already carrying a complete HTML tag is stored as it
 is. The signature is appended as HTML, one to one as stored, never pre-rendered to text.
 
-That conversion is a safety net, not a formatter, and the tools say so: **write HTML, not
-Markdown.** Escaping keeps a Markdown body intact rather than rendering it, so `**bold**` reaches
-the reader as asterisks. The pull towards Markdown is real — bodies are *read* as Markdown, per the
-section above — which is why every writing tool names it as the thing not to write, in one shared
-sentence (`HTML_BODY_NOTE`) rather than four that drift apart.
+That conversion is a safety net, not a formatter, and the tools say so: **HTML is the only
+supported format for a `body`.** Escaping keeps a Markdown body intact rather than rendering it, so
+`**bold**` reaches the reader as asterisks. The pull towards Markdown is real — bodies are *read* as
+Markdown, per the section above — which is why every writing tool says so in one shared sentence
+(`HTML_BODY_NOTE`) rather than four that drift apart.
 
 `htmlToText` survives on the reading side only — the previews, and the check that keeps a body an
 older release signed as `text/plain` from going out signed twice when it is read back and resent.

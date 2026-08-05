@@ -125,7 +125,7 @@ export function ensureHtml(body: string, contentType: string): string {
  */
 export const HTML_BODY_NOTE =
   'Write `body` as HTML — `<p>`, `<br>`, `<b>`, `<a href="…">`, `<ul>` — the markup the agent UI composes. ' +
-  'Do not write Markdown: nothing renders it, so `**bold**` reaches the reader as asterisks. Bodies are ' +
-  '*read* as Markdown and *written* as HTML, so do not mirror back the format an article came in. Prose ' +
-  'without any tag is still accepted and keeps its line breaks, but it arrives unformatted; a body carrying ' +
-  'any HTML tag is taken as markup wholesale.';
+  'No other format is supported: Markdown is not rendered and reaches the reader as literal `**` and ' +
+  '`[…](…)`. Bodies are *read* as Markdown and *written* as HTML, so do not mirror back the format an ' +
+  'article came in. Prose without any tag is still accepted and keeps its line breaks, but it arrives ' +
+  'unformatted; a body carrying any HTML tag is taken as markup wholesale.';
