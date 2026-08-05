@@ -674,40 +674,13 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
     }),
   );
 
-  const customerInput = z.object({
-    ticket_id: z.number().int().positive().optional(),
-    ticket_number: z.string().min(1).optional(),
-    customer_id: z.number().int().positive().optional(),
-    customer: z.string().optional().describe('Customer login or email.'),
-    on_behalf_of: onBehalfOf,
-  });
-
-  server.registerTool(
-    'zammad_update_ticket_customer',
-    {
-      title: 'Reassign a Zammad ticket to another customer',
-      description:
-        "Move a ticket to a different customer. The ticket's organization follows the new customer automatically.",
-      inputSchema: customerInput.strict(),
-      annotations: { readOnlyHint: false, idempotentHint: true, openWorldHint: true },
-    },
-    guard(async (rawInput) => {
-      const input = customerInput.parse(rawInput);
-      if (input.customer_id === undefined && !input.customer) {
-        throw new ToolInputError('Provide `customer_id` or `customer`.');
-      }
-      const context = withOnBehalfOf(base, input.on_behalf_of);
-      const id = await resolveTicketId(context, input);
-
-      const customerId = input.customer_id ?? (await context.lookup.resolveUsers([input.customer!]))[0];
-      const ticket = await context.client.put<Record<string, unknown>>(
-        `/api/v1/tickets/${id}/update_customer`,
-        { customer_id: customerId },
-        { expand: true },
-      );
-      return jsonResult({ updated: true, ticket: presentTicket(ticket) });
-    }),
-  );
+  // No `zammad_update_ticket_customer`. It called
+  // `PUT /api/v1/tickets/:id/update_customer`, which `zammad_update_ticket`
+  // matches exactly: passing `customer` on the ordinary update moves the ticket
+  // and lets the organization follow, verified against 7.1.1 by reassigning
+  // between two organizations both ways and reading the ticket back. The
+  // identifiers were the same on both tools too — `ticket_id` or
+  // `ticket_number`, a customer by login, email or id.
 
   // --------------------------------------------------------------- delete ---
   const deleteInput = z.object({

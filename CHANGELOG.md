@@ -47,11 +47,11 @@ belongs. One more joins them: which credential is in play changes how every
 search result should be read, and no tool that returns those results says so —
 `zammad_get_user` with `me` answers it.
 
-### Two tools removed, both answerable by one that stays
+### Three tools removed, each answerable by one that stays
 
-A minor release rather than a major: neither capability is gone, only the second
-way to reach it. A tool that is a preset of another tool is one more thing to
-choose wrongly between, and the preset is the part a caller can supply.
+A minor release rather than a major: no capability is gone, only the second way
+to reach it. A tool that is a preset of another tool is one more thing to choose
+wrongly between, and the preset is the part a caller can supply.
 
 - **`zammad_get_customer_tickets`** wrapped `/api/v1/ticket_customer`, the
   customer sidebar's open/closed split. `zammad_search_tickets` answers it with
@@ -64,6 +64,14 @@ choose wrongly between, and the preset is the part a caller can supply.
   `zammad_get_user` now takes `me`, resolved to the authenticated user the way
   the search filters already resolve `owner: ["me"]`. The `permissions` field
   `whoami` reported was always null; Zammad puts it on neither endpoint.
+
+- **`zammad_update_ticket_customer`** called
+  `PUT /api/v1/tickets/:id/update_customer`. `zammad_update_ticket` matches it
+  exactly: passing `customer` on the ordinary update moves the ticket and lets
+  the organization follow. Verified against 7.1.1 by reassigning between two
+  organizations down both paths and reading the ticket back — same customer,
+  same organization. The identifiers matched as well; both took `ticket_id` or
+  `ticket_number`, and a customer by login, email or id.
 
 `me` is resolved wherever a user is, not only on `zammad_get_user`, so it works
 for any argument that takes a login or an email. `roles` joins the user summary
