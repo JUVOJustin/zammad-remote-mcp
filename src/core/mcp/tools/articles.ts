@@ -225,11 +225,22 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
     }),
   );
 
+  /**
+   * `internal` and nothing else, because that is all Zammad applies.
+   *
+   * A `body` or a `subject` sent to `PUT /api/v1/ticket_articles/:id` is
+   * answered with `200` and stored nowhere — verified against 7.1.1 as admin,
+   * reading the article back after each field on its own. Offering them made
+   * the tool report `updated: true` for a write that never happened, which is
+   * the failure `zammad_mass_update_tickets` was fixed for in 2.0.0: a silent
+   * no-op is worse than a refusal, because nothing downstream can tell.
+   *
+   * `.strict()` on the schema now names them instead — an argument the caller
+   * believed in comes back as `Unrecognized key`, not as a success.
+   */
   const updateInput = z.object({
     article_id: z.number().int().positive(),
-    internal: z.boolean().optional().describe('Toggle customer visibility.'),
-    subject: z.string().optional(),
-    body: z.string().optional(),
+    internal: z.boolean().describe('true hides the article from the customer, false shows it.'),
     body_format: bodyFormat,
     on_behalf_of: onBehalfOf,
   });
@@ -237,11 +248,12 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
   server.registerTool(
     'zammad_update_article',
     {
-      title: 'Update a Zammad article',
+      title: "Change an article's visibility to the customer",
       description:
-        'Change an existing article. Zammad restricts what may be edited after creation — toggling `internal` is ' +
-        'always allowed, editing the body may not be. Note that `@@name` mentions are only ever resolved on ' +
-        'creation, so adding one here does not link or notify anyone — use zammad_create_article instead.',
+        'Show or hide an existing article. `internal` is the only article field Zammad lets the API change ' +
+        'after creation: a replacement `body` or `subject` is answered with `200` and silently discarded, so ' +
+        'neither is accepted here. To correct the text, add a new article with zammad_create_article — which ' +
+        'is also the only place `@@name` mentions are resolved.',
       inputSchema: updateInput.strict(),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
@@ -249,13 +261,9 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
       const input = updateInput.parse(rawInput);
       const context = withOnBehalfOf(base, input.on_behalf_of);
 
-      const body: Record<string, unknown> = {};
-      for (const key of ['internal', 'subject', 'body'] as const) {
-        if (input[key] !== undefined) body[key] = input[key];
-      }
       const article = await context.client.put<Record<string, unknown>>(
         `/api/v1/ticket_articles/${input.article_id}`,
-        body,
+        { internal: input.internal },
       );
       return jsonResult({
         updated: true,

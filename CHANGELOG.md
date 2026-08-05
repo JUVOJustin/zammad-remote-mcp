@@ -29,8 +29,8 @@ rather than leaving it to be discovered.
 note about the body format at all; it has one now. Its behaviour was already
 correct.
 
-`zammad_update_article` deliberately does not carry the note. Its `body` never
-reaches the article in the first place — see below.
+`zammad_update_article` deliberately does not carry the note. It no longer takes
+a `body` at all — see below.
 
 ### The server instructions say only what no tool can
 
@@ -70,15 +70,20 @@ for any argument that takes a login or an email. `roles` joins the user summary
 for the same reason it mattered on `whoami`: it is what separates an agent from
 a customer, and that decides what a credential can see at all.
 
-### Known, not fixed here
+### `zammad_update_article` refuses what Zammad would drop
 
 Zammad discards a replacement `body` and `subject` on
 `PUT /api/v1/ticket_articles/:id`: it answers `200` and stores neither. Verified
-against 7.1.1 as admin — only `internal` is applied. `zammad_update_article`
-therefore accepts two arguments it cannot honour and reports `updated: true`
-regardless, which is the same shape of silent no-op that 2.0.0 fixed for
-`zammad_mass_update_tickets`. Removing them changes the tool's surface, so it is
-left for a release that may break callers rather than folded in here.
+against 7.1.1 as admin, reading the article back after each field on its own —
+only `internal` is ever applied. The tool accepted both and reported
+`updated: true` regardless, which is the same silent no-op 2.0.0 fixed for
+`zammad_mass_update_tickets`: nothing downstream could tell the write from a
+write that did not happen.
+
+Both arguments are gone, so the strict schema now answers `Unrecognized key`
+instead. `internal` is required, being the only thing left to change, and the
+tool is titled for what it does. To correct the text of an article, add a new
+one with `zammad_create_article`.
 
 ## 3.0.0
 

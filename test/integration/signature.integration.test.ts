@@ -465,6 +465,39 @@ describe('every write is text/html, against what Zammad actually stores', () => 
     }
   });
 
+  it('refuses a body on zammad_update_article, which Zammad would discard', async (t) => {
+    if (!ready) return t.skip(skipReason);
+
+    const created = await callTool('zammad_create_ticket', {
+      title: 'Article body cannot be replaced',
+      group: 'Users',
+      customer: CUSTOMER_EMAIL,
+      article: { body: 'Erste Fassung.', type: 'note' },
+    });
+    const listed = await callTool('zammad_list_ticket_articles', { ticket_id: created.ticket.id });
+    const articleId = listed.articles[0].id;
+
+    // Named, not dropped: Zammad answers 200 and stores neither, so accepting
+    // them would report a write that did not happen.
+    for (const field of ['body', 'subject']) {
+      assert.match(
+        await callToolExpectingError('zammad_update_article', {
+          article_id: articleId,
+          internal: true,
+          [field]: 'Zweite Fassung.',
+        }),
+        new RegExp(field),
+        field,
+      );
+    }
+
+    // What the tool does offer still works, and the body is untouched by it.
+    await callTool('zammad_update_article', { article_id: articleId, internal: true });
+    const after = await api<Json>(`/api/v1/ticket_articles/${articleId}`);
+    assert.equal(after.internal, true);
+    assert.equal(after.body, '<span>Erste Fassung.</span>');
+  });
+
   it('refuses a content_type argument — there is no format to pick', async (t) => {
     if (!ready) return t.skip(skipReason);
 
