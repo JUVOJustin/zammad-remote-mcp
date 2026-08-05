@@ -1,13 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
-import {
-  callTool,
-  callToolExpectingError,
-  type Json,
-  skipReason,
-  startHarness,
-  stopHarness,
-} from './harness.js';
+import { callTool, type Json, skipReason, startHarness, stopHarness } from './harness.js';
 import { AGENT_EMAIL, api, waitForIndex } from './zammad.js';
 
 /**
