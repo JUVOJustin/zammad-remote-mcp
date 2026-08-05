@@ -253,11 +253,19 @@ export function registerSearchTools(server: McpServer, base: ToolContext, vocabu
   // -------------------------------------------------------------- global ---
   const globalSearchInput = z.object({
     query: z.string().min(1).describe('Free-text query, e.g. "printer offline" or "number:67001".'),
-    objects: z
-      .array(z.enum(['Ticket', 'User', 'Organization', 'KnowledgeBase::Answer::Translation']))
-      .min(1)
+    // Singular, because that is all Zammad offers: everything, or exactly one
+    // type. `SearchController` calls `.downcase` on this parameter, so an array
+    // is a 500 (`undefined method 'downcase' for an instance of Array`) and a
+    // comma-separated string is read as one class name nobody has, answering
+    // 200 with nothing. Both verified against 7.1.1. The array this replaced
+    // invited exactly the first case.
+    object: z
+      .enum(['Ticket', 'User', 'Organization', 'KnowledgeBase::Answer::Translation'])
       .optional()
-      .describe('Restrict the search to these object types. Defaults to everything the user may see.'),
+      .describe(
+        'Restrict the search to one object type. Omit it for everything the user may see — Zammad has no ' +
+          'way to ask for a subset of two or three.',
+      ),
     limit: z.number().int().positive().max(100).default(10),
   });
 
@@ -274,12 +282,14 @@ export function registerSearchTools(server: McpServer, base: ToolContext, vocabu
     },
     guard(async (rawInput) => {
       const input = globalSearchInput.parse(rawInput);
-      const path = input.objects?.length === 1 ? `/api/v1/search/${input.objects[0]}` : '/api/v1/search';
+      // The type goes in the path rather than the body. Both restrict the same
+      // way on 7.1.1, and the path form cannot be handed a shape the controller
+      // will call `.downcase` on.
+      const path = input.object ? `/api/v1/search/${input.object}` : '/api/v1/search';
 
       const response = await base.client.post<unknown>(path, {
         query: input.query,
         limit: input.limit,
-        ...(input.objects && input.objects.length > 1 ? { objects: input.objects } : {}),
       });
 
       return jsonResult({ query: input.query, results: response });

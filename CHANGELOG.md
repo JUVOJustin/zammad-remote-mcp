@@ -70,6 +70,20 @@ for any argument that takes a login or an email. `roles` joins the user summary
 for the same reason it mattered on `whoami`: it is what separates an agent from
 a customer, and that decides what a credential can see at all.
 
+### `zammad_search_global` no longer 500s when given two object types
+
+Its `objects` argument was an array, and Zammad's `SearchController` calls
+`.downcase` on that parameter — so naming two types answered
+`500 undefined method 'downcase' for an instance of Array`, and the schema, an
+array with `min(1)`, invited precisely that. A comma-separated string fares no
+better: it is read as one class name nobody has and answers `200` with nothing.
+Both verified against 7.1.1.
+
+Zammad offers everything or exactly one type, and there is no third option. The
+argument is now singular — `object`, an optional enum — which is what the API
+can actually honour, and the type travels in the path where no shape can reach
+`.downcase`.
+
 ### Strict at every level, not only at the top
 
 2.0.0 made every tool schema strict and stopped at its outermost object. Five

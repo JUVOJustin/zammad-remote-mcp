@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
-import { callTool, type Json, skipReason, startHarness, stopHarness } from './harness.js';
+import {
+  callTool,
+  callToolExpectingError,
+  type Json,
+  skipReason,
+  startHarness,
+  stopHarness,
+} from './harness.js';
 import { AGENT_EMAIL, api, waitForIndex } from './zammad.js';
 
 /**
@@ -237,5 +244,33 @@ describe('ticket search against a real Zammad', () => {
 
     assert.ok(message, 'an unknown state should not pass silently');
     assert.match(message, /open|closed|new/, `the error should list what is valid: ${message}`);
+  });
+
+  it('restricts the global search to one object type, the only way Zammad can', async (t) => {
+    if (!ready) return t.skip(skipReason);
+
+    // `SearchController` calls `.downcase` on this parameter, so the array this
+    // argument used to be answered 500 for every caller who named two types —
+    // and the schema, being an array with min(1), invited exactly that. Zammad
+    // offers everything or one type, and the schema now says so.
+    const all = await callTool('zammad_search_global', { query: 'example', limit: 10 });
+    const only = await callTool('zammad_search_global', {
+      query: 'example',
+      limit: 10,
+      object: 'Ticket',
+    });
+
+    const types = (r: Json) => new Set((r.results?.result ?? []).map((row: Json) => row.type as string));
+    assert.deepEqual([...types(only)], ['Ticket'], JSON.stringify([...types(only)]));
+    assert.ok(types(all).size >= 1, 'the unrestricted search returned nothing to compare against');
+
+    // And the shape that used to crash is refused by name rather than sent.
+    assert.match(
+      await callToolExpectingError('zammad_search_global', {
+        query: 'example',
+        objects: ['Ticket', 'User'],
+      }),
+      /objects/,
+    );
   });
 });
