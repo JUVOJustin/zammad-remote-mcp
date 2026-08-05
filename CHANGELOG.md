@@ -17,10 +17,10 @@ as Markdown by default — so a caller mirroring the format it just read writes
 the one thing nothing renders. The descriptions said "plain text or HTML, either
 is stored as HTML", which reads as a choice between equals and is not one.
 
-Every writing tool now asks for HTML and says outright that no other format is
-supported, in one shared sentence rather than four that drift apart. Prose
-without markup is still accepted and still keeps its line breaks — it simply
-arrives unformatted.
+Every writing tool now asks for HTML outright, in one shared sentence rather
+than four that drift apart. Prose without markup is still accepted and still
+keeps its line breaks — it simply arrives unformatted, which the note says
+rather than leaving it to be discovered.
 
 `zammad_mass_update_tickets` was the one writing tool whose article carried no
 note about the body format at all; it has one now. Its behaviour was already

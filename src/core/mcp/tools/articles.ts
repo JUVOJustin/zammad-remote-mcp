@@ -159,8 +159,7 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
         'Append a note, reply or logged phone call to a ticket. An article with `type: "email"` and ' +
         '`internal: false` is actually delivered to the addresses in `to`/`cc`; the defaults (`note`, internal) ' +
         'record text without notifying anyone.\n\n' +
-        `${HTML_BODY_NOTE} For an email, Zammad itself derives the plain-text version of the outgoing ` +
-        'mail.\n\n' +
+        `${HTML_BODY_NOTE}\n\n` +
         'Mention a colleague by writing `@@jane@acme.com`, `@@jdoe` or `@@"Jane Doe"` in the body — they are ' +
         'linked and notified. Keep such a note `internal: true`, or the customer sees the mention too.\n\n' +
         "An email article is signed with the group's signature, as the reply composer does, unless " +
