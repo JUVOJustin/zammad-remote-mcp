@@ -17,7 +17,7 @@ import type { Vocabulary } from '../../zammad/vocabulary.js';
 import type { ToolContext } from '../context.js';
 import { withOnBehalfOf } from '../context.js';
 import { guard, jsonResult, presentTicket, summarizeOrganization, summarizeUser } from '../result.js';
-import { referenceField } from './enrich.js';
+import { referenceField, tagField } from './enrich.js';
 
 /**
  * Shape of `model_search_render` responses.
@@ -71,6 +71,17 @@ export function registerSearchTools(server: McpServer, base: ToolContext, vocabu
     priority_not: referenceField(vocabulary.priorities, 'Exclude these priorities.').optional(),
     group: referenceField(vocabulary.groups, 'Groups/queues.').optional(),
     group_not: referenceField(vocabulary.groups, 'Exclude these groups.').optional(),
+    // The instance's own tags, so a filter can be built without guessing at a
+    // spelling first. Advisory as everywhere: a tag created since the client
+    // cached this schema still filters.
+    tags: z
+      .object({
+        all: tagField(vocabulary.tags, 'Ticket must carry every one of these tags.').optional(),
+        any: tagField(vocabulary.tags, 'Ticket must carry at least one of these tags.').optional(),
+        none: tagField(vocabulary.tags, 'Ticket must carry none of these tags.').optional(),
+      })
+      .strict()
+      .optional(),
   };
 
   // ------------------------------------------------------------- tickets ---

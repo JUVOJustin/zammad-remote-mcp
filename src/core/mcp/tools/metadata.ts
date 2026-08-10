@@ -24,7 +24,6 @@ const onBehalfOf = z
  *  - identity, which governs what is visible at all — `zammad_get_user` with
  *    `me` answers it without the caller knowing its own id;
  *  - users and organizations, which are unbounded;
- *  - tags, which are open-ended and whose full list is admin-only;
  *  - Object Manager attributes, which Zammad exposes only to admin credentials,
  *    so neither the model nor this server can enumerate them from an agent token.
  */
@@ -97,34 +96,12 @@ export function registerMetadataTools(server: McpServer, base: ToolContext): voi
     }),
   );
 
-  server.registerTool(
-    'zammad_list_tags',
-    {
-      title: 'Search the Zammad tag list',
-      description:
-        'Find existing tags by prefix — worth doing before tagging so spellings stay consistent. Tags are ' +
-        'open-ended and can be created on the fly, so unlike states or groups they are not part of the tool ' +
-        'schemas and have to be looked up.',
-      inputSchema: z
-        .object({
-          term: z
-            .string()
-            .min(1)
-            .describe(
-              'Prefix to search for. Zammad has no agent-readable endpoint for the complete tag list.',
-            ),
-        })
-        .strict(),
-      annotations: { readOnlyHint: true, openWorldHint: true },
-    },
-    guard(async (rawInput) => {
-      const { term } = z.object({ term: z.string().min(1) }).parse(rawInput);
-      // `/api/v1/tag_list` is the admin CRUD endpoint and 403s for agent tokens;
-      // `tag_search` is the one agents may call.
-      const tags = await base.client.get<unknown>('/api/v1/tag_search', { term });
-      return jsonResult({ tags });
-    }),
-  );
+  // No `zammad_list_tags`. The instance's tags are now in the schemas that take
+  // one — create, update and the search filter — read through the same
+  // vocabulary that carries states, priorities and groups, so a spelling is
+  // checked by looking at the argument rather than by calling a tool first.
+  // Over `SCHEMA_ENUM_MAX_VALUES` the list is dropped as every other enum is,
+  // and the fields fall back to free strings, which is what tags are anyway.
 
   server.registerTool(
     'zammad_list_overviews',

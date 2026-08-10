@@ -47,6 +47,27 @@ belongs. One more joins them: which credential is in play changes how every
 search result should be read, and no tool that returns those results says so —
 `zammad_get_user` with `me` answers it.
 
+### The instance's tags are in the schema, so `zammad_list_tags` is gone
+
+Tags were the one value set left to a discovery tool, on the grounds that the
+full list is admin-only. Half true: `/api/v1/tag_list` is admin CRUD and 403s
+for an agent, but `tag_search` — the endpoint agents may call — returns every
+tag for an empty `term`, provided a `limit` is given. Without one it silently
+caps at ten. Verified against 7.1.1: 10 of 32 without, all 32 with.
+
+So tags now travel the same road as states, priorities and groups. They appear
+as enums on every argument that takes one — `tags` on create, `add_tags` and
+`remove_tags` on update, and all three tag filters on `zammad_search_tickets` —
+and a spelling is checked by reading the argument rather than by calling a tool
+first.
+
+The enum is advisory, as the others are, and here that is the normal case
+rather than the stale-cache case: a tag is created by using it, so an unknown
+name has to stay acceptable. There is no numeric-ID branch either — Zammad's
+`tags/add` takes an `item`, not an id. Above `SCHEMA_ENUM_MAX_VALUES` (150 by
+default) the list is dropped like every other over-long enum and the fields
+fall back to free strings, which is what a tag is anyway.
+
 ### Tagging moved onto `zammad_update_ticket`
 
 `zammad_add_ticket_tags` and `zammad_remove_ticket_tags` are gone; the update

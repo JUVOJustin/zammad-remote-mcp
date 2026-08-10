@@ -18,7 +18,7 @@ import type { ToolContext } from '../context.js';
 import { withOnBehalfOf } from '../context.js';
 import type { ArticleLike } from '../result.js';
 import { guard, jsonResult, presentArticle, presentTicket, textResult, withRenderedBody } from '../result.js';
-import { singleReferenceField } from './enrich.js';
+import { singleReferenceField, tagField } from './enrich.js';
 
 /**
  * Ticket read/write operations.
@@ -197,10 +197,7 @@ const ticketAttributes = {
   // then updated with [gamma] still carries [alpha, beta], and the update
   // reports success. `zammad_update_ticket` therefore does not offer it; it
   // takes `add_tags` / `remove_tags`, which go through the endpoints that work.
-  tags: z
-    .array(z.string().min(1))
-    .optional()
-    .describe("The ticket's tags. Set on create; use `add_tags` / `remove_tags` to change them later."),
+  tags: z.array(z.string().min(1)).optional(),
   custom_fields: z
     // Not z.unknown(): that emits an empty `{}` sub-schema, which tells a model
     // nothing and is rejected by the stricter tool-schema validators.
@@ -405,6 +402,11 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
     state: singleReferenceField(vocabulary.states, 'Ticket state.'),
     priority: singleReferenceField(vocabulary.priorities, 'Ticket priority.'),
     group: singleReferenceField(vocabulary.groups, 'Group/queue.'),
+    tags: tagField(
+      vocabulary.tags,
+      "The ticket's tags. Set on create; use `add_tags` / `remove_tags` to change them afterwards, " +
+        'because Zammad ignores this field on an update.',
+    ).optional(),
   };
 
   // ----------------------------------------------------------------- read ---
@@ -646,12 +648,11 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
     ticket_id: z.number().int().positive().optional(),
     ticket_number: z.string().min(1).optional(),
     ...updatableAttributes,
-    add_tags: z
-      .array(z.string().min(1))
-      .min(1)
-      .optional()
-      .describe('Tags to attach. Unknown tags are created if the instance allows it.'),
-    remove_tags: z.array(z.string().min(1)).min(1).optional().describe('Tags to detach.'),
+    add_tags: tagField(
+      vocabulary.tags,
+      'Tags to attach. A name not among these is accepted and created, if the instance allows it.',
+    ).optional(),
+    remove_tags: tagField(vocabulary.tags, 'Tags to detach.').optional(),
     article: articleInputSchema
       .optional()
       .describe(

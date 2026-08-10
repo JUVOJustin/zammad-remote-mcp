@@ -23,7 +23,7 @@ version and a single publish.
 
 | Import | What it is |
 |---|---|
-| `zammad-remote-mcp` | the runtime-agnostic core: Hono app, MCP server, 33 tools, Zammad client, search builder, OAuth proxy. Uses only WebCrypto, `fetch`, `TextEncoder` and `atob`/`btoa`. |
+| `zammad-remote-mcp` | the runtime-agnostic core: Hono app, MCP server, 32 tools, Zammad client, search builder, OAuth proxy. Uses only WebCrypto, `fetch`, `TextEncoder` and `atob`/`btoa`. |
 | `zammad-remote-mcp/node` | Node host: `.env` loading, socket binding, signal handling |
 | `examples/cloudflare` | a deployable Workers host, ~60 lines, consuming the package like any other dependency |
 | `npx zammad-remote-mcp` | the CLI — the Node host with a shebang |
@@ -448,9 +448,9 @@ server — Zammad withholds some catalogues entirely:
 | | Enumerable? | Why |
 |---|---|---|
 | States, priorities, groups, macros | ✅ in the schema | Small, closed, readable by agents |
+| Tags | ✅ in the schema, advisory | `/api/v1/tag_list` is admin-only, but `tag_search` with an empty term and an explicit `limit` is agent-readable and complete — it caps at ten without one. Unioned with a free string, because a tag can be created by using it |
 | Article types and senders | ✅ static enum | Seeded in Zammad with fixed primary keys |
 | Users, customers, organizations | ❌ | Unbounded |
-| Tags | ❌ | Open-ended; `/api/v1/tag_list` is admin-only, so `zammad_list_tags` searches by prefix |
 | Object Manager attributes | ❌ | `/api/v1/object_manager_attributes` requires `admin.object_manager`; an agent token gets 403, so neither the model nor this server can enumerate custom fields |
 
 ## Tools
@@ -469,7 +469,7 @@ server — Zammad withholds some catalogues entirely:
 **Tags, links, time** — `zammad_link_tickets`, `zammad_unlink_tickets`, `zammad_list_ticket_links`,
 `zammad_list_time_accounting`, `zammad_create_time_accounting`
 
-**Discovery** — `zammad_get_user`, `zammad_get_organization`, `zammad_list_tags`,
+**Discovery** — `zammad_get_user`, `zammad_get_organization`,
 `zammad_list_overviews`, `zammad_list_custom_attributes`, `zammad_get_group_signature`,
 `zammad_refresh_metadata_cache`
 
