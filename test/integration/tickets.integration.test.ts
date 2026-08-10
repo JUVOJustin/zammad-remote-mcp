@@ -138,19 +138,55 @@ describe('ticket lifecycle against a real Zammad', () => {
     assert.equal(stored.owner_id, agent.id);
   });
 
-  it('adds and removes tags', async (t) => {
+  it('adds and removes tags through the update tool', async (t) => {
     if (!ready) return t.skip(skipReason);
 
     const created = await newTicket('Lifecycle tags');
     const id = created.ticket.id;
 
-    await callTool('zammad_add_ticket_tags', { ticket_id: id, tags: ['alpha', 'beta'] });
+    const added = await callTool('zammad_update_ticket', { ticket_id: id, add_tags: ['alpha', 'beta'] });
     let tags = await api<Json>(`/api/v1/tags?object=Ticket&o_id=${id}`);
     assert.deepEqual([...tags.tags].sort(), ['alpha', 'beta']);
+    // Reported, not left to a second call: whether an unknown tag is created
+    // depends on the instance, so the response says what the ticket carries.
+    assert.deepEqual([...added.tags].sort(), ['alpha', 'beta'], JSON.stringify(added));
 
-    await callTool('zammad_remove_ticket_tags', { ticket_id: id, tags: ['alpha'] });
+    const removed = await callTool('zammad_update_ticket', { ticket_id: id, remove_tags: ['alpha'] });
     tags = await api<Json>(`/api/v1/tags?object=Ticket&o_id=${id}`);
     assert.deepEqual(tags.tags, ['beta']);
+    assert.deepEqual(removed.tags, ['beta']);
+  });
+
+  it('tags and changes attributes in the same call', async (t) => {
+    if (!ready) return t.skip(skipReason);
+
+    // The reason the two tag tools were folded in: triage is a state change and
+    // a tag, and as separate calls that pair could half-succeed with nothing
+    // able to report it.
+    const created = await newTicket('Lifecycle tag with state');
+    const result = await callTool('zammad_update_ticket', {
+      ticket_id: created.ticket.id,
+      state: 'closed',
+      add_tags: ['triaged'],
+    });
+
+    assert.equal(result.ticket.state, 'closed');
+    assert.deepEqual(result.tags, ['triaged']);
+  });
+
+  it('refuses tags on an update, which Zammad would ignore', async (t) => {
+    if (!ready) return t.skip(skipReason);
+
+    // Verified against 7.1.1: a ticket created with [alpha, beta] and updated
+    // with [gamma] still carries [alpha, beta], and the update reports success.
+    const created = await newTicket('Lifecycle tags refused');
+    assert.match(
+      await callToolExpectingError('zammad_update_ticket', {
+        ticket_id: created.ticket.id,
+        tags: ['gamma'],
+      }),
+      /tags/,
+    );
   });
 
   it('links two tickets and unlinks them again', async (t) => {

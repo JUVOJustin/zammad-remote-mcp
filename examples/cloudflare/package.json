@@ -11,7 +11,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "zammad-remote-mcp": "^1.0.3"
+    "zammad-remote-mcp": "^3.0.0"
   },
   "devDependencies": {
     "typescript": "^5.7.3",

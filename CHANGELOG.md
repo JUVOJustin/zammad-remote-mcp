@@ -47,6 +47,23 @@ belongs. One more joins them: which credential is in play changes how every
 search result should be read, and no tool that returns those results says so —
 `zammad_get_user` with `me` answers it.
 
+### Tagging moved onto `zammad_update_ticket`
+
+`zammad_add_ticket_tags` and `zammad_remove_ticket_tags` are gone; the update
+tool takes `add_tags` and `remove_tags` and runs the same endpoints
+(`POST /api/v1/tags/add`, `DELETE /api/v1/tags/remove`, one request per tag).
+Tagging rarely travels alone — a triage step is a state change *and* a tag, and
+as two calls that pair could half-succeed with nothing able to report it. The
+response now carries the resulting tag list, read back rather than assumed,
+because whether an unknown tag is created on the fly is the instance's decision.
+
+It also retires a trap. `tags` on an update was accepted and ignored: verified
+against 7.1.1, a ticket created with `[alpha, beta]` and then updated with
+`[gamma]` still carries `[alpha, beta]`, and the update reports success. The
+argument said only "on update, prefer add/remove", which understates a field
+that does nothing. It is create-only now, and the strict schema names it on an
+update instead of dropping it.
+
 ### Three tools removed, each answerable by one that stays
 
 A minor release rather than a major: no capability is gone, only the second way

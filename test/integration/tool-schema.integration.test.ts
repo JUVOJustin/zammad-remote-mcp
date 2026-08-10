@@ -124,7 +124,7 @@ describe('tool input schemas stay portable across MCP clients', () => {
     for (const expected of ['zammad_search_tickets', 'zammad_search_users', 'zammad_search_organizations']) {
       assert.ok(names.includes(expected), `${expected} is missing from tools/list`);
     }
-    assert.ok(tools.length >= 35, `expected the full tool set, got ${tools.length}`);
+    assert.ok(tools.length >= 33, `expected the full tool set, got ${tools.length}`);
   });
 
   it('uses no $ref, definitions or $defs anywhere', (t) => {

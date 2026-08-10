@@ -192,12 +192,15 @@ const ticketAttributes = {
     .string()
     .optional()
     .describe('ISO-8601 timestamp. Required when moving a ticket into a pending state.'),
+  // Create only. Zammad accepts `tags` on `POST /api/v1/tickets` and ignores it
+  // on `PUT` — verified against 7.1.1: a ticket created with [alpha, beta] and
+  // then updated with [gamma] still carries [alpha, beta], and the update
+  // reports success. `zammad_update_ticket` therefore does not offer it; it
+  // takes `add_tags` / `remove_tags`, which go through the endpoints that work.
   tags: z
     .array(z.string().min(1))
     .optional()
-    .describe(
-      'Replaces the tag list on create; on update, prefer zammad_add_ticket_tags / zammad_remove_ticket_tags.',
-    ),
+    .describe("The ticket's tags. Set on create; use `add_tags` / `remove_tags` to change them later."),
   custom_fields: z
     // Not z.unknown(): that emits an empty `{}` sub-schema, which tells a model
     // nothing and is rejected by the stricter tool-schema validators.
@@ -211,6 +214,39 @@ const ticketAttributes = {
         'zammad_list_custom_attributes.',
     ),
 } as const;
+
+/**
+ * Tags live outside the ticket record.
+ *
+ * `PUT /api/v1/tickets/:id` ignores a `tags` attribute, so adding and removing
+ * go through `/api/v1/tags/add` and `/api/v1/tags/remove`, one request per tag —
+ * Zammad takes a single `item` and offers no batch form. Removals run after
+ * additions so that naming the same tag in both is a removal rather than a race.
+ *
+ * The list is read back rather than computed: whether an unknown tag is created
+ * on the fly depends on the instance's `tag_new` setting, so what was asked for
+ * and what the ticket now carries are not the same statement.
+ */
+async function applyTags(
+  context: ToolContext,
+  ticketId: number,
+  add: string[] | undefined,
+  remove: string[] | undefined,
+): Promise<string[]> {
+  // `add` is a POST and `remove` is a DELETE — Zammad is not symmetric here, and
+  // POSTing to `tags/remove` answers 404.
+  for (const item of add ?? []) {
+    await context.client.post('/api/v1/tags/add', undefined, { object: 'Ticket', o_id: ticketId, item });
+  }
+  for (const item of remove ?? []) {
+    await context.client.delete('/api/v1/tags/remove', { object: 'Ticket', o_id: ticketId, item });
+  }
+  const current = await context.client.get<{ tags?: string[] }>('/api/v1/tags', {
+    object: 'Ticket',
+    o_id: ticketId,
+  });
+  return current?.tags ?? [];
+}
 
 /** Merge the shared attribute block into a Zammad payload. */
 function ticketPayload(input: Record<string, unknown>): Record<string, unknown> {
@@ -602,10 +638,20 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
   );
 
   // --------------------------------------------------------------- update ---
+  // `tags` is deliberately absent — Zammad drops it on a `PUT`, so offering it
+  // here would accept a change it never makes. The strict schema names it
+  // instead, and points at the two arguments that do work.
+  const { tags: _createOnlyTags, ...updatableAttributes } = attributesWithVocabulary;
   const updateTicketInput = z.object({
     ticket_id: z.number().int().positive().optional(),
     ticket_number: z.string().min(1).optional(),
-    ...attributesWithVocabulary,
+    ...updatableAttributes,
+    add_tags: z
+      .array(z.string().min(1))
+      .min(1)
+      .optional()
+      .describe('Tags to attach. Unknown tags are created if the instance allows it.'),
+    remove_tags: z.array(z.string().min(1)).min(1).optional().describe('Tags to detach.'),
     article: articleInputSchema
       .optional()
       .describe(
@@ -658,17 +704,25 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
         mentioned = article.mentioned;
       }
 
-      if (Object.keys(body).length === 0) {
-        throw new ToolInputError('Nothing to update — pass at least one attribute or an article.');
+      const touchesTags = Boolean(input.add_tags || input.remove_tags);
+      if (Object.keys(body).length === 0 && !touchesTags) {
+        throw new ToolInputError('Nothing to update — pass at least one attribute, tags or an article.');
       }
 
-      const ticket = await context.client.put<Record<string, unknown>>(`/api/v1/tickets/${id}`, body, {
-        expand: true,
-      });
+      // A tag-only call has nothing for the ticket endpoint, and Zammad answers
+      // a `PUT` with an empty body by touching `updated_at`. Skipping it keeps
+      // "add a tag" from reading as an edit in the ticket history.
+      const ticket = Object.keys(body).length
+        ? await context.client.put<Record<string, unknown>>(`/api/v1/tickets/${id}`, body, { expand: true })
+        : await context.client.get<Record<string, unknown>>(`/api/v1/tickets/${id}`, { expand: true });
+
+      const tags = touchesTags ? await applyTags(context, id, input.add_tags, input.remove_tags) : undefined;
+
       return jsonResult({
         updated: true,
         ...(signature ? { signature } : {}),
         ticket: presentTicket(ticket),
+        ...(tags ? { tags } : {}),
         ...(mentioned.length > 0 ? { mentioned } : {}),
       });
     }),
@@ -956,67 +1010,12 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
     }),
   );
 
-  // ------------------------------------------------------------------ tags ---
-  const tagInput = z.object({
-    ticket_id: z.number().int().positive(),
-    tags: z.array(z.string().min(1)).min(1),
-    on_behalf_of: onBehalfOf,
-  });
-
-  server.registerTool(
-    'zammad_add_ticket_tags',
-    {
-      title: 'Add tags to a Zammad ticket',
-      description:
-        'Attach one or more tags. Tags that do not exist yet are created if the instance allows it.',
-      inputSchema: tagInput.strict(),
-      annotations: { readOnlyHint: false, idempotentHint: true, openWorldHint: true },
-    },
-    guard(async (rawInput) => {
-      const input = tagInput.parse(rawInput);
-      const context = withOnBehalfOf(base, input.on_behalf_of);
-      for (const tag of input.tags) {
-        await context.client.post('/api/v1/tags/add', undefined, {
-          object: 'Ticket',
-          o_id: input.ticket_id,
-          item: tag,
-        });
-      }
-      const current = await context.client.get<{ tags?: string[] }>('/api/v1/tags', {
-        object: 'Ticket',
-        o_id: input.ticket_id,
-      });
-      return jsonResult({ added: input.tags, tags: current?.tags ?? [] });
-    }),
-  );
-
-  server.registerTool(
-    'zammad_remove_ticket_tags',
-    {
-      title: 'Remove tags from a Zammad ticket',
-      description:
-        'Detach one or more tags from a ticket. Tags not present on the ticket are ignored, so this is safe to ' +
-        'call speculatively. Returns the remaining tag list.',
-      inputSchema: tagInput.strict(),
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-    },
-    guard(async (rawInput) => {
-      const input = tagInput.parse(rawInput);
-      const context = withOnBehalfOf(base, input.on_behalf_of);
-      for (const tag of input.tags) {
-        await context.client.delete('/api/v1/tags/remove', {
-          object: 'Ticket',
-          o_id: input.ticket_id,
-          item: tag,
-        });
-      }
-      const current = await context.client.get<{ tags?: string[] }>('/api/v1/tags', {
-        object: 'Ticket',
-        o_id: input.ticket_id,
-      });
-      return jsonResult({ removed: input.tags, tags: current?.tags ?? [] });
-    }),
-  );
+  // No `zammad_add_ticket_tags` / `zammad_remove_ticket_tags`. Their endpoints
+  // are still what runs — see applyTags — but as `add_tags` / `remove_tags` on
+  // `zammad_update_ticket`, where tagging usually travels anyway: a triage step
+  // is a state change and a tag, and that was two calls that could half-succeed
+  // with nothing able to say so. Folding them in also retires the trap that
+  // `tags` on an update was, which Zammad accepted and ignored.
 
   // ----------------------------------------------------------------- links ---
   const linkInput = z.object({
