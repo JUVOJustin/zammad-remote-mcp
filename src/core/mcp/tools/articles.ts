@@ -253,7 +253,7 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
   server.registerTool(
     'zammad_update_article',
     {
-      title: "Change an article's visibility to the customer",
+      title: 'Show or hide a Zammad article',
       description:
         'Show or hide an existing article. `internal` is the only article field Zammad lets the API change ' +
         'after creation: a replacement `body` or `subject` is answered with `200` and silently discarded, so ' +
