@@ -667,9 +667,14 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
     {
       title: 'Update a Zammad ticket',
       description:
-        'Change ticket attributes (state, priority, group, owner, customer, pending time, custom fields) and ' +
-        'optionally append an article in the same call. Only the fields you pass are modified. Moving a ticket into ' +
-        'a pending state requires `pending_time`.\n\n' +
+        'Change ticket attributes (title, state, priority, group, owner, customer, organization, pending time, ' +
+        'custom fields), add or remove tags, and optionally append an article — all in one call. Only the fields ' +
+        'you pass are modified.\n\n' +
+        'Tags are `add_tags` and `remove_tags`. There is no whole-list `tags` argument here: Zammad accepts one ' +
+        'on create and ignores it on an update, so it is refused rather than silently dropped.\n\n' +
+        'Moving a ticket into a pending state requires `pending_time`. Passing `customer` moves the ticket and ' +
+        'lets the organization follow; `organization_id` only picks between the organizations that customer ' +
+        'already belongs to.\n\n' +
         'Mention a colleague in the article body by writing `@@jane@acme.com`, `@@jdoe` or `@@"Jane Doe"` — they ' +
         'are linked and notified. Keep the article `internal: true`, or the customer sees the mention too.\n\n' +
         'An email article is signed with the group signature unless `article.append_signature` is turned off.',

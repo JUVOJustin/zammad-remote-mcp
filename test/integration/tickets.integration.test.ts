@@ -9,7 +9,7 @@ import {
   startHarness,
   stopHarness,
 } from './harness.js';
-import { AGENT_EMAIL, api, CUSTOMER_EMAIL, seededAgent, waitForMention } from './zammad.js';
+import { ADMIN_LOGIN, AGENT_EMAIL, api, CUSTOMER_EMAIL, seededAgent, waitForMention } from './zammad.js';
 
 /**
  * The write tools against a real Zammad.
@@ -136,6 +136,63 @@ describe('ticket lifecycle against a real Zammad', () => {
     const stored = await api<Json>(`/api/v1/tickets/${created.ticket.id}`);
     const agent = (await api<Json[]>(`/api/v1/users/search?query=${AGENT_EMAIL}&limit=1`))[0];
     assert.equal(stored.owner_id, agent.id);
+  });
+
+  it('applies every attribute it advertises, read back off the ticket', async (t) => {
+    if (!ready) return t.skip(skipReason);
+
+    // The suite used to exercise state, group, owner and the article, which is
+    // four of fifteen arguments. `tags` on an update looked just as fine from
+    // the outside and did nothing, so "the call succeeded" is not evidence that
+    // a field landed — each one is asserted against what Zammad stored.
+    const groups = await api<Json>('/api/v1/groups');
+    const other = groups.find((g: Json) => g.name !== 'Users')?.name as string;
+
+    const cases: Array<[string, Record<string, unknown>, (stored: Json) => boolean]> = [
+      ['title', { title: 'Renamed by the suite' }, (s2) => s2.title === 'Renamed by the suite'],
+      ['state by name', { state: 'closed' }, (s2) => s2.state === 'closed'],
+      ['state_id', { state_id: 2 }, (s2) => s2.state === 'open'],
+      ['priority by name', { priority: '3 high' }, (s2) => s2.priority === '3 high'],
+      ['priority_id', { priority_id: 1 }, (s2) => s2.priority === '1 low'],
+      ['group by name', { group: other }, (s2) => s2.group === other],
+      ['group_id', { group_id: 1 }, (s2) => s2.group === 'Users'],
+      ['owner by email', { owner: ADMIN_LOGIN }, (s2) => s2.owner === ADMIN_LOGIN],
+      [
+        'pending_time',
+        { state: 'pending reminder', pending_time: '2027-01-01T10:00:00Z' },
+        (s2) => !!s2.pending_time,
+      ],
+    ];
+
+    for (const [label, args, holds] of cases) {
+      const created = await newTicket(`Attribute ${label}`);
+      await callTool('zammad_update_ticket', { ticket_id: created.ticket.id, ...args });
+      const stored = await api<Json>(`/api/v1/tickets/${created.ticket.id}?expand=true`);
+      assert.ok(holds(stored), `${label} did not land: ${JSON.stringify(stored).slice(0, 200)}`);
+    }
+  });
+
+  it('unassigns an owner both ways Zammad spells it', async (t) => {
+    if (!ready) return t.skip(skipReason);
+
+    for (const args of [{ owner: '' }, { owner_id: 1 }]) {
+      const created = await newTicket('Attribute unassign');
+      await callTool('zammad_update_ticket', { ticket_id: created.ticket.id, owner: ADMIN_LOGIN });
+      await callTool('zammad_update_ticket', { ticket_id: created.ticket.id, ...args });
+      const stored = await api<Json>(`/api/v1/tickets/${created.ticket.id}`);
+      assert.equal(stored.owner_id, 1, `${JSON.stringify(args)} left an owner behind`);
+    }
+  });
+
+  it('addresses a ticket by number as well as by id', async (t) => {
+    if (!ready) return t.skip(skipReason);
+
+    const created = await newTicket('Attribute by number');
+    await callTool('zammad_update_ticket', {
+      ticket_number: created.ticket.number,
+      title: 'Found by number',
+    });
+    assert.equal((await api<Json>(`/api/v1/tickets/${created.ticket.id}`)).title, 'Found by number');
   });
 
   it('adds and removes tags through the update tool', async (t) => {
