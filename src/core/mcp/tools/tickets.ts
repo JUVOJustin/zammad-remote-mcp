@@ -231,13 +231,35 @@ async function applyTags(
   remove: string[] | undefined,
 ): Promise<string[]> {
   // `add` is a POST and `remove` is a DELETE — Zammad is not symmetric here, and
-  // POSTing to `tags/remove` answers 404.
-  for (const item of add ?? []) {
-    await context.client.post('/api/v1/tags/add', undefined, { object: 'Ticket', o_id: ticketId, item });
+  // POSTing to `tags/remove` answers 404. Additions are independent of each
+  // other so they go out together; the two phases stay ordered.
+  const run = async () => {
+    await Promise.all(
+      (add ?? []).map((item) =>
+        context.client.post('/api/v1/tags/add', undefined, { object: 'Ticket', o_id: ticketId, item }),
+      ),
+    );
+    for (const item of remove ?? []) {
+      await context.client.delete('/api/v1/tags/remove', { object: 'Ticket', o_id: ticketId, item });
+    }
+  };
+
+  try {
+    await run();
+  } catch (error) {
+    // The attribute change has already landed and some tags may have, so the
+    // error has to say what the ticket now carries. Failing silently here is
+    // the half-success this tool was merged to stop reporting as a whole one.
+    const partial = await context.client
+      .get<{ tags?: string[] }>('/api/v1/tags', { object: 'Ticket', o_id: ticketId })
+      .catch(() => undefined);
+    const carried = partial?.tags?.join(', ') ?? 'unknown';
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)} — other changes were applied; ` +
+        `ticket ${ticketId} now carries: ${carried}`,
+    );
   }
-  for (const item of remove ?? []) {
-    await context.client.delete('/api/v1/tags/remove', { object: 'Ticket', o_id: ticketId, item });
-  }
+
   const current = await context.client.get<{ tags?: string[] }>('/api/v1/tags', {
     object: 'Ticket',
     o_id: ticketId,
@@ -273,6 +295,14 @@ function ticketPayload(input: Record<string, unknown>): Record<string, unknown> 
   // moved it across, and the description promising it was simply wrong.
   const customer = input.customer;
   const guessed = typeof customer === 'string' && customer.toLowerCase().startsWith('guess:');
+  if (guessed && input.customer_id !== undefined) {
+    // Two known keys that contradict each other. Silently preferring one is the
+    // same failure as dropping an unknown key, and the strict schema cannot see
+    // it, so it is refused here.
+    throw new ToolInputError(
+      'Pass either `customer` with a `guess:` prefix or `customer_id`, not both — they name different users.',
+    );
+  }
 
   for (const key of keys) {
     if (key === 'customer' && guessed) continue;
@@ -576,7 +606,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
     owner_id: ticketAttributes.owner_id,
     organization_id: ticketAttributes.organization_id,
     pending_time: ticketAttributes.pending_time,
-    tags: ticketAttributes.tags,
+    tags: attributesWithVocabulary.tags,
     custom_fields: ticketAttributes.custom_fields,
     on_behalf_of: onBehalfOf,
   });

@@ -147,18 +147,19 @@ export class LookupService {
    * Every tag on the instance, by name.
    *
    * `/api/v1/tag_list` is the admin CRUD endpoint and 403s for an agent token.
-   * `tag_search` is the one agents may call, and an empty `term` matches
-   * everything — but it caps at ten unless a limit is given, which is a silent
-   * truncation the caller cannot see. Verified against 7.1.1: 10 of 32 without,
-   * all 32 with. The limit is asked for one above the schema cap so the
-   * vocabulary can tell "this many" from "more than the cap".
+   * `tag_search` is the one agents may call, and it matches everything when no
+   * term narrows it — but it caps at ten unless a limit is given, which is a
+   * silent truncation the caller cannot see. Verified against 7.1.1: 10 of 32
+   * without a limit, all 32 with. The limit is asked for one above the schema
+   * cap so the vocabulary can tell "this many" from "more than the cap".
+   *
+   * No `term` is sent at all. An empty string would be equivalent to Zammad,
+   * but `ZammadClient` drops empty query values, so passing one would have
+   * described a request this never makes.
    */
   tags(limit: number): Promise<string[]> {
     return this.cache.read(this.key(`tag_list:${limit}`), async () => {
-      const rows = await this.client.get<Array<{ value?: string }>>('/api/v1/tag_search', {
-        term: '',
-        limit,
-      });
+      const rows = await this.client.get<Array<{ value?: string }>>('/api/v1/tag_search', { limit });
       return Array.isArray(rows) ? rows.map((row) => row.value).filter((v): v is string => !!v) : [];
     });
   }

@@ -161,6 +161,17 @@ describe('ticket lifecycle against a real Zammad', () => {
     assert.equal(stored.owner, ADMIN_LOGIN);
     const tags = await api<Json>(`/api/v1/tags?object=Ticket&o_id=${created.ticket.id}`);
     assert.deepEqual([...tags.tags].sort(), ['create-alpha', 'create-beta']);
+
+    // Create is the only tool that applies a whole tag list, so it is the one
+    // that most needs the instance's tags in its schema — and the only one that
+    // silently went without them, because it picks the field rather than
+    // spreading the vocabulary-backed block.
+    const schema = (await listTools()).find((t2: Json) => t2.name === 'zammad_create_ticket')
+      ?.inputSchema as Json;
+    assert.ok(
+      JSON.stringify(schema.properties.tags).includes('create-alpha'),
+      `create_ticket.tags carries no enum: ${JSON.stringify(schema.properties.tags)}`,
+    );
   });
 
   it('takes the id variants of every named field', async (t) => {
@@ -179,6 +190,9 @@ describe('ticket lifecycle against a real Zammad', () => {
     assert.equal(stored.group, 'Users');
     assert.equal(stored.customer_id, 3);
     assert.equal(stored.priority, '1 low');
+    // state_id was the one variant the older suite never covered; asserting the
+    // others while leaving this one unchecked is how `tags` stayed broken.
+    assert.equal(stored.state_id, 4, `state_id did not land: ${stored.state}`);
   });
 
   it('creates an unknown customer when the address is prefixed with guess:', async (t) => {
@@ -208,7 +222,8 @@ describe('ticket lifecycle against a real Zammad', () => {
     // the outside and did nothing, so "the call succeeded" is not evidence that
     // a field landed — each one is asserted against what Zammad stored.
     const groups = await api<Json>('/api/v1/groups');
-    const other = groups.find((g: Json) => g.name !== 'Users')?.name as string;
+    const other = groups.find((g: Json) => g.name !== 'Users')?.name as string | undefined;
+    assert.ok(other, 'the instance needs a second group for the group-by-name case');
 
     const cases: Array<[string, Record<string, unknown>, (stored: Json) => boolean]> = [
       ['title', { title: 'Renamed by the suite' }, (s2) => s2.title === 'Renamed by the suite'],

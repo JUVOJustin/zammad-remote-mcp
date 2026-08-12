@@ -134,8 +134,10 @@ wrongly between, and the preset is the part a caller can supply.
   same organization. The identifiers matched as well; both took `ticket_id` or
   `ticket_number`, and a customer by login, email or id.
 
-`me` is resolved wherever a user is, not only on `zammad_get_user`, so it works
-for any argument that takes a login or an email. `roles` joins the user summary
+`me` is resolved wherever `LookupService` resolves a user — `zammad_get_user`
+and the search filters — not on the ticket write arguments, which hand `owner`
+and `customer` to Zammad as names for its own resolver to read and would answer
+422 for a literal `me`. `roles` joins the user summary
 for the same reason it mattered on `whoami`: it is what separates an agent from
 a customer, and that decides what a credential can see at all.
 
