@@ -263,9 +263,23 @@ function ticketPayload(input: Record<string, unknown>): Record<string, unknown> 
     'organization_id',
     'pending_time',
   ];
+  // `guess:` rides on `customer_id`, not on `customer`. Zammad's
+  // `association_name_to_id_convert` resolves a `customer` name against
+  // existing users and 422s when there is none; the create-if-unknown path
+  // lives in `TicketsController`'s customer_id handling, which reads the
+  // prefix. Verified against 7.1.1 — the same address 422s as `customer` and
+  // creates the user as `customer_id`. Since `customer_id` is typed as a
+  // number here, the prefix was unreachable through these tools until this
+  // moved it across, and the description promising it was simply wrong.
+  const customer = input.customer;
+  const guessed = typeof customer === 'string' && customer.toLowerCase().startsWith('guess:');
+
   for (const key of keys) {
+    if (key === 'customer' && guessed) continue;
     if (input[key] !== undefined) payload[key] = input[key];
   }
+  if (guessed) payload.customer_id = customer;
+
   if (Array.isArray(input.tags)) payload.tags = (input.tags as string[]).join(',');
   if (input.custom_fields && typeof input.custom_fields === 'object') {
     Object.assign(payload, input.custom_fields);
@@ -822,9 +836,15 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
     })
     .strict();
 
+  // `tags` is absent here for the same reason it is absent from the update:
+  // Zammad drops it. Verified against 7.1.1 — a mass update carrying
+  // `{tags: "a,b", state: "closed"}` closes every ticket and tags none of them,
+  // and answers 200. There is no `add_tags` counterpart either: Zammad's own
+  // bulk form has no tag field, and one tag call per ticket per tag is a
+  // different operation from a batch. Tag per ticket with `zammad_update_ticket`.
   const massUpdateInput = z.object({
     ticket_ids: z.array(z.number().int().positive()).min(1).max(500),
-    ...attributesWithVocabulary,
+    ...updatableAttributes,
     article: massArticleSchema
       .optional()
       .describe(

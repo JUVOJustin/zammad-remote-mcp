@@ -243,10 +243,13 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
    * `.strict()` on the schema now names them instead — an argument the caller
    * believed in comes back as `Unrecognized key`, not as a success.
    */
+  // No `body_format` either. It chooses how a returned body is rendered, which
+  // every tool that hands back an article offers — but this one changes no
+  // content, and a rendering knob on a visibility toggle reads as though it
+  // might. The confirmation comes back as Markdown, like every default.
   const updateInput = z.object({
     article_id: z.number().int().positive(),
     internal: z.boolean().describe('true hides the article from the customer, false shows it.'),
-    body_format: bodyFormat,
     on_behalf_of: onBehalfOf,
   });
 
@@ -272,7 +275,7 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
       );
       return jsonResult({
         updated: true,
-        article: presentArticle(article, { bodyFormat: input.body_format }),
+        article: presentArticle(article, { bodyFormat: 'markdown' }),
       });
     }),
   );

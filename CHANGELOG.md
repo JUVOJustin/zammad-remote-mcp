@@ -47,6 +47,29 @@ belongs. One more joins them: which credential is in play changes how every
 search result should be read, and no tool that returns those results says so —
 `zammad_get_user` with `me` answers it.
 
+### `guess:` works where it is documented
+
+The `customer` field has always said "Prefix with `guess:` to create the user if
+unknown". It never did: Zammad resolves a `customer` name against existing users
+and answers 422 when there is none, and the create-if-unknown path reads the
+prefix off `customer_id` — which this schema types as a number, so the feature
+was unreachable through these tools entirely. Verified against 7.1.1, the same
+address both ways: 422 as `customer`, 201 and a new user as `customer_id`. A
+prefixed value now moves across on the way out, so the documentation is true
+rather than removed.
+
+### Two more silent no-ops named instead of dropped
+
+- **`tags` on `zammad_mass_update_tickets`.** Same finding as the single update,
+  one layer out: a batch carrying `{tags, state}` closes every ticket and tags
+  none of them, answering 200. Refused now. There is no `add_tags` counterpart —
+  Zammad's own bulk form has no tag field, and a tag call per ticket per tag is
+  a different operation from a batch. Tag per ticket with `zammad_update_ticket`.
+- **`body_format` on `zammad_update_article`.** It chooses how a returned body
+  is rendered, which every article-returning tool offers — but this tool changes
+  no content, and a rendering knob on a visibility toggle reads as though it
+  might. Gone; the confirmation comes back as Markdown like every default.
+
 ### The instance's tags are in the schema, so `zammad_list_tags` is gone
 
 Tags were the one value set left to a discovery tool, on the grounds that the

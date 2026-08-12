@@ -120,11 +120,29 @@ describe('ticket search against a real Zammad', () => {
   it('resolves "me" to the authenticated user', async (t) => {
     if (!ready) return t.skip(skipReason);
 
-    // Nothing is owned by the admin, so this must come back empty rather than
-    // falling back to "no filter" and returning the whole instance.
-    const result = await callTool('zammad_search_tickets', { owner: ['me'], output: 'count' });
-    assert.equal(typeof result.total_count, 'number');
-    assert.ok(result.total_count < 5, `"me" looks unfiltered: ${result.total_count}`);
+    // The failure this guards against is `me` resolving to nothing and the
+    // filter being dropped, which returns the whole instance while looking
+    // fine. Asserted against the unfiltered total and against the rows
+    // themselves, rather than against "the admin owns nothing" — that was a
+    // claim about global state, and any test that assigns an owner breaks it.
+    const mine = await callTool('zammad_search_tickets', { owner: ['me'], per_page: 100 });
+    const everything = await callTool('zammad_search_tickets', {
+      state_type: ['open', 'closed', 'new'],
+      output: 'count',
+    });
+
+    assert.ok(
+      mine.total_count < everything.total_count,
+      `"me" looks unfiltered: ${mine.total_count} of ${everything.total_count}`,
+    );
+    const me = await callTool('zammad_get_user', { user: 'me' });
+    for (const ticket of mine.tickets) {
+      assert.equal(
+        ticket.owner,
+        me.login ?? me.email,
+        `a ticket owned by someone else came back: ${ticket.id}`,
+      );
+    }
   });
 
   it('filters by tag', async (t) => {

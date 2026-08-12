@@ -138,6 +138,68 @@ describe('ticket lifecycle against a real Zammad', () => {
     assert.equal(stored.owner_id, agent.id);
   });
 
+  it('applies every attribute on create too, read back off the ticket', async (t) => {
+    if (!ready) return t.skip(skipReason);
+
+    // Create shares the attribute block with update but not its behaviour:
+    // `tags` lands here and is ignored there, so both sides need their own
+    // evidence rather than one standing in for the other.
+    const created = await callTool('zammad_create_ticket', {
+      title: 'Create with everything',
+      group: 'Users',
+      customer: CUSTOMER_EMAIL,
+      state: 'closed',
+      priority: '3 high',
+      owner: ADMIN_LOGIN,
+      tags: ['create-alpha', 'create-beta'],
+      article: { body: 'x', type: 'note' },
+    });
+
+    const stored = await api<Json>(`/api/v1/tickets/${created.ticket.id}?expand=true`);
+    assert.equal(stored.state, 'closed');
+    assert.equal(stored.priority, '3 high');
+    assert.equal(stored.owner, ADMIN_LOGIN);
+    const tags = await api<Json>(`/api/v1/tags?object=Ticket&o_id=${created.ticket.id}`);
+    assert.deepEqual([...tags.tags].sort(), ['create-alpha', 'create-beta']);
+  });
+
+  it('takes the id variants of every named field', async (t) => {
+    if (!ready) return t.skip(skipReason);
+
+    const created = await callTool('zammad_create_ticket', {
+      title: 'Create by ids',
+      group_id: 1,
+      customer_id: 3,
+      state_id: 4,
+      priority_id: 1,
+      article: { body: 'x', type: 'note' },
+    });
+
+    const stored = await api<Json>(`/api/v1/tickets/${created.ticket.id}?expand=true`);
+    assert.equal(stored.group, 'Users');
+    assert.equal(stored.customer_id, 3);
+    assert.equal(stored.priority, '1 low');
+  });
+
+  it('creates an unknown customer when the address is prefixed with guess:', async (t) => {
+    if (!ready) return t.skip(skipReason);
+
+    // The prefix rides on `customer_id`, not on `customer` — Zammad resolves a
+    // `customer` name against existing users and 422s when there is none.
+    // `customer_id` is a number in this schema, so the documented behaviour was
+    // unreachable until the payload started moving the prefixed value across.
+    const address = `guessed-${Date.now() % 1_000_000}@example.test`;
+    const created = await callTool('zammad_create_ticket', {
+      title: 'Create by guess',
+      group: 'Users',
+      customer: `guess:${address}`,
+      article: { body: 'x', type: 'note' },
+    });
+
+    const stored = await api<Json>(`/api/v1/tickets/${created.ticket.id}?expand=true`);
+    assert.equal(String(stored.customer), address, JSON.stringify(stored).slice(0, 200));
+  });
+
   it('applies every attribute it advertises, read back off the ticket', async (t) => {
     if (!ready) return t.skip(skipReason);
 
@@ -473,6 +535,21 @@ describe('ticket lifecycle against a real Zammad', () => {
       // And nothing was written while all of those were being refused.
       const bodies = await articleBodies(ticket.ticket.id);
       assert.equal(bodies.length, 1, `a refused call still wrote an article: ${JSON.stringify(bodies)}`);
+    });
+
+    it('refuses tags, which Zammad drops on a batch', async (t) => {
+      if (!ready) return t.skip(skipReason);
+
+      // Verified against 7.1.1: a mass update carrying {tags, state} closes
+      // every ticket and tags none of them, answering 200 either way.
+      const ticket = await newTicket('Mass tags refused');
+      assert.match(
+        await callToolExpectingError('zammad_mass_update_tickets', {
+          ticket_ids: [ticket.ticket.id],
+          tags: ['nope'],
+        }),
+        /tags/,
+      );
     });
 
     it('offers only body and internal in its schema', async (t) => {
