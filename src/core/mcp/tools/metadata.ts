@@ -21,46 +21,33 @@ const onBehalfOf = z
  * gone — the values are already in front of the model.
  *
  * What remains here is what genuinely resists that treatment:
- *  - identity and permissions (`whoami`), which govern what is visible at all;
+ *  - identity, which governs what is visible at all — `zammad_get_user` with
+ *    `me` answers it without the caller knowing its own id;
  *  - users and organizations, which are unbounded;
- *  - tags, which are open-ended and whose full list is admin-only;
  *  - Object Manager attributes, which Zammad exposes only to admin credentials,
  *    so neither the model nor this server can enumerate them from an agent token.
  */
 export function registerMetadataTools(server: McpServer, base: ToolContext): void {
-  server.registerTool(
-    'zammad_whoami',
-    {
-      title: 'Show the authenticated Zammad user',
-      description:
-        'Identity and permissions behind the current credential. Call this first when it matters whether the ' +
-        'caller is an agent or a customer — visibility of tickets differs sharply between the two.',
-      inputSchema: z.object({}).strict(),
-      annotations: { readOnlyHint: true, openWorldHint: true },
-    },
-    guard(async () => {
-      const me = await base.client.get<Record<string, unknown>>('/api/v1/users/me');
-      return jsonResult({
-        user: summarizeUser(me),
-        role_ids: me.role_ids,
-        group_ids: me.group_ids,
-        permissions: me.permissions,
-      });
-    }),
-  );
-
+  // No `zammad_whoami`. It read `/api/v1/users/me`, which `/api/v1/users/:id`
+  // with `expand` returns a strict superset of — verified against a live
+  // instance, field for field — and returns in names where `me` has only ids.
+  // Its one irreplaceable part was not needing to know who you are, and `me`
+  // below supplies that. The `permissions` it reported was always null: Zammad
+  // does not put that field on either endpoint.
   server.registerTool(
     'zammad_get_user',
     {
       title: 'Get a Zammad user',
       description:
-        'Fetch one user by ID, login or email address, including their organization and roles. Use it to ' +
-        'confirm an identity before filtering tickets by owner or customer.',
+        'Fetch one user by ID, login or email address, including their organization and roles. Pass `me` for ' +
+        'the user behind the current credential — worth doing when it matters whether the caller is an agent ' +
+        'or a customer, because visibility of tickets differs sharply between the two. Use it to confirm an ' +
+        'identity before filtering tickets by owner or customer; `output: "full"` adds the group access map.',
       inputSchema: z
         .object({
           user: z
             .union([z.string().min(1), z.number().int().positive()])
-            .describe('User ID, login or email.'),
+            .describe('User ID, login or email — or `me` for the authenticated user.'),
           output: z.enum(['summary', 'full']).default('summary'),
         })
         .strict(),
@@ -109,34 +96,12 @@ export function registerMetadataTools(server: McpServer, base: ToolContext): voi
     }),
   );
 
-  server.registerTool(
-    'zammad_list_tags',
-    {
-      title: 'Search the Zammad tag list',
-      description:
-        'Find existing tags by prefix — worth doing before tagging so spellings stay consistent. Tags are ' +
-        'open-ended and can be created on the fly, so unlike states or groups they are not part of the tool ' +
-        'schemas and have to be looked up.',
-      inputSchema: z
-        .object({
-          term: z
-            .string()
-            .min(1)
-            .describe(
-              'Prefix to search for. Zammad has no agent-readable endpoint for the complete tag list.',
-            ),
-        })
-        .strict(),
-      annotations: { readOnlyHint: true, openWorldHint: true },
-    },
-    guard(async (rawInput) => {
-      const { term } = z.object({ term: z.string().min(1) }).parse(rawInput);
-      // `/api/v1/tag_list` is the admin CRUD endpoint and 403s for agent tokens;
-      // `tag_search` is the one agents may call.
-      const tags = await base.client.get<unknown>('/api/v1/tag_search', { term });
-      return jsonResult({ tags });
-    }),
-  );
+  // No `zammad_list_tags`. The instance's tags are now in the schemas that take
+  // one — create, update and the search filter — read through the same
+  // vocabulary that carries states, priorities and groups, so a spelling is
+  // checked by looking at the argument rather than by calling a tool first.
+  // Over `SCHEMA_ENUM_MAX_VALUES` the list is dropped as every other enum is,
+  // and the fields fall back to free strings, which is what tags are anyway.
 
   server.registerTool(
     'zammad_list_overviews',

@@ -29,6 +29,8 @@ export interface Vocabulary {
   states: string[];
   priorities: string[];
   groups: string[];
+  /** Open-ended, unlike the others — an advisory list, never a closed set. */
+  tags: string[];
   macros: Array<{ id: number; name: string }>;
   /** What could not be read, for the log and for tool descriptions. */
   unavailable: string[];
@@ -38,6 +40,7 @@ export const EMPTY_VOCABULARY: Vocabulary = {
   states: [],
   priorities: [],
   groups: [],
+  tags: [],
   macros: [],
   unavailable: [],
 };
@@ -71,19 +74,26 @@ export async function loadVocabulary(
     }
   };
 
-  const [states, priorities, groups, macros] = await Promise.all([
+  const cap = config.SCHEMA_ENUM_MAX_VALUES;
+
+  const [states, priorities, groups, tags, macros] = await Promise.all([
     tolerate('ticket_states', () => lookup.states()),
     tolerate('ticket_priorities', () => lookup.priorities()),
     tolerate('groups', () => lookup.groups()),
+    // One over the cap, so `names` can see that the list overflows rather than
+    // reading a truncated page as the whole instance.
+    tolerate('tags', () => lookup.tags(cap + 1)),
     tolerate('macros', () => lookup.macros()),
   ]);
-
-  const cap = config.SCHEMA_ENUM_MAX_VALUES;
 
   return {
     states: names(states, cap),
     priorities: names(priorities, cap),
     groups: names(groups, cap),
+    tags: names(
+      (tags as string[]).map((name) => ({ name })),
+      cap,
+    ),
     macros: (macros as MacroRecord[])
       .filter((macro) => macro.active !== false)
       .slice(0, cap)

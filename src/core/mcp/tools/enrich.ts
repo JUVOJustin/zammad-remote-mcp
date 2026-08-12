@@ -41,6 +41,24 @@ export function singleReferenceField(values: readonly string[], description: str
 }
 
 /**
+ * A list of tag names.
+ *
+ * Tags differ from states and groups twice over, and the shape says so. They
+ * are created on the fly, so the enum is a suggestion and never a closed set —
+ * which is what the union with a free string already means everywhere else, but
+ * here it is the normal case rather than the stale-cache case. And they are
+ * referenced by name wherever they are used, so unlike a group there is no
+ * numeric ID branch: `/api/v1/tags/add` takes an `item`, not an id.
+ */
+export function tagField(values: readonly string[], description: string) {
+  const one =
+    values.length === 0
+      ? z.string().min(1)
+      : z.union([z.enum(values as [string, ...string[]]), z.string().min(1)]);
+  return z.array(one).min(1).describe(describeWith(description, values));
+}
+
+/**
  * The enum already carries the values machine-readably; repeating them in prose
  * would double the tokens in every tool listing. Only say where they came from.
  */

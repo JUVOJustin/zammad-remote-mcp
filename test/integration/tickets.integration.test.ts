@@ -9,7 +9,7 @@ import {
   startHarness,
   stopHarness,
 } from './harness.js';
-import { AGENT_EMAIL, api, CUSTOMER_EMAIL, seededAgent, waitForMention } from './zammad.js';
+import { ADMIN_LOGIN, AGENT_EMAIL, api, CUSTOMER_EMAIL, seededAgent, waitForMention } from './zammad.js';
 
 /**
  * The write tools against a real Zammad.
@@ -138,19 +138,189 @@ describe('ticket lifecycle against a real Zammad', () => {
     assert.equal(stored.owner_id, agent.id);
   });
 
-  it('adds and removes tags', async (t) => {
+  it('applies every attribute on create too, read back off the ticket', async (t) => {
+    if (!ready) return t.skip(skipReason);
+
+    // Create shares the attribute block with update but not its behaviour:
+    // `tags` lands here and is ignored there, so both sides need their own
+    // evidence rather than one standing in for the other.
+    const created = await callTool('zammad_create_ticket', {
+      title: 'Create with everything',
+      group: 'Users',
+      customer: CUSTOMER_EMAIL,
+      state: 'closed',
+      priority: '3 high',
+      owner: ADMIN_LOGIN,
+      tags: ['create-alpha', 'create-beta'],
+      article: { body: 'x', type: 'note' },
+    });
+
+    const stored = await api<Json>(`/api/v1/tickets/${created.ticket.id}?expand=true`);
+    assert.equal(stored.state, 'closed');
+    assert.equal(stored.priority, '3 high');
+    assert.equal(stored.owner, ADMIN_LOGIN);
+    const tags = await api<Json>(`/api/v1/tags?object=Ticket&o_id=${created.ticket.id}`);
+    assert.deepEqual([...tags.tags].sort(), ['create-alpha', 'create-beta']);
+
+    // Create is the only tool that applies a whole tag list, so it is the one
+    // that most needs the instance's tags in its schema — and the only one that
+    // silently went without them, because it picks the field rather than
+    // spreading the vocabulary-backed block.
+    const schema = (await listTools()).find((t2: Json) => t2.name === 'zammad_create_ticket')
+      ?.inputSchema as Json;
+    assert.ok(
+      JSON.stringify(schema.properties.tags).includes('create-alpha'),
+      `create_ticket.tags carries no enum: ${JSON.stringify(schema.properties.tags)}`,
+    );
+  });
+
+  it('takes the id variants of every named field', async (t) => {
+    if (!ready) return t.skip(skipReason);
+
+    const created = await callTool('zammad_create_ticket', {
+      title: 'Create by ids',
+      group_id: 1,
+      customer_id: 3,
+      state_id: 4,
+      priority_id: 1,
+      article: { body: 'x', type: 'note' },
+    });
+
+    const stored = await api<Json>(`/api/v1/tickets/${created.ticket.id}?expand=true`);
+    assert.equal(stored.group, 'Users');
+    assert.equal(stored.customer_id, 3);
+    assert.equal(stored.priority, '1 low');
+    // state_id was the one variant the older suite never covered; asserting the
+    // others while leaving this one unchecked is how `tags` stayed broken.
+    assert.equal(stored.state_id, 4, `state_id did not land: ${stored.state}`);
+  });
+
+  it('creates an unknown customer when the address is prefixed with guess:', async (t) => {
+    if (!ready) return t.skip(skipReason);
+
+    // The prefix rides on `customer_id`, not on `customer` — Zammad resolves a
+    // `customer` name against existing users and 422s when there is none.
+    // `customer_id` is a number in this schema, so the documented behaviour was
+    // unreachable until the payload started moving the prefixed value across.
+    const address = `guessed-${Date.now() % 1_000_000}@example.test`;
+    const created = await callTool('zammad_create_ticket', {
+      title: 'Create by guess',
+      group: 'Users',
+      customer: `guess:${address}`,
+      article: { body: 'x', type: 'note' },
+    });
+
+    const stored = await api<Json>(`/api/v1/tickets/${created.ticket.id}?expand=true`);
+    assert.equal(String(stored.customer), address, JSON.stringify(stored).slice(0, 200));
+  });
+
+  it('applies every attribute it advertises, read back off the ticket', async (t) => {
+    if (!ready) return t.skip(skipReason);
+
+    // The suite used to exercise state, group, owner and the article, which is
+    // four of fifteen arguments. `tags` on an update looked just as fine from
+    // the outside and did nothing, so "the call succeeded" is not evidence that
+    // a field landed — each one is asserted against what Zammad stored.
+    const groups = await api<Json>('/api/v1/groups');
+    const other = groups.find((g: Json) => g.name !== 'Users')?.name as string | undefined;
+    assert.ok(other, 'the instance needs a second group for the group-by-name case');
+
+    const cases: Array<[string, Record<string, unknown>, (stored: Json) => boolean]> = [
+      ['title', { title: 'Renamed by the suite' }, (s2) => s2.title === 'Renamed by the suite'],
+      ['state by name', { state: 'closed' }, (s2) => s2.state === 'closed'],
+      ['state_id', { state_id: 2 }, (s2) => s2.state === 'open'],
+      ['priority by name', { priority: '3 high' }, (s2) => s2.priority === '3 high'],
+      ['priority_id', { priority_id: 1 }, (s2) => s2.priority === '1 low'],
+      ['group by name', { group: other }, (s2) => s2.group === other],
+      ['group_id', { group_id: 1 }, (s2) => s2.group === 'Users'],
+      ['owner by email', { owner: ADMIN_LOGIN }, (s2) => s2.owner === ADMIN_LOGIN],
+      [
+        'pending_time',
+        { state: 'pending reminder', pending_time: '2027-01-01T10:00:00Z' },
+        (s2) => !!s2.pending_time,
+      ],
+    ];
+
+    for (const [label, args, holds] of cases) {
+      const created = await newTicket(`Attribute ${label}`);
+      await callTool('zammad_update_ticket', { ticket_id: created.ticket.id, ...args });
+      const stored = await api<Json>(`/api/v1/tickets/${created.ticket.id}?expand=true`);
+      assert.ok(holds(stored), `${label} did not land: ${JSON.stringify(stored).slice(0, 200)}`);
+    }
+  });
+
+  it('unassigns an owner both ways Zammad spells it', async (t) => {
+    if (!ready) return t.skip(skipReason);
+
+    for (const args of [{ owner: '' }, { owner_id: 1 }]) {
+      const created = await newTicket('Attribute unassign');
+      await callTool('zammad_update_ticket', { ticket_id: created.ticket.id, owner: ADMIN_LOGIN });
+      await callTool('zammad_update_ticket', { ticket_id: created.ticket.id, ...args });
+      const stored = await api<Json>(`/api/v1/tickets/${created.ticket.id}`);
+      assert.equal(stored.owner_id, 1, `${JSON.stringify(args)} left an owner behind`);
+    }
+  });
+
+  it('addresses a ticket by number as well as by id', async (t) => {
+    if (!ready) return t.skip(skipReason);
+
+    const created = await newTicket('Attribute by number');
+    await callTool('zammad_update_ticket', {
+      ticket_number: created.ticket.number,
+      title: 'Found by number',
+    });
+    assert.equal((await api<Json>(`/api/v1/tickets/${created.ticket.id}`)).title, 'Found by number');
+  });
+
+  it('adds and removes tags through the update tool', async (t) => {
     if (!ready) return t.skip(skipReason);
 
     const created = await newTicket('Lifecycle tags');
     const id = created.ticket.id;
 
-    await callTool('zammad_add_ticket_tags', { ticket_id: id, tags: ['alpha', 'beta'] });
+    const added = await callTool('zammad_update_ticket', { ticket_id: id, add_tags: ['alpha', 'beta'] });
     let tags = await api<Json>(`/api/v1/tags?object=Ticket&o_id=${id}`);
     assert.deepEqual([...tags.tags].sort(), ['alpha', 'beta']);
+    // Reported, not left to a second call: whether an unknown tag is created
+    // depends on the instance, so the response says what the ticket carries.
+    assert.deepEqual([...added.tags].sort(), ['alpha', 'beta'], JSON.stringify(added));
 
-    await callTool('zammad_remove_ticket_tags', { ticket_id: id, tags: ['alpha'] });
+    const removed = await callTool('zammad_update_ticket', { ticket_id: id, remove_tags: ['alpha'] });
     tags = await api<Json>(`/api/v1/tags?object=Ticket&o_id=${id}`);
     assert.deepEqual(tags.tags, ['beta']);
+    assert.deepEqual(removed.tags, ['beta']);
+  });
+
+  it('tags and changes attributes in the same call', async (t) => {
+    if (!ready) return t.skip(skipReason);
+
+    // The reason the two tag tools were folded in: triage is a state change and
+    // a tag, and as separate calls that pair could half-succeed with nothing
+    // able to report it.
+    const created = await newTicket('Lifecycle tag with state');
+    const result = await callTool('zammad_update_ticket', {
+      ticket_id: created.ticket.id,
+      state: 'closed',
+      add_tags: ['triaged'],
+    });
+
+    assert.equal(result.ticket.state, 'closed');
+    assert.deepEqual(result.tags, ['triaged']);
+  });
+
+  it('refuses tags on an update, which Zammad would ignore', async (t) => {
+    if (!ready) return t.skip(skipReason);
+
+    // Verified against 7.1.1: a ticket created with [alpha, beta] and updated
+    // with [gamma] still carries [alpha, beta], and the update reports success.
+    const created = await newTicket('Lifecycle tags refused');
+    assert.match(
+      await callToolExpectingError('zammad_update_ticket', {
+        ticket_id: created.ticket.id,
+        tags: ['gamma'],
+      }),
+      /tags/,
+    );
   });
 
   it('links two tickets and unlinks them again', async (t) => {
@@ -380,6 +550,21 @@ describe('ticket lifecycle against a real Zammad', () => {
       // And nothing was written while all of those were being refused.
       const bodies = await articleBodies(ticket.ticket.id);
       assert.equal(bodies.length, 1, `a refused call still wrote an article: ${JSON.stringify(bodies)}`);
+    });
+
+    it('refuses tags, which Zammad drops on a batch', async (t) => {
+      if (!ready) return t.skip(skipReason);
+
+      // Verified against 7.1.1: a mass update carrying {tags, state} closes
+      // every ticket and tags none of them, answering 200 either way.
+      const ticket = await newTicket('Mass tags refused');
+      assert.match(
+        await callToolExpectingError('zammad_mass_update_tickets', {
+          ticket_ids: [ticket.ticket.id],
+          tags: ['nope'],
+        }),
+        /tags/,
+      );
     });
 
     it('offers only body and internal in its schema', async (t) => {

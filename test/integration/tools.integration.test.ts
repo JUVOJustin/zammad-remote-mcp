@@ -40,7 +40,6 @@ describe('the tool surface of a real instance', () => {
       'zammad_search_tickets',
       'zammad_search_users',
       'zammad_search_organizations',
-      'zammad_search_global',
       'zammad_get_ticket',
       'zammad_create_ticket',
       'zammad_update_ticket',
@@ -48,7 +47,7 @@ describe('the tool surface of a real instance', () => {
       'zammad_merge_tickets',
       'zammad_mass_update_tickets',
       'zammad_create_article',
-      'zammad_whoami',
+      'zammad_get_user',
       'zammad_list_custom_attributes',
     ]) {
       assert.ok(names.includes(expected), `missing tool ${expected}`);
@@ -102,7 +101,7 @@ describe('the tool surface of a real instance', () => {
     if (!ready) return t.skip(skipReason);
 
     await withRejectedCredential(async (call) => {
-      const result = await call('zammad_whoami', {});
+      const result = await call('zammad_get_user', { user: 'me' });
 
       assert.equal(result.isError, true, 'a 401 must not take the connection down');
       assert.match(result.content[0].text, /401|auth/i, result.content[0].text);

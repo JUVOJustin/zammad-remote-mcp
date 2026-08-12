@@ -63,16 +63,25 @@ export async function stopHarness(): Promise<void> {
  * A second server whose credential Zammad rejects, for the paths that only show
  * themselves on a refusal.
  *
- * The password is wrong rather than the URL: that produces a real 401 from the
- * real instance, which is the thing worth asserting. Pointing at a dead port
- * would exercise our timeout handling instead and prove nothing about how a
- * refused credential surfaces.
+ * The credential is wrong rather than the URL: that produces a real 401 from
+ * the real instance, which is the thing worth asserting. Pointing at a dead
+ * port would exercise our timeout handling instead and prove nothing about how
+ * a refused credential surfaces.
+ *
+ * The *login* is the unknown part, not the password. Sending the admin's login
+ * with a wrong password used to be the way, and it works exactly once per
+ * instance: Zammad counts failed logins per user and locks the account at
+ * `password_max_login_failed`, so a handful of local runs bricked the very
+ * account the whole suite authenticates with. The symptom is silent — the next
+ * run finds `isReachable()` false and skips all of it, reading as "no Docker
+ * here" rather than "the suite locked itself out". CI never saw it because
+ * every run there gets a fresh instance.
  */
 export async function withRejectedCredential<T>(run: (call: Caller) => Promise<T>): Promise<T> {
   const config = loadConfig({
     ZAMMAD_URL: BASE_URL,
     ZAMMAD_AUTH_MODE: 'basic',
-    ZAMMAD_USERNAME: ADMIN_LOGIN,
+    ZAMMAD_USERNAME: 'nobody-with-this-login@example.test',
     ZAMMAD_PASSWORD: 'definitely-not-the-password',
     LOG_LEVEL: 'silent',
     METADATA_CACHE_TTL_SECONDS: '0',

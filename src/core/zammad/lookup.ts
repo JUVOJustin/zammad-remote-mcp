@@ -143,6 +143,27 @@ export class LookupService {
     );
   }
 
+  /**
+   * Every tag on the instance, by name.
+   *
+   * `/api/v1/tag_list` is the admin CRUD endpoint and 403s for an agent token.
+   * `tag_search` is the one agents may call, and it matches everything when no
+   * term narrows it — but it caps at ten unless a limit is given, which is a
+   * silent truncation the caller cannot see. Verified against 7.1.1: 10 of 32
+   * without a limit, all 32 with. The limit is asked for one above the schema
+   * cap so the vocabulary can tell "this many" from "more than the cap".
+   *
+   * No `term` is sent at all. An empty string would be equivalent to Zammad,
+   * but `ZammadClient` drops empty query values, so passing one would have
+   * described a request this never makes.
+   */
+  tags(limit: number): Promise<string[]> {
+    return this.cache.read(this.key(`tag_list:${limit}`), async () => {
+      const rows = await this.client.get<Array<{ value?: string }>>('/api/v1/tag_search', { limit });
+      return Array.isArray(rows) ? rows.map((row) => row.value).filter((v): v is string => !!v) : [];
+    });
+  }
+
   macros(): Promise<Macro[]> {
     return this.cache.read(this.key('macros'), () =>
       this.client.get<Macro[]>('/api/v1/macros', { per_page: 200 }),
@@ -294,6 +315,14 @@ export class LookupService {
       const numeric = Number(value);
       if (Number.isInteger(numeric) && numeric > 0 && String(numeric) === value.trim()) {
         ids.push(numeric);
+        continue;
+      }
+      // `me` is the authenticated user, as it already is in the search filters
+      // (`owner: ["me"]`). Claimed here rather than looked up: a login spelled
+      // exactly `me` would otherwise mean two things depending on the tool, and
+      // the token is worth more than that login is likely.
+      if (value.trim().toLowerCase() === 'me') {
+        ids.push((await this.me()).id);
         continue;
       }
       ids.push(await this.resolveOneUser(value));

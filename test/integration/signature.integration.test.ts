@@ -158,13 +158,13 @@ describe('signature lookup against the states an instance can be in', () => {
     // agent's name. A body whose last sentence happens to name the same person
     // must still be signed, and must not be reported as an already-signed
     // duplicate.
-    const me = await callTool('zammad_whoami', {});
+    const me = await callTool('zammad_get_user', { user: 'me' });
     const created = await callTool('zammad_create_ticket', {
       title: 'Prose ending in the sender name',
       group: 'Users',
       customer: CUSTOMER_EMAIL,
       article: emailArticle({
-        body: `For anything further please contact ${me.user.firstname} ${me.user.lastname}`,
+        body: `For anything further please contact ${me.firstname} ${me.lastname}`,
       }),
     });
 
@@ -426,6 +426,76 @@ describe('every write is text/html, against what Zammad actually stores', () => 
     const body = await firstArticleBody(created.ticket.id);
     assert.ok(body.includes('<p>Hallo,</p>'), body);
     assert.ok(!body.includes('&lt;p&gt;'), `authored markup must not be escaped: ${body}`);
+  });
+
+  it('tells every writing tool to write HTML rather than Markdown', async (t) => {
+    if (!ready) return t.skip(skipReason);
+
+    // The conversion keeps a body intact; it does not format one. Markdown
+    // survives it literally, and reading returns Markdown — so the instruction
+    // has to reach every tool that writes, or the one it misses is the one a
+    // caller reaches for.
+    const tools = await listTools();
+    const at = (name: string, path: (schema: Json) => Json) => {
+      const tool = tools.find((t2: Json) => t2.name === name) as Json;
+      return String(path(tool));
+    };
+
+    // zammad_update_article is deliberately absent: Zammad discards a
+    // replacement `body` outright, so telling a caller how to format one would
+    // be advice about an argument that changes nothing.
+    const where: Array<[string, string]> = [
+      ['zammad_create_article', at('zammad_create_article', (t2) => t2.description)],
+      [
+        'zammad_create_ticket',
+        at('zammad_create_ticket', (t2) => t2.inputSchema.properties.article.description),
+      ],
+      [
+        'zammad_update_ticket',
+        at('zammad_update_ticket', (t2) => t2.inputSchema.properties.article.description),
+      ],
+      [
+        'zammad_mass_update_tickets',
+        at('zammad_mass_update_tickets', (t2) => t2.inputSchema.properties.article.description),
+      ],
+    ];
+
+    for (const [name, description] of where) {
+      assert.match(description, /Write `body` as HTML/, name);
+    }
+  });
+
+  it('refuses a body on zammad_update_article, which Zammad would discard', async (t) => {
+    if (!ready) return t.skip(skipReason);
+
+    const created = await callTool('zammad_create_ticket', {
+      title: 'Article body cannot be replaced',
+      group: 'Users',
+      customer: CUSTOMER_EMAIL,
+      article: { body: 'Erste Fassung.', type: 'note' },
+    });
+    const listed = await callTool('zammad_list_ticket_articles', { ticket_id: created.ticket.id });
+    const articleId = listed.articles[0].id;
+
+    // Named, not dropped: Zammad answers 200 and stores neither, so accepting
+    // them would report a write that did not happen.
+    for (const field of ['body', 'subject']) {
+      assert.match(
+        await callToolExpectingError('zammad_update_article', {
+          article_id: articleId,
+          internal: true,
+          [field]: 'Zweite Fassung.',
+        }),
+        new RegExp(field),
+        field,
+      );
+    }
+
+    // What the tool does offer still works, and the body is untouched by it.
+    await callTool('zammad_update_article', { article_id: articleId, internal: true });
+    const after = await api<Json>(`/api/v1/ticket_articles/${articleId}`);
+    assert.equal(after.internal, true);
+    assert.equal(after.body, '<span>Erste Fassung.</span>');
   });
 
   it('refuses a content_type argument — there is no format to pick', async (t) => {

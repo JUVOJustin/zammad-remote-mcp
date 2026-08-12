@@ -4,6 +4,194 @@ Notable changes per release. The section matching a tag is used as that release'
 notes, with the pull-request list appended automatically — see
 `.github/workflows/deploy.yml`.
 
+## 3.1.0
+
+A pass over what the tools *say* rather than what they do. 3.0.0 made every
+write HTML without telling the caller to write HTML, and the instruction surface
+had grown copies of itself: bullets restating the tool they named, and two tools
+that were presets of a third.
+
+### The tools ask for HTML, not Markdown
+
+The conversion 3.0.0 introduced is a safety net, not a formatter: it escapes a
+body and keeps its line breaks, so Markdown passes through intact and reaches
+the reader as `**` and `[…](…)`. Reading pulls the other way — bodies come back
+as Markdown by default — so a caller mirroring the format it just read writes
+the one thing nothing renders. The descriptions said "plain text or HTML, either
+is stored as HTML", which reads as a choice between equals and is not one.
+
+Every writing tool now asks for HTML outright, in one shared sentence rather
+than four that drift apart. Prose without markup is still accepted and still
+keeps its line breaks — it simply arrives unformatted, which the note says
+rather than leaving it to be discovered.
+
+`zammad_mass_update_tickets` was the one writing tool whose article carried no
+note about the body format at all; it has one now. Its behaviour was already
+correct.
+
+`zammad_update_article` deliberately does not carry the note. It no longer takes
+a `body` at all — see below.
+
+### The server instructions say only what no tool can
+
+They are read on every connection, whether the tool they mention is reached for
+or not, and every line in them is a second copy to keep in step. Three restated
+the tool they named and are gone — the `zammad_delete_ticket` warning, the
+`zammad_list_tags` spelling hint and the internal-note default, each of which
+the tool itself already says, in more detail and at the point of use.
+
+What is left is the two things no single description can carry, because they are
+about choosing between tools or reading a result: that the schemas hold this
+instance's valid values, and that `zammad_search_tickets` is where filtering
+belongs. One more joins them: which credential is in play changes how every
+search result should be read, and no tool that returns those results says so —
+`zammad_get_user` with `me` answers it.
+
+### `guess:` works where it is documented
+
+The `customer` field has always said "Prefix with `guess:` to create the user if
+unknown". It never did: Zammad resolves a `customer` name against existing users
+and answers 422 when there is none, and the create-if-unknown path reads the
+prefix off `customer_id` — which this schema types as a number, so the feature
+was unreachable through these tools entirely. Verified against 7.1.1, the same
+address both ways: 422 as `customer`, 201 and a new user as `customer_id`. A
+prefixed value now moves across on the way out, so the documentation is true
+rather than removed.
+
+### Two more silent no-ops named instead of dropped
+
+- **`tags` on `zammad_mass_update_tickets`.** Same finding as the single update,
+  one layer out: a batch carrying `{tags, state}` closes every ticket and tags
+  none of them, answering 200. Refused now. There is no `add_tags` counterpart —
+  Zammad's own bulk form has no tag field, and a tag call per ticket per tag is
+  a different operation from a batch. Tag per ticket with `zammad_update_ticket`.
+- **`body_format` on `zammad_update_article`.** It chooses how a returned body
+  is rendered, which every article-returning tool offers — but this tool changes
+  no content, and a rendering knob on a visibility toggle reads as though it
+  might. Gone; the confirmation comes back as Markdown like every default.
+
+### The instance's tags are in the schema, so `zammad_list_tags` is gone
+
+Tags were the one value set left to a discovery tool, on the grounds that the
+full list is admin-only. Half true: `/api/v1/tag_list` is admin CRUD and 403s
+for an agent, but `tag_search` — the endpoint agents may call — returns every
+tag for an empty `term`, provided a `limit` is given. Without one it silently
+caps at ten. Verified against 7.1.1: 10 of 32 without, all 32 with.
+
+So tags now travel the same road as states, priorities and groups. They appear
+as enums on every argument that takes one — `tags` on create, `add_tags` and
+`remove_tags` on update, and all three tag filters on `zammad_search_tickets` —
+and a spelling is checked by reading the argument rather than by calling a tool
+first.
+
+The enum is advisory, as the others are, and here that is the normal case
+rather than the stale-cache case: a tag is created by using it, so an unknown
+name has to stay acceptable. There is no numeric-ID branch either — Zammad's
+`tags/add` takes an `item`, not an id. Above `SCHEMA_ENUM_MAX_VALUES` (150 by
+default) the list is dropped like every other over-long enum and the fields
+fall back to free strings, which is what a tag is anyway.
+
+### Tagging moved onto `zammad_update_ticket`
+
+`zammad_add_ticket_tags` and `zammad_remove_ticket_tags` are gone; the update
+tool takes `add_tags` and `remove_tags` and runs the same endpoints
+(`POST /api/v1/tags/add`, `DELETE /api/v1/tags/remove`, one request per tag).
+Tagging rarely travels alone — a triage step is a state change *and* a tag, and
+as two calls that pair could half-succeed with nothing able to report it. The
+response now carries the resulting tag list, read back rather than assumed,
+because whether an unknown tag is created on the fly is the instance's decision.
+
+It also retires a trap. `tags` on an update was accepted and ignored: verified
+against 7.1.1, a ticket created with `[alpha, beta]` and then updated with
+`[gamma]` still carries `[alpha, beta]`, and the update reports success. The
+argument said only "on update, prefer add/remove", which understates a field
+that does nothing. It is create-only now, and the strict schema names it on an
+update instead of dropping it.
+
+### Three tools removed, each answerable by one that stays
+
+A minor release rather than a major: no capability is gone, only the second way
+to reach it. A tool that is a preset of another tool is one more thing to choose
+wrongly between, and the preset is the part a caller can supply.
+
+- **`zammad_get_customer_tickets`** wrapped `/api/v1/ticket_customer`, the
+  customer sidebar's open/closed split. `zammad_search_tickets` answers it with
+  `customer` plus `state` — a filter it already documents and resolves by login
+  or email.
+- **`zammad_whoami`** read `/api/v1/users/me`. `/api/v1/users/:id` with `expand`
+  returns a strict superset of that record — verified field for field against a
+  live instance — and returns roles and group access as *names* where `me` has
+  only ids. Its one irreplaceable part was not needing to know your own id, so
+  `zammad_get_user` now takes `me`, resolved to the authenticated user the way
+  the search filters already resolve `owner: ["me"]`. The `permissions` field
+  `whoami` reported was always null; Zammad puts it on neither endpoint.
+
+- **`zammad_update_ticket_customer`** called
+  `PUT /api/v1/tickets/:id/update_customer`. `zammad_update_ticket` matches it
+  exactly: passing `customer` on the ordinary update moves the ticket and lets
+  the organization follow. Verified against 7.1.1 by reassigning between two
+  organizations down both paths and reading the ticket back — same customer,
+  same organization. The identifiers matched as well; both took `ticket_id` or
+  `ticket_number`, and a customer by login, email or id.
+
+`me` is resolved wherever `LookupService` resolves a user — `zammad_get_user`
+and the search filters — not on the ticket write arguments, which hand `owner`
+and `customer` to Zammad as names for its own resolver to read and would answer
+422 for a literal `me`. `roles` joins the user summary
+for the same reason it mattered on `whoami`: it is what separates an agent from
+a customer, and that decides what a credential can see at all.
+
+### `zammad_search_global` is gone
+
+It could not do what it said. Its `objects` argument was an array, and Zammad's
+`SearchController` calls `.downcase` on that parameter, so the multi-type sweep
+the description promised — "tickets, users, organizations and knowledge base
+answers in one call" — answered `500 undefined method 'downcase' for an instance
+of Array`. A comma-separated string is no better: read as one class name nobody
+has, it answers `200` with nothing. Both verified against 7.1.1, the 500 traced
+to the exception in the rails log. `/api/v1/search` restricts to everything or
+to exactly one type, and offers no third option.
+
+What was left once that was true is a tool that searches everything, or one type
+less well than the tool dedicated to it. The idea worth keeping — one free-text
+sweep across object types, knowledge base included — needs a fan-out over the
+per-type endpoints, not a wrapper around a parameter that cannot express it. It
+is removed until that exists rather than kept as the narrower thing it had
+silently become.
+
+### Strict at every level, not only at the top
+
+2.0.0 made every tool schema strict and stopped at its outermost object. Five
+nested ones went on dropping what they did not recognise: the `article` of
+`zammad_create_ticket` and `zammad_update_ticket`, and the `attachments` entries
+of those two and of `zammad_create_article`.
+
+Those are the worst places to drop a key. `internal` decides whether a customer
+sees an article at all, and a misspelling of it inside `article` published the
+article and reported success. `mime-type` carries Zammad's hyphen, so
+`mime_type` — the spelling anyone would guess — was discarded and every
+attachment went out as `application/octet-stream`.
+
+All five are strict now, and a test walks every schema the server publishes and
+fails on any object that still accepts unknown keys, so the next nested schema
+cannot repeat this. Maps whose keys are the instance's own (`custom_fields`)
+stay open, which is what they are for.
+
+### `zammad_update_article` refuses what Zammad would drop
+
+Zammad discards a replacement `body` and `subject` on
+`PUT /api/v1/ticket_articles/:id`: it answers `200` and stores neither. Verified
+against 7.1.1 as admin, reading the article back after each field on its own —
+only `internal` is ever applied. The tool accepted both and reported
+`updated: true` regardless, which is the same silent no-op 2.0.0 fixed for
+`zammad_mass_update_tickets`: nothing downstream could tell the write from a
+write that did not happen.
+
+Both arguments are gone, so the strict schema now answers `Unrecognized key`
+instead. `internal` is required, being the only thing left to change, and the
+tool is titled for what it does. To correct the text of an article, add a new
+one with `zammad_create_article`.
+
 ## 3.0.0
 
 Every article the writing tools produce is now `text/html`, and the

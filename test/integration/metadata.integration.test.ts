@@ -5,6 +5,7 @@ import {
   callToolText,
   initialize,
   type Json,
+  listTools,
   skipReason,
   startHarness,
   stopHarness,
@@ -32,11 +33,14 @@ describe('metadata against a real Zammad', () => {
   it('reports the authenticated user', async (t) => {
     if (!ready) return t.skip(skipReason);
 
-    const me = await callTool('zammad_whoami', {});
-    assert.equal(me.user.email, ADMIN_LOGIN);
+    const me = await callTool('zammad_get_user', { user: 'me' });
+    assert.equal(me.email, ADMIN_LOGIN);
+    // `me` has to resolve to the credential's own id without being told one,
+    // and the roles have to come back as names — that is what says whether the
+    // caller is an agent or a customer.
     assert.ok(
-      JSON.stringify(me).toLowerCase().includes('admin'),
-      'whoami should show what the credential may do',
+      JSON.stringify(me.roles).toLowerCase().includes('admin'),
+      `the roles should say what the credential is: ${JSON.stringify(me)}`,
     );
   });
 
@@ -61,7 +65,7 @@ describe('metadata against a real Zammad', () => {
     assert.ok(instructions?.includes(BASE_URL), `the base URL is missing: ${instructions?.slice(0, 160)}`);
   });
 
-  it('lists tags that exist', async (t) => {
+  it("puts the instance's tags into the schemas that take one", async (t) => {
     if (!ready) return t.skip(skipReason);
 
     const ticket = await api<{ id: number }>('/api/v1/tickets', {
@@ -75,12 +79,18 @@ describe('metadata against a real Zammad', () => {
     });
     await api(`/api/v1/tags/add?object=Ticket&o_id=${ticket.id}&item=metadata-probe`, { method: 'POST' });
 
-    // The tool searches rather than dumps, so it takes a term.
-    const tags = await callTool('zammad_list_tags', { term: 'metadata' });
-    assert.ok(
-      JSON.stringify(tags).includes('metadata-probe'),
-      `the tag is missing: ${JSON.stringify(tags).slice(0, 200)}`,
-    );
+    // No tool lists tags any more — they are in the schema of everything that
+    // takes one. The cache is per credential and TTL-bounded, so the fresh tag
+    // only shows up once it is dropped.
+    await callToolText('zammad_refresh_metadata_cache', {});
+    const schema = (await listTools()).find((t2: Json) => t2.name === 'zammad_search_tickets')
+      ?.inputSchema as Json;
+    const values = JSON.stringify(schema.properties.tags.properties.all);
+    assert.ok(values.includes('metadata-probe'), `the tag is not in the schema: ${values.slice(0, 300)}`);
+
+    // Advisory, not closed: a tag created after a client cached the schema has
+    // to remain filterable, so the enum is unioned with a free string.
+    assert.ok(values.includes('"type":"string"'), `the enum is closed: ${values.slice(0, 300)}`);
   });
 
   it('lists overviews', async (t) => {
@@ -118,7 +128,7 @@ describe('metadata against a real Zammad', () => {
 
     // The instance is still usable afterwards — a refresh that empties the
     // lookups would only show up on the next call.
-    const me = await callTool('zammad_whoami', {});
-    assert.equal(me.user.email, ADMIN_LOGIN);
+    const me = await callTool('zammad_get_user', { user: 'me' });
+    assert.equal(me.email, ADMIN_LOGIN);
   });
 });

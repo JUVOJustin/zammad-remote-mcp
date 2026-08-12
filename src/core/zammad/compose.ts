@@ -106,3 +106,23 @@ export function authoredContentType(body: string): 'text/plain' | 'text/html' {
 export function ensureHtml(body: string, contentType: string): string {
   return contentType === 'text/html' ? body : text2html(body);
 }
+
+/**
+ * What every writing tool tells the caller about `body`.
+ *
+ * `text2html` is a safety net, not a formatter. It escapes and keeps line
+ * breaks, which is what a body needs to survive at all, but it renders nothing:
+ * a body written in some other markup reaches the reader as the characters it
+ * was typed with. So the note asks for HTML and describes what the conversion
+ * does with prose, and leaves the formats it is not out of it — the pull worth
+ * countering is a schema that reads as a choice between equals.
+ *
+ * One copy, four tools, as with `append_signature`: the rule lives with the
+ * argument it qualifies. Not in the `body` field — a schema with a description
+ * on every leaf is read as boilerplate — and not in the server instructions,
+ * which are read on every connection whether an article is being written or not.
+ */
+export const HTML_BODY_NOTE =
+  'Write `body` as HTML — `<p>`, `<br>`, `<b>`, `<a href="…">`, `<ul>` — the markup the agent UI composes. ' +
+  'Prose without any tag is still accepted and keeps its line breaks, but it arrives unformatted; a body ' +
+  'carrying any HTML tag is taken as markup wholesale.';
