@@ -4,6 +4,82 @@ Notable changes per release. The section matching a tag is used as that release'
 notes, with the pull-request list appended automatically — see
 `.github/workflows/deploy.yml`.
 
+## Unreleased
+
+### A `@@mention` that named nobody now says so
+
+`@@name` is resolved to a real user and rewritten into the anchor Zammad turns
+into a mention. When the name resolves to nobody the token is left as written,
+deliberately — a typo must not cost the caller the note they were writing. But
+that was all that happened: the article was created, the response omitted
+`mentioned`, and an omitted `mentioned` reads exactly like a body that never
+contained a mention. Which is the failure this whole path exists to prevent: the
+note looks right to whoever wrote it and the colleague is never told.
+
+Seen on a real internal note written as `@@Jannik Pollmeier`. The unquoted form
+stops at the first space, so only `Jannik` was ever searched for; that matched
+four users, the lookup declined to guess, and the note was filed with the
+literal text in it.
+
+Every writing tool now returns `mentions_unresolved` alongside `mentioned` — the
+token as written and why it resolved to nobody, in the lookup's own words, so an
+ambiguous name comes back with its candidates. An unquoted token also carries
+the hint the lookup cannot give, because it never saw the rest of the name:
+quote it as `@@"First Last"`.
+
+### A paragraph written as `<p>` reaches the reader as one
+
+The tools ask for HTML, and `<p>` is the tag a paragraph is written with — but
+it is the one tag an outgoing Zammad mail does not separate anything with.
+`Channel::EmailBuild` wraps the article in its own template, and that template
+ends `p { margin: 0 }`, inlined onto every element; the text part is derived by
+`html2text`, which reads `</p><p>` as a single newline. A six-paragraph reply
+therefore arrived as one block of text in the HTML part and as six unseparated
+lines in the text part, while the article read back as correctly spaced Markdown
+— the round trip through the renderer put the blank lines back, so nothing about
+the stored article showed the problem.
+
+The agent UI never hits this because its composer writes no `<p>`: one `<div>`
+per line, `<div><br></div>` for a blank one, which is also what the plain-prose
+conversion produces. A written body's paragraphs are now folded into that same
+shape, so a `<p>`-separated body and a UI-composed one send the same mail.
+
+Only the boundary between two adjacent paragraphs is filled, and only when
+neither side is already blank: an author's own empty paragraph stays the one
+empty line it asked for. Paragraphs with a list or another block between them
+are left alone, as is an unclosed `<p>`, whose end only a parser could infer.
+
+### A channel that can only carry text is no longer sent markup
+
+3.0.0 made every written article `text/html`, on the strength of what the email
+channel does with it: the article's content type is the send format, and
+`Channel::EmailBuild` derives the plain-text part itself, so nothing is lost.
+That reasoning holds for email and for the article types that are read in the
+browser — notes, phone articles, web articles — and for nothing else.
+
+The other channels do not convert at all. SMS sends `article.body.first(160)`
+(`communicate_sms_job.rb`), Telegram `text: article.body`
+(`communicate_telegram_job.rb`), Facebook `body: article.body`
+(`communicate_facebook_job.rb`), WhatsApp the same
+(`service/ticket/article/type/whatsapp_message/deliver.rb`). An HTML body on any
+of them is delivered spelled out — and on SMS the tags are billed, counting
+against the 160 characters. `Ticket::Article#body_as_text` exists but is not on
+these paths.
+
+The agent UI settles it in the browser: `sms_reply.coffee`, `telegram.coffee`,
+`facebook_reply.coffee` and `whatsapp_reply.coffee` each end
+`params.content_type = 'text/plain'` and
+`params.body = App.Utils.html2text(params.body, true)`, while the email, phone
+and note composers post `text/html` untouched. The channel decides, not the
+author.
+
+So the content type is now chosen from the article type rather than fixed. HTML
+where the channel renders HTML — unchanged, and Zammad's own conversion of it
+stays where it was. For a text-only channel the body is finished here instead,
+folded into lines by the same pass the signature preview uses, because there is
+no later conversion to leave it to. Callers still write HTML on every type; the
+note on `body` now says what becomes of it on a channel that cannot carry it.
+
 ## 3.1.0
 
 A pass over what the tools *say* rather than what they do. 3.0.0 made every

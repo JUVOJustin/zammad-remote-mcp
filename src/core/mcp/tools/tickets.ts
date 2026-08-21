@@ -2,8 +2,8 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { ToolInputError } from '../../util/errors.js';
 import type { BodyFormat } from '../../zammad/article-body.js';
-import { authoredContentType, ensureHtml, HTML_BODY_NOTE } from '../../zammad/compose.js';
-import type { MentionedUser } from '../../zammad/mentions.js';
+import { authoredContentType, composeBody, ensureHtml, HTML_BODY_NOTE } from '../../zammad/compose.js';
+import type { MentionedUser, UnresolvedMention } from '../../zammad/mentions.js';
 import { rewriteMentions } from '../../zammad/mentions.js';
 import { asTopLevel, leaf } from '../../zammad/selector.js';
 import {
@@ -327,7 +327,11 @@ async function articlePayload(
   // on the finished HTML body.
   article: z.infer<typeof articleInputSchema>,
   context: ToolContext,
-): Promise<{ payload: Record<string, unknown>; mentioned: MentionedUser[] }> {
+): Promise<{
+  payload: Record<string, unknown>;
+  mentioned: MentionedUser[];
+  unresolved: UnresolvedMention[];
+}> {
   // Mentions read the body as authored — before the HTML conversion, whose
   // escaping would break the `@@"Jane Doe"` quoting.
   const mentions = await rewriteMentions(article.body, authoredContentType(article.body), {
@@ -336,20 +340,22 @@ async function articlePayload(
     zammadUrl: context.config.ZAMMAD_URL,
   });
 
+  // The body and its content type are decided by the channel this article is
+  // going to — see zammad/compose.ts.
+  const composed = composeBody(mentions.body, article.type, mentions.content_type);
+
   const payload: Record<string, unknown> = {
-    // Every article is written as text/html — see zammad/compose.ts. Plain
-    // prose is converted the way the UI converts pasted text.
-    body: ensureHtml(mentions.body, mentions.content_type),
+    body: composed.body,
     type: article.type,
     sender: article.sender,
     internal: article.internal,
-    content_type: 'text/html',
+    content_type: composed.content_type,
   };
   for (const key of ['subject', 'to', 'cc', 'in_reply_to', 'time_unit', 'origin_by'] as const) {
     if (article[key] !== undefined) payload[key] = article[key];
   }
   if (article.attachments?.length) payload.attachments = article.attachments;
-  return { payload, mentioned: mentions.mentioned };
+  return { payload, mentioned: mentions.mentioned, unresolved: mentions.unresolved };
 }
 
 /**
@@ -679,6 +685,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
         ...(signature ? { signature } : {}),
         ticket: presentTicket(ticket),
         ...(article.mentioned.length > 0 ? { mentioned: article.mentioned } : {}),
+        ...(article.unresolved.length > 0 ? { mentions_unresolved: article.unresolved } : {}),
       });
     }),
   );
@@ -740,6 +747,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
 
       const body = ticketPayload(input);
       let mentioned: MentionedUser[] = [];
+      let unresolved: UnresolvedMention[] = [];
       let signature: SignatureOutcome | undefined;
       if (input.article) {
         const article = await articlePayload(input.article, context);
@@ -752,6 +760,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
         });
         body.article = article.payload;
         mentioned = article.mentioned;
+        unresolved = article.unresolved;
       }
 
       const touchesTags = Boolean(input.add_tags || input.remove_tags);
@@ -774,6 +783,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
         ticket: presentTicket(ticket),
         ...(tags ? { tags } : {}),
         ...(mentioned.length > 0 ? { mentioned } : {}),
+        ...(unresolved.length > 0 ? { mentions_unresolved: unresolved } : {}),
       });
     }),
   );
@@ -908,6 +918,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
 
       const attributes = ticketPayload(input);
       let mentioned: MentionedUser[] = [];
+      let unresolved: UnresolvedMention[] = [];
       let article: Record<string, unknown> | undefined;
 
       if (input.article) {
@@ -917,6 +928,8 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
           zammadUrl: context.config.ZAMMAD_URL,
         });
         article = {
+          // HTML unconditionally, unlike the other two writing paths: the type
+          // below is fixed to a note, which is read in the browser.
           body: ensureHtml(mentions.body, mentions.content_type),
           content_type: 'text/html',
           // Fixed, not taken from the caller: the bulk form has no other choice.
@@ -925,6 +938,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
           internal: input.article.internal,
         };
         mentioned = mentions.mentioned;
+        unresolved = mentions.unresolved;
       }
 
       if (Object.keys(attributes).length === 0 && !article) {
@@ -947,6 +961,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
         ticket_count: input.ticket_ids.length,
         result,
         ...(mentioned.length > 0 ? { mentioned } : {}),
+        ...(unresolved.length > 0 ? { mentions_unresolved: unresolved } : {}),
       });
     }),
   );

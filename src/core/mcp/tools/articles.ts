@@ -1,7 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { bytesToBase64, textFromBytes } from '../../util/base64.js';
-import { authoredContentType, ensureHtml, HTML_BODY_NOTE } from '../../zammad/compose.js';
+import { authoredContentType, composeBody, HTML_BODY_NOTE } from '../../zammad/compose.js';
 import { rewriteMentions } from '../../zammad/mentions.js';
 import {
   appendGroupSignature,
@@ -191,9 +191,10 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
         zammadUrl: base.config.ZAMMAD_URL,
       });
 
-      // Every article is written as text/html — see zammad/compose.ts. Plain
-      // prose is converted the way the UI converts pasted text.
-      let text = ensureHtml(mentions.body, mentions.content_type);
+      // The body and its content type are decided by the channel this article
+      // is going to — see zammad/compose.ts.
+      const composed = composeBody(mentions.body, input.type, mentions.content_type);
+      let text = composed.body;
       let signature: SignatureOutcome | undefined;
       if (input.append_signature) {
         const { body: signed, ...outcome } = await appendGroupSignature({
@@ -213,7 +214,7 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
         type: input.type,
         sender: input.sender,
         internal: input.internal,
-        content_type: 'text/html',
+        content_type: composed.content_type,
       };
       for (const key of ['subject', 'to', 'cc', 'in_reply_to', 'time_unit', 'origin_by'] as const) {
         if (input[key] !== undefined) body[key] = input[key];
@@ -226,6 +227,7 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
         ...(signature ? { signature } : {}),
         article: presentArticle(article, { bodyFormat: input.body_format }),
         ...(mentions.mentioned.length > 0 ? { mentioned: mentions.mentioned } : {}),
+        ...(mentions.unresolved.length > 0 ? { mentions_unresolved: mentions.unresolved } : {}),
       });
     }),
   );

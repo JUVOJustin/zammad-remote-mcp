@@ -109,6 +109,53 @@ describe('rewriteMentions', () => {
     assert.deepEqual(result.mentioned, [{ id: 42, name: 'Jane Doe' }]);
   });
 
+  it('reports an unresolvable @@token instead of passing over it', async () => {
+    const context = stub(directory);
+    const result = await rewriteMentions('@@nobody@acme.com and @@jdoe', 'text/plain', context);
+
+    assert.equal(result.unresolved.length, 1);
+    assert.equal(result.unresolved[0]?.token, 'nobody@acme.com');
+    // The lookup's own words, so the next attempt has something to act on.
+    assert.match(result.unresolved[0]?.reason ?? '', /No Zammad user matches/);
+  });
+
+  it('says nothing about mentions that resolved', async () => {
+    const context = stub(directory);
+    const result = await rewriteMentions('@@jdoe hi', 'text/plain', context);
+
+    assert.deepEqual(result.unresolved, []);
+  });
+
+  it('points an unquoted token at the quoting it needed', async () => {
+    // `@@Jane Doe` stops at the space, so only `Jane` is ever searched for —
+    // the mistake that has to be named, because the lookup cannot see it.
+    const context = stub(directory);
+    const result = await rewriteMentions('@@Jane Doe please look', 'text/plain', context);
+
+    assert.equal(result.unresolved[0]?.token, 'Jane');
+    assert.match(result.unresolved[0]?.reason ?? '', /quote it/);
+    assert.ok(result.body.includes('@@Jane Doe please look'), result.body);
+  });
+
+  it('leaves the hint off a quoted token, where it is not the mistake', async () => {
+    const context = stub(directory);
+    const result = await rewriteMentions('@@"Nobody At All" hi', 'text/plain', context);
+
+    assert.equal(result.unresolved[0]?.token, 'Nobody At All');
+    assert.equal(result.unresolved[0]?.reason.includes('quote it'), false);
+  });
+
+  it('reports a token misspelled the same way twice only once', async () => {
+    const context = stub(directory);
+    const result = await rewriteMentions(
+      '@@nobody@acme.com and again @@nobody@acme.com',
+      'text/plain',
+      context,
+    );
+
+    assert.equal(result.unresolved.length, 1);
+  });
+
   it('stays plain text when no @@token resolves', async () => {
     const context = stub(directory);
     const result = await rewriteMentions('mail me @@nobody@acme.com', 'text/plain', context);

@@ -2,8 +2,10 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   authoredContentType,
+  composeBody,
   ensureHtml,
   looksLikeMarkup,
+  spaceParagraphs,
   text2html,
   textCleanup,
 } from '../src/core/zammad/compose.js';
@@ -62,10 +64,62 @@ describe('looksLikeMarkup', () => {
   });
 });
 
+describe('spaceParagraphs', () => {
+  it('separates adjacent paragraphs with a blank line the mail template keeps', () => {
+    assert.equal(
+      spaceParagraphs('<p>Lieber Benjamin,</p><p>vielen Dank.</p><p>Viele Grüße</p>'),
+      '<div>Lieber Benjamin,</div><div><br></div><div>vielen Dank.</div><div><br></div><div>Viele Grüße</div>',
+    );
+  });
+
+  it('drops the layout whitespace between two paragraphs', () => {
+    assert.equal(
+      spaceParagraphs('<p style="margin: 0;">eins</p>\n\n  <p>zwei</p>'),
+      '<div>eins</div><div><br></div><div>zwei</div>',
+    );
+  });
+
+  it('adds no trailing blank line, since the signature brings its own break', () => {
+    assert.equal(spaceParagraphs('<p>nur ein Absatz</p>'), '<div>nur ein Absatz</div>');
+  });
+
+  it('leaves markup without paragraphs alone', () => {
+    const authored = '<div>Zeile 1</div><div><br></div><div>Zeile 2</div><ul><li>a</li></ul>';
+    assert.equal(spaceParagraphs(authored), authored);
+  });
+
+  it('keeps a deliberately empty paragraph as the one blank line it stood for', () => {
+    assert.equal(
+      spaceParagraphs('<p>eins</p><p><br></p><p>zwei</p>'),
+      '<div>eins</div><div><br></div><div>zwei</div>',
+    );
+  });
+
+  it('leaves an unclosed paragraph alone rather than opening a div nothing closes', () => {
+    assert.equal(spaceParagraphs('<p>eins<p>zwei'), '<p>eins<p>zwei');
+  });
+
+  it('adds no filler across a block that already separates', () => {
+    assert.equal(
+      spaceParagraphs('<p>eins</p><ul><li>a</li></ul><p>zwei</p>'),
+      '<div>eins</div><ul><li>a</li></ul><div>zwei</div>',
+    );
+  });
+
+  it('reads back as the paragraphs it was written from', () => {
+    // htmlToText is what the signature preview and the outgoing text part both
+    // fold this shape back into — a blank line has to survive the round trip.
+    assert.equal(
+      htmlToText(spaceParagraphs('<p>Hallo,</p><p>danke für Ihre Nachricht.</p>')),
+      'Hallo,\n\ndanke für Ihre Nachricht.',
+    );
+  });
+});
+
 describe('ensureHtml', () => {
-  it('converts plain prose and passes markup through', () => {
+  it('converts plain prose and spaces markup paragraphs', () => {
     assert.equal(ensureHtml('Zeile 1\nZeile 2', 'text/plain'), '<div>Zeile 1</div><div>Zeile 2</div>');
-    assert.equal(ensureHtml('<p>schon Markup</p>', 'text/html'), '<p>schon Markup</p>');
+    assert.equal(ensureHtml('<p>schon Markup</p>', 'text/html'), '<div>schon Markup</div>');
   });
 
   it('keeps angle-bracketed prose as visible text', () => {
@@ -75,5 +129,43 @@ describe('ensureHtml', () => {
       ensureHtml(body, authoredContentType(body)),
       '<span>Bitte an &lt;info@example.com&gt; antworten.</span>',
     );
+  });
+});
+
+describe('composeBody', () => {
+  const compose = (body: string, type: string) => composeBody(body, type, authoredContentType(body));
+
+  it('stores HTML for the types Zammad renders as HTML', () => {
+    for (const type of ['email', 'note', 'phone', 'web']) {
+      assert.deepEqual(compose('<p>eins</p><p>zwei</p>', type), {
+        body: '<div>eins</div><div><br></div><div>zwei</div>',
+        content_type: 'text/html',
+      });
+    }
+  });
+
+  it('finishes the text itself for a channel that sends the body raw', () => {
+    // communicate_sms_job.rb sends article.body.first(160) — nothing converts
+    // it, so a <div> would be delivered spelled out and billed for.
+    for (const type of ['sms', 'telegram personal-message', 'whatsapp message', 'facebook feed post']) {
+      assert.deepEqual(compose('<p>eins</p><p>zwei</p>', type), {
+        body: 'eins\n\nzwei',
+        content_type: 'text/plain',
+      });
+    }
+  });
+
+  it('leaves prose for such a channel as authored', () => {
+    assert.deepEqual(compose('Ihr Termin ist bestätigt.', 'sms'), {
+      body: 'Ihr Termin ist bestätigt.',
+      content_type: 'text/plain',
+    });
+  });
+
+  it('converts a markup body for those channels rather than escaping it', () => {
+    assert.deepEqual(compose('<div>Hallo</div><div><br></div><div><b>Ada</b></div>', 'sms'), {
+      body: 'Hallo\n\nAda',
+      content_type: 'text/plain',
+    });
   });
 });

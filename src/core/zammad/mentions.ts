@@ -35,11 +35,29 @@ export interface MentionedUser {
   name: string;
 }
 
+/**
+ * A `@@token` that named nobody, and what the lookup said about it.
+ *
+ * Reported rather than raised, and reported rather than passed over. The token
+ * staying as written is the right outcome for the article — a typo must not cost
+ * the text somebody wrote — but on its own it repeats the failure this module
+ * exists to prevent: the note reads as intended to its author and the colleague
+ * is never told. The write already happened by the time anyone could look, so
+ * the answer has to carry the miss.
+ */
+export interface UnresolvedMention {
+  /** As written, without the `@@`. */
+  token: string;
+  /** Why it resolved to nobody, in the lookup's own words. */
+  reason: string;
+}
+
 export interface RewriteResult {
   body: string;
   /** `text/html` once a mention is present — the anchor needs it. */
   content_type: string;
   mentioned: MentionedUser[];
+  unresolved: UnresolvedMention[];
 }
 
 function escapeHtml(value: string): string {
@@ -60,6 +78,22 @@ function displayName(user: UserRecord, fallback: string): string {
 }
 
 /**
+ * Why a token resolved to nobody, said in a way the next attempt can act on.
+ *
+ * The lookup's own message is the useful part — it names the candidates when a
+ * term is ambiguous — so it is passed through rather than replaced. What it
+ * cannot know is the shape of the token it was handed: an unquoted `@@` stops at
+ * the first space, so `@@Jannik Pollmeier` reaches it as `Jannik` and a name that
+ * looked complete to its author was never searched for. That hint is added only
+ * for unquoted tokens, where it is the likely mistake.
+ */
+function reasonFor(error: unknown, wasQuoted: boolean): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (wasQuoted) return message;
+  return `${message} If the name contains a space, quote it: \`@@"First Last"\`.`;
+}
+
+/**
  * Rewrites `@@token` into a mention anchor.
  *
  * A plain-text body is escaped and promoted to HTML, because the anchor cannot
@@ -72,13 +106,15 @@ export async function rewriteMentions(
   context: { client: ZammadClient; lookup: LookupService; zammadUrl: string },
 ): Promise<RewriteResult> {
   MENTION.lastIndex = 0;
-  if (!MENTION.test(body)) return { body, content_type: contentType, mentioned: [] };
+  if (!MENTION.test(body)) return { body, content_type: contentType, mentioned: [], unresolved: [] };
 
   const wasPlain = contentType !== 'text/html';
   const base = context.zammadUrl.replace(/\/+$/, '');
 
   const segments: string[] = [];
   const mentioned = new Map<number, MentionedUser>();
+  /** Keyed by token, so a name misspelled the same way twice is reported once. */
+  const unresolved = new Map<string, UnresolvedMention>();
   let cursor = 0;
 
   MENTION.lastIndex = 0;
@@ -95,17 +131,18 @@ export async function rewriteMentions(
     if (raw.length > 0) {
       try {
         const [id] = await context.lookup.resolveUsers([raw]);
-        if (id !== undefined) {
-          const user = await context.client.get<UserRecord>(`/api/v1/users/${id}`);
-          const name = displayName(user ?? {}, raw);
-          mentioned.set(id, { id, name });
-          anchor =
-            `<a href="${base}/#user/profile/${id}" data-mention-user-id="${id}">` + `${escapeHtml(name)}</a>`;
-        }
-      } catch {
+        if (id === undefined) throw new Error(`no Zammad user matches "${raw}"`);
+        const user = await context.client.get<UserRecord>(`/api/v1/users/${id}`);
+        const name = displayName(user ?? {}, raw);
+        mentioned.set(id, { id, name });
+        anchor =
+          `<a href="${base}/#user/profile/${id}" data-mention-user-id="${id}">` + `${escapeHtml(name)}</a>`;
+      } catch (error) {
         // An unresolvable @@token stays as written. Failing the whole article
-        // over a typo would lose the text the caller actually wanted to record.
+        // over a typo would lose the text the caller actually wanted to record
+        // — but the caller is told, in `unresolved`, that nobody was mentioned.
         anchor = null;
+        unresolved.set(raw, { token: raw, reason: reasonFor(error, quoted !== undefined) });
       }
     }
 
@@ -118,12 +155,16 @@ export async function rewriteMentions(
   const tail = body.slice(cursor);
   segments.push(wasPlain ? escapeHtml(tail) : tail);
 
-  if (mentioned.size === 0) return { body, content_type: contentType, mentioned: [] };
+  // Nothing resolved, so nothing was rewritten: hand back the body as authored
+  // rather than a re-escaped copy of it. The misses still travel.
+  if (mentioned.size === 0)
+    return { body, content_type: contentType, mentioned: [], unresolved: [...unresolved.values()] };
 
   const rewritten = segments.join('');
   return {
     body: wasPlain ? rewritten.replace(/\r?\n/g, '<br>') : rewritten,
     content_type: 'text/html',
     mentioned: [...mentioned.values()],
+    unresolved: [...unresolved.values()],
   };
 }
