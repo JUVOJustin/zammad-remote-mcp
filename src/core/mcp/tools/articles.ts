@@ -1,11 +1,18 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { bytesToBase64, textFromBytes } from '../../util/base64.js';
-import { authoredContentType, ensureHtml, HTML_BODY_NOTE } from '../../zammad/compose.js';
-import { rewriteMentions } from '../../zammad/mentions.js';
+import { ToolInputError } from '../../util/errors.js';
+import {
+  authoredContentType,
+  composeBody,
+  HTML_BODY_NOTE,
+  mentionsNotCarried,
+} from '../../zammad/compose.js';
+import { hasMention, MENTION_NOTE, rewriteMentions } from '../../zammad/mentions.js';
 import {
   appendGroupSignature,
   appendSignatureFlag,
+  groupIdOf,
   type SignatureOutcome,
   ticketLoader,
 } from '../../zammad/signature.js';
@@ -165,8 +172,7 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
         '`internal: false` is actually delivered to the addresses in `to`/`cc`; the defaults (`note`, internal) ' +
         'record text without notifying anyone.\n\n' +
         `${HTML_BODY_NOTE}\n\n` +
-        'Mention a colleague by writing `@@jane@acme.com`, `@@jdoe` or `@@"Jane Doe"` in the body — they are ' +
-        'linked and notified. Keep such a note `internal: true`, or the customer sees the mention too.\n\n' +
+        `${MENTION_NOTE}\n\n` +
         "An email article is signed with the group's signature, as the reply composer does, unless " +
         '`append_signature` is turned off.',
       inputSchema: createInput.strict(),
@@ -181,19 +187,32 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
       const input = createInput.parse(rawInput);
       const context = withOnBehalfOf(base, input.on_behalf_of);
 
+      // The ticket is read once and shared: the mention lookup needs its group
+      // to offer the agents the UI would offer, and the signature needs it to
+      // pick a signature. Only fetched when something actually asks.
+      const loadTicket = ticketLoader(context.client, input.ticket_id);
+
       // `@@name` is rewritten into the anchor Zammad recognises; its own
       // create-callback turns that into the mention and the notification.
       // Mentions read the body as authored — before the HTML conversion, whose
       // escaping would break the `@@"Jane Doe"` quoting.
+      const wantsMention = hasMention(input.body);
+      // A type stored as text keeps no anchor, so the mention would not happen.
+      // Refused rather than filed silently — see zammad/compose.ts.
+      const notCarried = wantsMention ? mentionsNotCarried(input.type) : null;
+      if (notCarried) throw new ToolInputError(notCarried);
+
       const mentions = await rewriteMentions(input.body, authoredContentType(input.body), {
         client: context.client,
         lookup: context.lookup,
         zammadUrl: base.config.ZAMMAD_URL,
+        groupId: wantsMention ? await groupIdOf(loadTicket) : undefined,
       });
 
-      // Every article is written as text/html — see zammad/compose.ts. Plain
-      // prose is converted the way the UI converts pasted text.
-      let text = ensureHtml(mentions.body, mentions.content_type);
+      // The body and its content type are decided by the channel this article
+      // is going to — see zammad/compose.ts.
+      const composed = composeBody(mentions.body, input.type, mentions.content_type);
+      let text = composed.body;
       let signature: SignatureOutcome | undefined;
       if (input.append_signature) {
         const { body: signed, ...outcome } = await appendGroupSignature({
@@ -201,7 +220,7 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
           logger: context.logger,
           article: { ...input, body: text },
           // The reply composer signs with the group of the ticket it is on.
-          loadTicket: ticketLoader(context.client, input.ticket_id),
+          loadTicket,
         });
         text = signed;
         signature = outcome;
@@ -213,7 +232,7 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
         type: input.type,
         sender: input.sender,
         internal: input.internal,
-        content_type: 'text/html',
+        content_type: composed.content_type,
       };
       for (const key of ['subject', 'to', 'cc', 'in_reply_to', 'time_unit', 'origin_by'] as const) {
         if (input[key] !== undefined) body[key] = input[key];

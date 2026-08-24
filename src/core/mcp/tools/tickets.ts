@@ -2,13 +2,20 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { ToolInputError } from '../../util/errors.js';
 import type { BodyFormat } from '../../zammad/article-body.js';
-import { authoredContentType, ensureHtml, HTML_BODY_NOTE } from '../../zammad/compose.js';
+import {
+  authoredContentType,
+  composeBody,
+  ensureHtml,
+  HTML_BODY_NOTE,
+  mentionsNotCarried,
+} from '../../zammad/compose.js';
 import type { MentionedUser } from '../../zammad/mentions.js';
-import { rewriteMentions } from '../../zammad/mentions.js';
+import { hasMention, MENTION_NOTE, rewriteMentions } from '../../zammad/mentions.js';
 import { asTopLevel, leaf } from '../../zammad/selector.js';
 import {
   appendGroupSignature,
   appendSignatureFlag,
+  groupIdOf,
   type RenderContext,
   type SignatureOutcome,
   ticketLoader,
@@ -327,23 +334,34 @@ async function articlePayload(
   // on the finished HTML body.
   article: z.infer<typeof articleInputSchema>,
   context: ToolContext,
+  /** The group this article is filed under, for the mention lookup. */
+  groupId: () => Promise<number | undefined>,
 ): Promise<{ payload: Record<string, unknown>; mentioned: MentionedUser[] }> {
+  const wantsMention = hasMention(article.body);
+  // A type stored as text keeps no anchor, so the mention would not happen.
+  // Refused rather than filed silently — see zammad/compose.ts.
+  const notCarried = wantsMention ? mentionsNotCarried(article.type) : null;
+  if (notCarried) throw new ToolInputError(notCarried);
+
   // Mentions read the body as authored — before the HTML conversion, whose
   // escaping would break the `@@"Jane Doe"` quoting.
   const mentions = await rewriteMentions(article.body, authoredContentType(article.body), {
     client: context.client,
     lookup: context.lookup,
     zammadUrl: context.config.ZAMMAD_URL,
+    groupId: wantsMention ? await groupId() : undefined,
   });
 
+  // The body and its content type are decided by the channel this article is
+  // going to — see zammad/compose.ts.
+  const composed = composeBody(mentions.body, article.type, mentions.content_type);
+
   const payload: Record<string, unknown> = {
-    // Every article is written as text/html — see zammad/compose.ts. Plain
-    // prose is converted the way the UI converts pasted text.
-    body: ensureHtml(mentions.body, mentions.content_type),
+    body: composed.body,
     type: article.type,
     sender: article.sender,
     internal: article.internal,
-    content_type: 'text/html',
+    content_type: composed.content_type,
   };
   for (const key of ['subject', 'to', 'cc', 'in_reply_to', 'time_unit', 'origin_by'] as const) {
     if (article[key] !== undefined) payload[key] = article[key];
@@ -619,8 +637,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
         'Create a ticket together with its first article. `group` and `customer` are required by Zammad. Note that ' +
         'an article with `type: "email"` and `internal: false` is delivered to the customer — the defaults ' +
         '(`note`, internal) do not send anything.\n\n' +
-        'Mention a colleague in the article body by writing `@@jane@acme.com`, `@@jdoe` or `@@"Jane Doe"` — they ' +
-        'are linked and notified. Keep the article `internal: true`, or the customer sees the mention too.\n\n' +
+        `${MENTION_NOTE}\n\n` +
         'An email article is signed with the group signature unless `article.append_signature` is turned off.',
       inputSchema: createTicketInput.strict(),
       annotations: {
@@ -643,7 +660,12 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
         );
       }
 
-      const article = await articlePayload(input.article, context);
+      // The group is this call's own argument, so the mention lookup needs no
+      // round trip: the ticket does not exist yet to be read.
+      const article = await articlePayload(input.article, context, async () => {
+        const [groupId] = await context.lookup.resolveGroups([input.group_id ?? input.group ?? '']);
+        return groupId;
+      });
 
       // Zammad never signs an article server-side — the agent UI composes the
       // signature into the body before it posts. Without this, a ticket opened
@@ -719,8 +741,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
         'Moving a ticket into a pending state requires `pending_time`. Passing `customer` moves the ticket and ' +
         'lets the organization follow; `organization_id` only picks between the organizations that customer ' +
         'already belongs to.\n\n' +
-        'Mention a colleague in the article body by writing `@@jane@acme.com`, `@@jdoe` or `@@"Jane Doe"` — they ' +
-        'are linked and notified. Keep the article `internal: true`, or the customer sees the mention too.\n\n' +
+        `${MENTION_NOTE}\n\n` +
         'An email article is signed with the group signature unless `article.append_signature` is turned off.',
       inputSchema: updateTicketInput.strict(),
       annotations: {
@@ -742,13 +763,21 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       let mentioned: MentionedUser[] = [];
       let signature: SignatureOutcome | undefined;
       if (input.article) {
-        const article = await articlePayload(input.article, context);
+        const loadTicket = ticketLoader(context.client, id);
+        const moved = input.group_id ?? input.group;
+        // The same precedence the signature uses: a group this call is moving
+        // the ticket to is the one the article is filed under, so it is also
+        // the one whose agents may be mentioned.
+        const article = await articlePayload(input.article, context, async () => {
+          if (moved !== undefined) return (await context.lookup.resolveGroups([moved]))[0];
+          return groupIdOf(loadTicket);
+        });
         signature = await signArticle(context, input.article, article.payload, {
           // A group moved in this same call is the one the UI signs with —
           // `setArticleTypePost` prefers the pending group over the stored one.
-          group: input.group_id ?? input.group,
+          group: moved,
           ticket: { title: input.title, state: input.state, priority: input.priority },
-          loadTicket: ticketLoader(context.client, id),
+          loadTicket,
         });
         body.article = article.payload;
         mentioned = article.mentioned;
@@ -911,12 +940,18 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
       let article: Record<string, unknown> | undefined;
 
       if (input.article) {
+        // No `groupId`: this one note is filed on many tickets, which need not
+        // share a group, so there is no single set of agents to narrow to. The
+        // agent filter still applies, and Zammad still refuses per ticket any
+        // mention of someone without access to that ticket's group.
         const mentions = await rewriteMentions(input.article.body, authoredContentType(input.article.body), {
           client: context.client,
           lookup: context.lookup,
           zammadUrl: context.config.ZAMMAD_URL,
         });
         article = {
+          // HTML unconditionally, unlike the other two writing paths: the type
+          // below is fixed to a note, which is read in the browser.
           body: ensureHtml(mentions.body, mentions.content_type),
           content_type: 'text/html',
           // Fixed, not taken from the caller: the bulk form has no other choice.

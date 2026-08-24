@@ -65,6 +65,24 @@ export interface Signature {
   active: boolean;
 }
 
+/** A user a `@@mention` may name: an agent, with the name to print for them. */
+export interface MentionableUser {
+  id: number;
+  name: string;
+}
+
+/** One search hit, with the two identities a token may name them by. */
+export interface MentionCandidate extends MentionableUser {
+  email?: string;
+  login?: string;
+}
+
+/** What a mention anchor shows — the full name, falling back to what identifies them. */
+function displayName(user: ZammadUser, fallback: string): string {
+  const full = [user.firstname, user.lastname].filter(Boolean).join(' ').trim();
+  return full || user.email || user.login || fallback;
+}
+
 export interface ZammadUser {
   id: number;
   login?: string;
@@ -328,6 +346,77 @@ export class LookupService {
       ids.push(await this.resolveOneUser(value));
     }
     return ids;
+  }
+
+  /**
+   * The agents a `@@token` could be naming — candidates, not an answer.
+   *
+   * Mirrors `App.Mention.searchUser` (mention.coffee), which is what the agent
+   * UI's `@@` picker offers: `/api/v1/users/search` narrowed to the roles that
+   * carry `ticket.agent` and to the users with `read` access to the ticket's
+   * group. Both filters are honoured by `User.search` on the database and the
+   * Elasticsearch path alike (`app/models/user/search.rb`); `permissions` is
+   * turned into those role ids by `search_params_pre`, so the roles do not have
+   * to be fetched and matched here.
+   *
+   * Narrowing is not a nicety. `Validations::MentionValidator` refuses a mention
+   * of anyone without `agent_read_access?` to the ticket, and both writing
+   * endpoints set `check_mentions_raises_error = true`
+   * (`creates_ticket_articles.rb`), so mentioning a customer does not quietly do
+   * nothing — it fails the article with a 422 and nothing is written at all.
+   *
+   * What comes back is still only what the search matched, and the search
+   * matches prefixes: "Jan" returns Janine, "me" returns Melanie. Deciding which
+   * of these the author actually named is `mentions.ts`, which is the only place
+   * that can see what they wrote.
+   */
+  async mentionableAgents(term: string, groupId?: number): Promise<MentionCandidate[]> {
+    const key = this.key(`mention:${groupId ?? 'any'}:${term.toLowerCase()}`);
+    return this.cache.read(key, async () => {
+      const users = await this.client.get<ZammadUser[]>('/api/v1/users/search', {
+        query: term,
+        permissions: 'ticket.agent',
+        // Rails reads `group_ids[7]=read` as `{group_ids: {"7" => "read"}}`,
+        // which is the shape `User.search` expects.
+        ...(groupId === undefined ? {} : { [`group_ids[${groupId}]`]: 'read' }),
+        limit: 25,
+      });
+
+      return (
+        (Array.isArray(users) ? users : [])
+          // Zammad's search does not exclude deactivated accounts — it sorts by
+          // `active` rather than filtering on it. The group filter would have
+          // dropped them (`User.group_access` is `where(active: true)` on both its
+          // direct and its role half), but it is not always there to do it: a bulk
+          // update spans many groups and passes none. A colleague who has left
+          // cannot be mentioned — `agent_read_access?` is false for anyone
+          // inactive — so offering them can only produce a 422 or a confusing
+          // candidate in an ambiguity error.
+          .filter((user) => user.active !== false)
+          .map((user) => ({
+            id: user.id,
+            name: displayName(user, String(user.id)),
+            email: user.email,
+            login: user.login,
+          }))
+      );
+    });
+  }
+
+  /**
+   * The agent a numeric id names, or `undefined` if that id is not one.
+   *
+   * An id is an identity, so it needs no name to match — but it does need the
+   * same test of who may be mentioned. Rather than guess at permissions from the
+   * user record, the id is turned into the address it belongs to and put through
+   * `mentionableAgents`, so an id belonging to a customer, or to an agent
+   * without access to the group, is refused exactly like the name of one.
+   */
+  async mentionableAgentById(id: number, groupId?: number): Promise<MentionCandidate | undefined> {
+    const user = await this.client.get<ZammadUser>(`/api/v1/users/${id}`).catch(() => undefined);
+    const identifier = user?.email || user?.login;
+    if (!identifier) return undefined;
+    return (await this.mentionableAgents(identifier, groupId)).find((agent) => agent.id === id);
   }
 
   private async resolveOneUser(term: string): Promise<number> {

@@ -225,9 +225,13 @@ describe('signature lookup against the states an instance can be in', () => {
       });
 
       assert.equal(created.signature.appended, false, `a ${type} article was signed`);
+      // An SMS is transmitted as the body is stored — communicate_sms_job.rb
+      // sends `article.body.first(160)` and converts nothing — so it is stored
+      // as the text it will be sent as, where the rest are read in a browser.
       assert.equal(
         await firstArticleBody(created.ticket.id),
-        '<span>Opened by the integration suite.</span>',
+        type === 'sms' ? 'Opened by the integration suite.' : '<span>Opened by the integration suite.</span>',
+        `a ${type} article was not stored in the form its channel carries`,
       );
     }
   });
@@ -334,7 +338,7 @@ describe('the rule against a doubled sign-off', () => {
   });
 });
 
-describe('every write is text/html, against what Zammad actually stores', () => {
+describe('what Zammad actually stores for each channel', () => {
   it('stores a plain email body as text/html with the signature appended as markup', async (t) => {
     if (!ready) return t.skip(skipReason);
 
@@ -412,7 +416,7 @@ describe('every write is text/html, against what Zammad actually stores', () => 
     assert.equal(String(listed.articles[0].body), 'Zeile eins\nZeile zwei');
   });
 
-  it('takes a body that already carries markup as it is', async (t) => {
+  it('takes a body that already carries markup as it is, but spaces its paragraphs', async (t) => {
     if (!ready) return t.skip(skipReason);
 
     const created = await callTool('zammad_create_ticket', {
@@ -424,8 +428,16 @@ describe('every write is text/html, against what Zammad actually stores', () => 
 
     assert.equal(created.signature.appended, true, created.signature.reason);
     const body = await firstArticleBody(created.ticket.id);
-    assert.ok(body.includes('<p>Hallo,</p>'), body);
     assert.ok(!body.includes('&lt;p&gt;'), `authored markup must not be escaped: ${body}`);
+
+    // `<p>` is the one tag the outgoing mail template flattens: it ends
+    // `p { margin: 0 }`, and html2text reads `</p><p>` as a single newline. The
+    // paragraphs arrive as the div-and-<br> shape the UI composes instead.
+    assert.ok(body.startsWith('<div>Hallo,</div><div><br></div><div>danke für Ihre Nachricht.</div>'), body);
+
+    // And read back, the blank line the author wrote is the blank line returned.
+    const listed = await callTool('zammad_list_ticket_articles', { ticket_id: created.ticket.id });
+    assert.equal(String(listed.articles[0].body), 'Hallo,\n\ndanke für Ihre Nachricht.');
   });
 
   it('tells every writing tool to write HTML rather than Markdown', async (t) => {
