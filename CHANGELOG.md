@@ -4,7 +4,19 @@ Notable changes per release. The section matching a tag is used as that release'
 notes, with the pull-request list appended automatically — see
 `.github/workflows/deploy.yml`.
 
-## Unreleased
+## 3.2.0
+
+What a written article looks like by the time somebody reads it, which turned
+out to depend on the channel far more than this server assumed. Three findings,
+each from reading what Zammad does with a body rather than from what the body
+looks like on the way in.
+
+Two of them change what a caller sees. A `@@mention` that cannot be made now
+fails the call rather than filing the article without it — including forms that
+used to be accepted, such as a colleague's first name on its own. And an article
+on a text-only channel is stored as text rather than as HTML. Nothing in any
+tool's schema changed, so a caller that writes HTML bodies and mentions people
+by email address or login carries on unaffected.
 
 ### A `@@mention` either happens or fails the call
 
@@ -66,8 +78,8 @@ reaches the same place from the other side: those composers run
 `App.Utils.html2text` over the body, which flattens any anchor its own picker
 inserted.
 
-`mentions_unresolved`, added earlier in this release, is gone with the behaviour
-that needed it. A mention is now reported in `mentioned` or the call failed.
+A mention is reported in `mentioned`, or the call failed. There is no third
+outcome any more.
 
 ### A paragraph written as `<p>` reaches the reader as one
 
