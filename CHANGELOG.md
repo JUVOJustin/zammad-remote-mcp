@@ -35,7 +35,24 @@ customers.
 
 With the narrowing, `@@Jannik Pollmeier` resolves — and the surname the token
 could not reach is now taken with it, rather than left standing beside an anchor
-that already prints the full name.
+that already prints the full name. It is taken only as far as the word ends: for
+an agent called Jan Ott, `@@Jan Ottmar` would otherwise have linked "Jan Ott" and
+left "mar hat angerufen", reading back as the sentence the author wrote while the
+mention went to somebody else.
+
+A name is accepted only where the token is a whole part of it. Zammad's user
+search matches prefixes — "me" returns Melanie, Memtime and Melitta — so `@@Jan`
+would otherwise resolve to the one agent called Janine and mention her, with
+nothing in the article to show it. An email address, a login or a numeric user id
+is taken as the identity it is; a shortened first name has to be spelled out or
+replaced by one of those, which is what the error now says.
+
+Deactivated accounts are left out. Zammad's search sorts by `active` rather than
+filtering on it, and the group filter that would have dropped them
+(`User.group_access` is `where(active: true)` on both halves) is absent where
+there is no single group — a bulk update spans many. A colleague who has left
+cannot be mentioned at all, so offering them could only produce a 422 or a
+confusing candidate in an ambiguity error.
 
 An article type stored as plain text carries no anchor at all, so a `@@` in an
 SMS, Telegram, Facebook or WhatsApp body is refused outright. The agent UI

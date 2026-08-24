@@ -67,9 +67,10 @@ function escapeHtml(value: string): string {
  * writing `@@Jannik` and assuming silence meant success.
  */
 export const MENTION_NOTE =
-  'Mention a colleague by writing `@@jane@acme.com`, `@@jdoe` or `@@"Jane Doe"` in the body — they are ' +
-  'linked and notified. Only agents with access to the ticket group can be mentioned, and the name must ' +
-  'match exactly one of them: a name that matches none or several fails the call and writes nothing, so ' +
+  'Mention a colleague by writing `@@jane@acme.com`, `@@jdoe`, `@@"Jane Doe"` or `@@42` in the body — they ' +
+  'are linked and notified. Only agents with access to the ticket group can be mentioned, and the token has ' +
+  'to name exactly one of them: an email address, a login, a user id, or a whole part of their name — ' +
+  '`@@Jan` does not reach Janine. A token naming none or several fails the call and writes nothing, so ' +
   'prefer an email address or login. Keep the article `internal: true`, or the customer sees the mention too.';
 
 /**
@@ -85,13 +86,22 @@ export const MENTION_NOTE =
  * on with the rest of that name, those words are part of the mention and are
  * consumed with it. Nothing else is touched: an email address or a login does
  * not prefix the name it resolved to, so nothing is ever swallowed after one.
+ *
+ * The rest of the name has to end where a word ends. Without that, an agent
+ * called Jan Ott turns "@@Jan Ottmar hat angerufen" into a link on "Jan Ott"
+ * followed by "mar hat angerufen" — which reads back as the sentence the author
+ * wrote while the mention went to somebody else, and leaves nothing behind to
+ * notice. Stopping at the word boundary leaves " Ottmar" standing next to a link
+ * that already says "Jan Ott", so the mistake is on the page.
  */
 function nameTail(name: string, token: string, rest: string): number {
   if (!name.toLowerCase().startsWith(token.toLowerCase())) return 0;
   const remainder = name.slice(token.length).trim();
   if (!remainder) return 0;
   const escaped = remainder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`^\\s+${escaped}`, 'i').exec(rest)?.[0].length ?? 0;
+  // \p{L}\p{N} rather than \w: the word that must not be cut into can be
+  // "Ottmar" or "Müller" or "Nyström".
+  return new RegExp(`^\\s+${escaped}(?![\\p{L}\\p{N}_])`, 'iu').exec(rest)?.[0].length ?? 0;
 }
 
 /** Does this body ask for a mention at all? */

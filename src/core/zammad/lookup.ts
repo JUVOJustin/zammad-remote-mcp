@@ -71,6 +71,27 @@ export interface MentionableUser {
   name: string;
 }
 
+/**
+ * Does this user actually go by `needle`, or did they merely turn up in the
+ * search for it?
+ *
+ * Zammad's user search matches on prefixes: querying "me" returns Melanie,
+ * Memtime and Melitta. Left at that, `@@Jan` would resolve to the single agent
+ * called Janine and mention her — the author's word never appeared in her name,
+ * and nothing in the article would show it. So a name is accepted only where the
+ * token is one of its whole parts, or the whole of it; an email address or a
+ * login is accepted as itself, being an identity rather than a name.
+ *
+ * The cost is that a shortened first name has to be spelled out or replaced by
+ * an address, which is what the error says. The alternative is a mention that
+ * reaches the wrong colleague and reads as though it reached the right one.
+ */
+function goesBy(user: ZammadUser, needle: string): boolean {
+  if (user.email?.toLowerCase() === needle || user.login?.toLowerCase() === needle) return true;
+  const name = [user.firstname, user.lastname].filter(Boolean).join(' ').trim().toLowerCase();
+  return name === needle || name.split(/\s+/).includes(needle);
+}
+
 /** What a mention anchor shows — the full name, falling back to what identifies them. */
 function displayName(user: ZammadUser, fallback: string): string {
   const full = [user.firstname, user.lastname].filter(Boolean).join(' ').trim();
@@ -368,6 +389,24 @@ export class LookupService {
    * path exists to prevent.
    */
   async resolveMentionableUser(term: string, groupId?: number): Promise<MentionableUser> {
+    // A numeric token is an identity, not a name, so it is turned into one
+    // before the search rather than handed to it: `query: "17"` would look for
+    // the characters, not the user. Resolving it to an email or login and then
+    // going through the same filters keeps one rule for who may be mentioned —
+    // an id belonging to a customer, or to an agent without access to the
+    // group, is refused exactly like the name of one.
+    if (/^\d+$/.test(term.trim())) {
+      const user = await this.client.get<ZammadUser>(`/api/v1/users/${term.trim()}`);
+      const identifier = user?.email || user?.login;
+      if (!identifier) {
+        throw new ToolInputError(
+          `Zammad user ${term} has no email address or login to be mentioned by. Pass the colleague's ` +
+            'email address or login instead.',
+        );
+      }
+      return this.resolveMentionableUser(identifier, groupId);
+    }
+
     const key = this.key(`mention:${groupId ?? 'any'}:${term.toLowerCase()}`);
     return this.cache.read(key, async () => {
       const users = await this.client.get<ZammadUser[]>('/api/v1/users/search', {
@@ -379,22 +418,30 @@ export class LookupService {
         limit: 25,
       });
 
-      const candidates = Array.isArray(users) ? users : [];
+      const needle = term.trim().toLowerCase();
+      const candidates = (Array.isArray(users) ? users : [])
+        // Zammad's search does not exclude deactivated accounts — it sorts by
+        // `active` rather than filtering on it. The group filter would have
+        // dropped them (`User.group_access` is `where(active: true)` on both its
+        // direct and its role half), but it is not always there to do it: a bulk
+        // update spans many groups and passes none. A colleague who has left
+        // cannot be mentioned — `agent_read_access?` is false for anyone
+        // inactive — so offering them can only produce a 422 or a confusing
+        // candidate in an ambiguity error.
+        .filter((user) => user.active !== false)
+        .filter((user) => goesBy(user, needle));
+
       if (candidates.length === 0) {
         throw new ToolInputError(
-          `No agent matches "${term}"${groupId === undefined ? '' : " among those with access to the ticket's group"}. ` +
+          `No agent goes by "${term}"${groupId === undefined ? '' : " among those with access to the ticket's group"}. ` +
             'A mention reaches agents only — a customer cannot be mentioned, and Zammad rejects the whole ' +
-            'article if one is. Pass an email address, a login, or a full name in quotes (`@@"First Last"`), ' +
-            'and use `zammad_search_users` to find the right account.',
+            'article if one is. The name has to match a whole part of theirs, so pass an email address, a ' +
+            'login, a numeric user id, or a full name in quotes (`@@"First Last"`); `zammad_search_users` ' +
+            'finds the right account.',
         );
       }
 
-      const needle = term.trim().toLowerCase();
-      const exact = candidates.find(
-        (u) => u.email?.toLowerCase() === needle || u.login?.toLowerCase() === needle,
-      );
-      const chosen = exact ?? (candidates.length === 1 ? candidates[0] : undefined);
-      if (!chosen) {
+      if (candidates.length > 1) {
         const listed = candidates
           .slice(0, 10)
           .map(
@@ -402,11 +449,12 @@ export class LookupService {
           )
           .join('; ');
         throw new ToolInputError(
-          `"${term}" matches ${candidates.length} agents, so there is no one to mention. Pass an exact ` +
-            `email address or login — a full name needs quoting as \`@@"First Last"\`. Candidates — ${listed}`,
+          `"${term}" is the name of ${candidates.length} agents, so there is no one to mention. Pass an ` +
+            `email address, a login or a numeric user id instead. Candidates — ${listed}`,
         );
       }
 
+      const chosen = candidates[0]!;
       return { id: chosen.id, name: displayName(chosen, term) };
     });
   }

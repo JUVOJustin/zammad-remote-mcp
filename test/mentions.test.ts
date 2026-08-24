@@ -107,6 +107,15 @@ describe('rewriteMentions', () => {
     );
   });
 
+  it('stops the swallowed surname at a word boundary', async () => {
+    // With an agent called Jan Ott, eating "Ott" out of "Ottmar" would leave a
+    // sentence that reads exactly as written while the mention went elsewhere.
+    const context = stub({ jan: { id: 9, name: 'Jan Ott' } });
+    const result = await rewriteMentions('@@Jan Ottmar hat angerufen', 'text/plain', context);
+
+    assert.ok(result.body.endsWith('</a> Ottmar hat angerufen'), result.body);
+  });
+
   it('leaves the sentence alone when the token is not the start of the name', async () => {
     // A login or an address does not prefix the name it resolved to, so the next
     // word is the caller's sentence and not part of the mention.
