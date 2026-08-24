@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
-import { callTool, type Json, skipReason, startHarness, stopHarness } from './harness.js';
+import {
+  callTool,
+  callToolExpectingError,
+  type Json,
+  skipReason,
+  startHarness,
+  stopHarness,
+} from './harness.js';
 import {
   api,
   CUSTOMER_EMAIL,
@@ -128,18 +135,99 @@ describe('@@ mentions against a real Zammad', () => {
     assert.deepEqual(await mentionsFor(ticket.id), []);
   });
 
-  it('keeps an unresolvable @@token as text instead of failing', async (t) => {
+  it('refuses an unresolvable @@token rather than filing the article without it', async (t) => {
     if (!ready) return t.skip(skipReason);
 
+    // check_mentions is create-only, so an article filed without its anchor can
+    // never be given the mention afterwards. Refusing is the only way back.
     const ticket = await createTicket('Unknown mention');
-    const result = await callTool('zammad_create_article', {
+    const message = await callToolExpectingError('zammad_create_article', {
       ticket_id: ticket.id,
-      body: '@@nobody@example.invalid should stay literal',
+      body: '@@nobody@example.invalid should not be filed',
       internal: true,
     });
 
-    const stored = await api<Json>(`/api/v1/ticket_articles/${result.article.id}`);
-    assert.ok(stored.body.includes('@@nobody@example.invalid'), stored.body);
+    assert.match(message, /No agent is named "nobody@example.invalid"/);
     assert.deepEqual(await mentionsFor(ticket.id), []);
+    const articles = await api<Json[]>(`/api/v1/ticket_articles/by_ticket/${ticket.id}`);
+    assert.equal(articles.length, 1, `only the opening article should exist: ${JSON.stringify(articles)}`);
+  });
+
+  it('refuses a customer, whom Zammad would reject anyway', async (t) => {
+    if (!ready) return t.skip(skipReason);
+
+    // Validations::MentionValidator refuses anyone without agent access, and
+    // check_mentions_raises_error turns that into a 422 that loses the article.
+    // Narrowing the search to ticket.agent is what keeps it from getting there.
+    const ticket = await createTicket('Customer mention');
+    const message = await callToolExpectingError('zammad_create_article', {
+      ticket_id: ticket.id,
+      body: `@@${CUSTOMER_EMAIL} cannot be mentioned`,
+      internal: true,
+    });
+
+    assert.match(message, /No agent is named/);
+    assert.deepEqual(await mentionsFor(ticket.id), []);
+  });
+
+  it('refuses a first name, which names nobody on its own', async (t) => {
+    if (!ready) return t.skip(skipReason);
+
+    // Zammad's user search matches prefixes, so the first name does find the
+    // agent — and taking that hit is how the wrong colleague gets mentioned.
+    const ticket = await createTicket('First name mention');
+    const message = await callToolExpectingError('zammad_create_article', {
+      ticket_id: ticket.id,
+      body: `@@${agent.firstname} please look`,
+      internal: true,
+    });
+
+    assert.match(message, new RegExp(`No agent is named "${agent.firstname}"`));
+    // The refusal has to say who it did find, or there is no way forward.
+    assert.match(message, new RegExp(`${agent.firstname} ${agent.lastname}`));
+    assert.deepEqual(await mentionsFor(ticket.id), []);
+  });
+
+  it('records a mention written as the whole name', async (t) => {
+    if (!ready) return t.skip(skipReason);
+
+    const ticket = await createTicket('Full name mention');
+    const result = await callTool('zammad_create_article', {
+      ticket_id: ticket.id,
+      body: `@@${agent.firstname} ${agent.lastname} please look`,
+      internal: true,
+    });
+
+    assert.deepEqual(
+      result.mentioned?.map((user: Json) => user.id),
+      [agent.id],
+    );
+
+    const stored = await api<Json>(`/api/v1/ticket_articles/${result.article.id}`);
+    // The name is the mention, not text left standing beside it.
+    assert.ok(!stored.body.includes(`${agent.firstname} ${agent.lastname} ${agent.firstname}`), stored.body);
+    assert.match(stored.body, new RegExp(`data-mention-user-id="${agent.id}"[^<]*>[^<]*</a> please look`));
+
+    const mentions = await waitForMention(ticket.id, agent.id);
+    assert.ok(mentions.some((mention) => mention.user_id === agent.id));
+  });
+
+  it('records a mention written as a numeric user id', async (t) => {
+    if (!ready) return t.skip(skipReason);
+
+    const ticket = await createTicket('Id mention');
+    const result = await callTool('zammad_create_article', {
+      ticket_id: ticket.id,
+      body: `@@${agent.id} please look`,
+      internal: true,
+    });
+
+    assert.deepEqual(
+      result.mentioned?.map((user: Json) => user.id),
+      [agent.id],
+    );
+
+    const mentions = await waitForMention(ticket.id, agent.id);
+    assert.ok(mentions.some((mention) => mention.user_id === agent.id));
   });
 });
