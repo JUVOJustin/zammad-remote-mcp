@@ -33,19 +33,25 @@ half-worked — it failed the article with a 422. Narrowing also removes most
 ambiguity, since the four users matching "Jannik" are one agent and three
 customers.
 
-With the narrowing, `@@Jannik Pollmeier` resolves — and the surname the token
-could not reach is now taken with it, rather than left standing beside an anchor
-that already prints the full name. It is taken only as far as the word ends: for
-an agent called Jan Ott, `@@Jan Ottmar` would otherwise have linked "Jan Ott" and
-left "mar hat angerufen", reading back as the sentence the author wrote while the
-mention went to somebody else.
+A name is matched whole or not at all. Zammad's user search matches prefixes —
+"me" returns Melanie, Memtime and Melitta — so resolving the token on its own
+would let `@@Jan` reach the one agent called Janine and mention her, with nothing
+in the article to show it. The token is now what asks and the written text is
+what decides: a candidate is the one named when the text spells out their whole
+name, or when the token is an email address, a login or a numeric user id that
+is theirs. `@@Jan` names nobody and says so, listing the agents whose names start
+that way so the next attempt can spell one out.
 
-A name is accepted only where the token is a whole part of it. Zammad's user
-search matches prefixes — "me" returns Melanie, Memtime and Melitta — so `@@Jan`
-would otherwise resolve to the one agent called Janine and mention her, with
-nothing in the article to show it. An email address, a login or a numeric user id
-is taken as the identity it is; a shortened first name has to be spelled out or
-replaced by one of those, which is what the error now says.
+Since the token grammar stops at the first space, an unquoted `@@Jan Ott` is
+matched against the text that carries on past it, and the name is consumed as
+far as it reaches. It has to end where a word ends: `@@Jan Ottmar` does not name
+Jan Ott, where before it would have linked his name and left "mar hat angerufen"
+behind — reading back as the sentence the author wrote while the mention went
+somewhere else.
+
+A numeric id is turned into the address it belongs to and put through the same
+filters, so `@@42` works and an id belonging to a customer is refused exactly
+like the name of one.
 
 Deactivated accounts are left out. Zammad's search sorts by `active` rather than
 filtering on it, and the group filter that would have dropped them

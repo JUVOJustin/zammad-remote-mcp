@@ -71,25 +71,10 @@ export interface MentionableUser {
   name: string;
 }
 
-/**
- * Does this user actually go by `needle`, or did they merely turn up in the
- * search for it?
- *
- * Zammad's user search matches on prefixes: querying "me" returns Melanie,
- * Memtime and Melitta. Left at that, `@@Jan` would resolve to the single agent
- * called Janine and mention her — the author's word never appeared in her name,
- * and nothing in the article would show it. So a name is accepted only where the
- * token is one of its whole parts, or the whole of it; an email address or a
- * login is accepted as itself, being an identity rather than a name.
- *
- * The cost is that a shortened first name has to be spelled out or replaced by
- * an address, which is what the error says. The alternative is a mention that
- * reaches the wrong colleague and reads as though it reached the right one.
- */
-function goesBy(user: ZammadUser, needle: string): boolean {
-  if (user.email?.toLowerCase() === needle || user.login?.toLowerCase() === needle) return true;
-  const name = [user.firstname, user.lastname].filter(Boolean).join(' ').trim().toLowerCase();
-  return name === needle || name.split(/\s+/).includes(needle);
+/** One search hit, with the two identities a token may name them by. */
+export interface MentionCandidate extends MentionableUser {
+  email?: string;
+  login?: string;
 }
 
 /** What a mention anchor shows — the full name, falling back to what identifies them. */
@@ -364,7 +349,7 @@ export class LookupService {
   }
 
   /**
-   * The one agent a `@@token` names, or an error saying why there is not one.
+   * The agents a `@@token` could be naming — candidates, not an answer.
    *
    * Mirrors `App.Mention.searchUser` (mention.coffee), which is what the agent
    * UI's `@@` picker offers: `/api/v1/users/search` narrowed to the roles that
@@ -379,34 +364,13 @@ export class LookupService {
    * endpoints set `check_mentions_raises_error = true`
    * (`creates_ticket_articles.rb`), so mentioning a customer does not quietly do
    * nothing — it fails the article with a 422 and nothing is written at all.
-   * Offering the same candidates the UI offers is what keeps that from
-   * happening; it also removes most of the ambiguity, since the four users
-   * matching "Jannik" on a real instance are one agent and three customers.
    *
-   * Ambiguity that survives is an error rather than a guess. A mention is a
-   * notification to a named person: picking one of several is how the wrong
-   * colleague gets told, and picking none silently is the failure this whole
-   * path exists to prevent.
+   * What comes back is still only what the search matched, and the search
+   * matches prefixes: "Jan" returns Janine, "me" returns Melanie. Deciding which
+   * of these the author actually named is `mentions.ts`, which is the only place
+   * that can see what they wrote.
    */
-  async resolveMentionableUser(term: string, groupId?: number): Promise<MentionableUser> {
-    // A numeric token is an identity, not a name, so it is turned into one
-    // before the search rather than handed to it: `query: "17"` would look for
-    // the characters, not the user. Resolving it to an email or login and then
-    // going through the same filters keeps one rule for who may be mentioned —
-    // an id belonging to a customer, or to an agent without access to the
-    // group, is refused exactly like the name of one.
-    if (/^\d+$/.test(term.trim())) {
-      const user = await this.client.get<ZammadUser>(`/api/v1/users/${term.trim()}`);
-      const identifier = user?.email || user?.login;
-      if (!identifier) {
-        throw new ToolInputError(
-          `Zammad user ${term} has no email address or login to be mentioned by. Pass the colleague's ` +
-            'email address or login instead.',
-        );
-      }
-      return this.resolveMentionableUser(identifier, groupId);
-    }
-
+  async mentionableAgents(term: string, groupId?: number): Promise<MentionCandidate[]> {
     const key = this.key(`mention:${groupId ?? 'any'}:${term.toLowerCase()}`);
     return this.cache.read(key, async () => {
       const users = await this.client.get<ZammadUser[]>('/api/v1/users/search', {
@@ -418,45 +382,41 @@ export class LookupService {
         limit: 25,
       });
 
-      const needle = term.trim().toLowerCase();
-      const candidates = (Array.isArray(users) ? users : [])
-        // Zammad's search does not exclude deactivated accounts — it sorts by
-        // `active` rather than filtering on it. The group filter would have
-        // dropped them (`User.group_access` is `where(active: true)` on both its
-        // direct and its role half), but it is not always there to do it: a bulk
-        // update spans many groups and passes none. A colleague who has left
-        // cannot be mentioned — `agent_read_access?` is false for anyone
-        // inactive — so offering them can only produce a 422 or a confusing
-        // candidate in an ambiguity error.
-        .filter((user) => user.active !== false)
-        .filter((user) => goesBy(user, needle));
-
-      if (candidates.length === 0) {
-        throw new ToolInputError(
-          `No agent goes by "${term}"${groupId === undefined ? '' : " among those with access to the ticket's group"}. ` +
-            'A mention reaches agents only — a customer cannot be mentioned, and Zammad rejects the whole ' +
-            'article if one is. The name has to match a whole part of theirs, so pass an email address, a ' +
-            'login, a numeric user id, or a full name in quotes (`@@"First Last"`); `zammad_search_users` ' +
-            'finds the right account.',
-        );
-      }
-
-      if (candidates.length > 1) {
-        const listed = candidates
-          .slice(0, 10)
-          .map(
-            (u) => `${[u.firstname, u.lastname].filter(Boolean).join(' ')} <${u.email ?? u.login ?? u.id}>`,
-          )
-          .join('; ');
-        throw new ToolInputError(
-          `"${term}" is the name of ${candidates.length} agents, so there is no one to mention. Pass an ` +
-            `email address, a login or a numeric user id instead. Candidates — ${listed}`,
-        );
-      }
-
-      const chosen = candidates[0]!;
-      return { id: chosen.id, name: displayName(chosen, term) };
+      return (
+        (Array.isArray(users) ? users : [])
+          // Zammad's search does not exclude deactivated accounts — it sorts by
+          // `active` rather than filtering on it. The group filter would have
+          // dropped them (`User.group_access` is `where(active: true)` on both its
+          // direct and its role half), but it is not always there to do it: a bulk
+          // update spans many groups and passes none. A colleague who has left
+          // cannot be mentioned — `agent_read_access?` is false for anyone
+          // inactive — so offering them can only produce a 422 or a confusing
+          // candidate in an ambiguity error.
+          .filter((user) => user.active !== false)
+          .map((user) => ({
+            id: user.id,
+            name: displayName(user, String(user.id)),
+            email: user.email,
+            login: user.login,
+          }))
+      );
     });
+  }
+
+  /**
+   * The agent a numeric id names, or `undefined` if that id is not one.
+   *
+   * An id is an identity, so it needs no name to match — but it does need the
+   * same test of who may be mentioned. Rather than guess at permissions from the
+   * user record, the id is turned into the address it belongs to and put through
+   * `mentionableAgents`, so an id belonging to a customer, or to an agent
+   * without access to the group, is refused exactly like the name of one.
+   */
+  async mentionableAgentById(id: number, groupId?: number): Promise<MentionCandidate | undefined> {
+    const user = await this.client.get<ZammadUser>(`/api/v1/users/${id}`).catch(() => undefined);
+    const identifier = user?.email || user?.login;
+    if (!identifier) return undefined;
+    return (await this.mentionableAgents(identifier, groupId)).find((agent) => agent.id === id);
   }
 
   private async resolveOneUser(term: string): Promise<number> {

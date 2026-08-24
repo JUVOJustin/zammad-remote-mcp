@@ -1,23 +1,26 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { ZammadClient } from '../src/core/zammad/client.js';
-import type { LookupService, MentionableUser } from '../src/core/zammad/lookup.js';
+import type { LookupService, MentionCandidate } from '../src/core/zammad/lookup.js';
 import { hasMention, rewriteMentions } from '../src/core/zammad/mentions.js';
 
 /**
- * Resolves anything in `directory`; anything else fails the way the lookup does.
- * `seen` records what each call asked for, so the group narrowing can be checked.
+ * Candidates the way Zammad hands them over — matched on prefixes, so "Jan"
+ * offers Janine too, and it is the code under test that has to decide.
  */
-function stub(directory: Record<string, MentionableUser>) {
+function stub(directory: MentionCandidate[]) {
   const seen: Array<{ term: string; groupId?: number }> = [];
 
   const lookup = {
-    resolveMentionableUser: async (term: string, groupId?: number) => {
+    mentionableAgents: async (term: string, groupId?: number) => {
       seen.push({ term, groupId });
-      const hit = directory[term.toLowerCase()];
-      if (!hit) throw new Error(`No agent matches "${term}".`);
-      return hit;
+      return directory.filter((agent) =>
+        [agent.name, agent.email ?? '', agent.login ?? '']
+          .flatMap((field) => [field, ...field.split(/[\s@.]+/)])
+          .some((part) => part.toLowerCase().startsWith(term.toLowerCase())),
+      );
     },
+    mentionableAgentById: async (id: number) => directory.find((agent) => agent.id === id),
   } as unknown as LookupService;
 
   const client = {} as unknown as ZammadClient;
@@ -25,15 +28,15 @@ function stub(directory: Record<string, MentionableUser>) {
   return { lookup, client, zammadUrl: 'https://help.acme.com', seen };
 }
 
-const jane: MentionableUser = { id: 42, name: 'Jane Doe' };
-const sam: MentionableUser = { id: 7, name: 'Sam Ray' };
-
-const directory: Record<string, MentionableUser> = {
-  'jane@acme.com': jane,
-  jdoe: jane,
-  'jane doe': jane,
-  'sam@acme.com': sam,
+const jane: MentionCandidate = {
+  id: 42,
+  name: 'Jane Doe',
+  email: 'jane@acme.com',
+  login: 'jdoe',
 };
+const sam: MentionCandidate = { id: 7, name: 'Sam Ray', email: 'sam@acme.com', login: 'sray' };
+
+const directory = [jane, sam];
 
 describe('hasMention', () => {
   it('sees a mention in every form the trigger takes', () => {
@@ -72,7 +75,7 @@ describe('rewriteMentions', () => {
     );
     // The anchor cannot survive as text/plain, so the article has to become HTML.
     assert.equal(result.content_type, 'text/html');
-    assert.deepEqual(result.mentioned, [jane]);
+    assert.deepEqual(result.mentioned, [{ id: 42, name: 'Jane Doe' }]);
   });
 
   it('accepts a login and a quoted full name', async () => {
@@ -94,42 +97,63 @@ describe('rewriteMentions', () => {
     assert.deepEqual(context.seen, [{ term: 'jdoe', groupId: 3 }]);
   });
 
-  it('takes the rest of an unquoted name with the token', async () => {
-    // `@@Jannik Pollmeier` resolves `Jannik` and the anchor prints the full
-    // name, so leaving the surname behind would read "… Pollmeier Pollmeier …".
-    const context = stub({ jannik: { id: 17, name: 'Jannik Pollmeier' } });
-    const result = await rewriteMentions('@@Jannik Pollmeier bitte übernehmen', 'text/plain', context);
+  it('takes the whole name an unquoted mention spells out', async () => {
+    const context = stub(directory);
+    const result = await rewriteMentions('@@Jane Doe bitte übernehmen', 'text/plain', context);
 
     assert.equal(
       result.body,
-      '<a href="https://help.acme.com/#user/profile/17" data-mention-user-id="17">Jannik Pollmeier</a>' +
+      '<a href="https://help.acme.com/#user/profile/42" data-mention-user-id="42">Jane Doe</a>' +
         ' bitte übernehmen',
     );
   });
 
-  it('stops the swallowed surname at a word boundary', async () => {
-    // With an agent called Jan Ott, eating "Ott" out of "Ottmar" would leave a
-    // sentence that reads exactly as written while the mention went elsewhere.
-    const context = stub({ jan: { id: 9, name: 'Jan Ott' } });
-    const result = await rewriteMentions('@@Jan Ottmar hat angerufen', 'text/plain', context);
-
-    assert.ok(result.body.endsWith('</a> Ottmar hat angerufen'), result.body);
-  });
-
-  it('leaves the sentence alone when the token is not the start of the name', async () => {
-    // A login or an address does not prefix the name it resolved to, so the next
-    // word is the caller's sentence and not part of the mention.
+  it('refuses a first name on its own, and says who it found', async () => {
+    // Zammad's search matches prefixes, so `Jane` would resolve as readily to a
+    // Janine. Guessing between them mentions the wrong colleague in a note that
+    // reads as though it reached the right one.
     const context = stub(directory);
-    const result = await rewriteMentions('@@jdoe Doe bitte prüfen', 'text/plain', context);
 
-    assert.ok(result.body.endsWith('</a> Doe bitte prüfen'), result.body);
+    await assert.rejects(
+      rewriteMentions('@@Jane bitte übernehmen', 'text/plain', context),
+      (error: Error) => {
+        assert.match(error.message, /No agent is named "Jane"/);
+        assert.match(error.message, /Jane Doe <jane@acme.com>/);
+        return true;
+      },
+    );
   });
 
-  it('keeps punctuation after a swallowed surname', async () => {
-    const context = stub({ jannik: { id: 17, name: 'Jannik Pollmeier' } });
-    const result = await rewriteMentions('Frag @@Jannik Pollmeier, danke.', 'text/plain', context);
+  it('refuses a name that only starts like one, rather than matching part of it', async () => {
+    // `@@Jane Doerr` must not become a link on "Jane Doe" followed by "rr",
+    // which would read back as the name the author wrote.
+    const context = stub(directory);
+    await assert.rejects(
+      rewriteMentions('@@Jane Doerr hat angerufen', 'text/plain', context),
+      /No agent is named "Jane"/,
+    );
+  });
+
+  it('keeps punctuation after the name it took', async () => {
+    const context = stub(directory);
+    const result = await rewriteMentions('Frag @@Jane Doe, danke.', 'text/plain', context);
 
     assert.ok(result.body.endsWith('</a>, danke.'), result.body);
+  });
+
+  it('matches a name across whatever spacing was typed', async () => {
+    const context = stub(directory);
+    const result = await rewriteMentions('@@Jane  Doe bitte', 'text/plain', context);
+
+    assert.ok(result.body.endsWith('</a> bitte'), result.body);
+  });
+
+  it('takes a numeric id as the identity it is', async () => {
+    const context = stub(directory);
+    const result = await rewriteMentions('@@42 bitte', 'text/plain', context);
+
+    assert.deepEqual(result.mentioned, [{ id: 42, name: 'Jane Doe' }]);
+    assert.ok(result.body.endsWith('</a> bitte'), result.body);
   });
 
   it('keeps trailing punctuation out of the login', async () => {
@@ -170,7 +194,7 @@ describe('rewriteMentions', () => {
     // be given the mention afterwards, so refusing is the only way back.
     await assert.rejects(
       rewriteMentions('@@nobody@acme.com and @@jdoe', 'text/plain', context),
-      /No agent matches "nobody@acme.com"/,
+      /No agent is named "nobody@acme.com"/,
     );
   });
 
