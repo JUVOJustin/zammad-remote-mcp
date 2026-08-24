@@ -9,12 +9,13 @@ import {
   HTML_BODY_NOTE,
   mentionsNotCarried,
 } from '../../zammad/compose.js';
-import type { MentionedUser, UnresolvedMention } from '../../zammad/mentions.js';
-import { demoteMentions, rewriteMentions } from '../../zammad/mentions.js';
+import type { MentionedUser } from '../../zammad/mentions.js';
+import { hasMention, MENTION_NOTE, rewriteMentions } from '../../zammad/mentions.js';
 import { asTopLevel, leaf } from '../../zammad/selector.js';
 import {
   appendGroupSignature,
   appendSignatureFlag,
+  groupIdOf,
   type RenderContext,
   type SignatureOutcome,
   ticketLoader,
@@ -333,24 +334,23 @@ async function articlePayload(
   // on the finished HTML body.
   article: z.infer<typeof articleInputSchema>,
   context: ToolContext,
-): Promise<{
-  payload: Record<string, unknown>;
-  mentioned: MentionedUser[];
-  unresolved: UnresolvedMention[];
-}> {
+  /** The group this article is filed under, for the mention lookup. */
+  groupId: () => Promise<number | undefined>,
+): Promise<{ payload: Record<string, unknown>; mentioned: MentionedUser[] }> {
+  const wantsMention = hasMention(article.body);
+  // A type stored as text keeps no anchor, so the mention would not happen.
+  // Refused rather than filed silently — see zammad/compose.ts.
+  const notCarried = wantsMention ? mentionsNotCarried(article.type) : null;
+  if (notCarried) throw new ToolInputError(notCarried);
+
   // Mentions read the body as authored — before the HTML conversion, whose
   // escaping would break the `@@"Jane Doe"` quoting.
-  const rewritten = await rewriteMentions(article.body, authoredContentType(article.body), {
+  const mentions = await rewriteMentions(article.body, authoredContentType(article.body), {
     client: context.client,
     lookup: context.lookup,
     zammadUrl: context.config.ZAMMAD_URL,
+    groupId: wantsMention ? await groupId() : undefined,
   });
-
-  // A type that stores its body as text keeps the name and loses the anchor, so
-  // the mention it looked like never happens — say so rather than report a
-  // subscription Zammad did not make.
-  const notCarried = mentionsNotCarried(article.type);
-  const mentions = notCarried ? demoteMentions(rewritten, notCarried) : rewritten;
 
   // The body and its content type are decided by the channel this article is
   // going to — see zammad/compose.ts.
@@ -367,7 +367,7 @@ async function articlePayload(
     if (article[key] !== undefined) payload[key] = article[key];
   }
   if (article.attachments?.length) payload.attachments = article.attachments;
-  return { payload, mentioned: mentions.mentioned, unresolved: mentions.unresolved };
+  return { payload, mentioned: mentions.mentioned };
 }
 
 /**
@@ -637,8 +637,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
         'Create a ticket together with its first article. `group` and `customer` are required by Zammad. Note that ' +
         'an article with `type: "email"` and `internal: false` is delivered to the customer — the defaults ' +
         '(`note`, internal) do not send anything.\n\n' +
-        'Mention a colleague in the article body by writing `@@jane@acme.com`, `@@jdoe` or `@@"Jane Doe"` — they ' +
-        'are linked and notified. Keep the article `internal: true`, or the customer sees the mention too.\n\n' +
+        `${MENTION_NOTE}\n\n` +
         'An email article is signed with the group signature unless `article.append_signature` is turned off.',
       inputSchema: createTicketInput.strict(),
       annotations: {
@@ -661,7 +660,12 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
         );
       }
 
-      const article = await articlePayload(input.article, context);
+      // The group is this call's own argument, so the mention lookup needs no
+      // round trip: the ticket does not exist yet to be read.
+      const article = await articlePayload(input.article, context, async () => {
+        const [groupId] = await context.lookup.resolveGroups([input.group_id ?? input.group ?? '']);
+        return groupId;
+      });
 
       // Zammad never signs an article server-side — the agent UI composes the
       // signature into the body before it posts. Without this, a ticket opened
@@ -697,7 +701,6 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
         ...(signature ? { signature } : {}),
         ticket: presentTicket(ticket),
         ...(article.mentioned.length > 0 ? { mentioned: article.mentioned } : {}),
-        ...(article.unresolved.length > 0 ? { mentions_unresolved: article.unresolved } : {}),
       });
     }),
   );
@@ -738,8 +741,7 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
         'Moving a ticket into a pending state requires `pending_time`. Passing `customer` moves the ticket and ' +
         'lets the organization follow; `organization_id` only picks between the organizations that customer ' +
         'already belongs to.\n\n' +
-        'Mention a colleague in the article body by writing `@@jane@acme.com`, `@@jdoe` or `@@"Jane Doe"` — they ' +
-        'are linked and notified. Keep the article `internal: true`, or the customer sees the mention too.\n\n' +
+        `${MENTION_NOTE}\n\n` +
         'An email article is signed with the group signature unless `article.append_signature` is turned off.',
       inputSchema: updateTicketInput.strict(),
       annotations: {
@@ -759,20 +761,26 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
 
       const body = ticketPayload(input);
       let mentioned: MentionedUser[] = [];
-      let unresolved: UnresolvedMention[] = [];
       let signature: SignatureOutcome | undefined;
       if (input.article) {
-        const article = await articlePayload(input.article, context);
+        const loadTicket = ticketLoader(context.client, id);
+        const moved = input.group_id ?? input.group;
+        // The same precedence the signature uses: a group this call is moving
+        // the ticket to is the one the article is filed under, so it is also
+        // the one whose agents may be mentioned.
+        const article = await articlePayload(input.article, context, async () => {
+          if (moved !== undefined) return (await context.lookup.resolveGroups([moved]))[0];
+          return groupIdOf(loadTicket);
+        });
         signature = await signArticle(context, input.article, article.payload, {
           // A group moved in this same call is the one the UI signs with —
           // `setArticleTypePost` prefers the pending group over the stored one.
-          group: input.group_id ?? input.group,
+          group: moved,
           ticket: { title: input.title, state: input.state, priority: input.priority },
-          loadTicket: ticketLoader(context.client, id),
+          loadTicket,
         });
         body.article = article.payload;
         mentioned = article.mentioned;
-        unresolved = article.unresolved;
       }
 
       const touchesTags = Boolean(input.add_tags || input.remove_tags);
@@ -795,7 +803,6 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
         ticket: presentTicket(ticket),
         ...(tags ? { tags } : {}),
         ...(mentioned.length > 0 ? { mentioned } : {}),
-        ...(unresolved.length > 0 ? { mentions_unresolved: unresolved } : {}),
       });
     }),
   );
@@ -930,10 +937,13 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
 
       const attributes = ticketPayload(input);
       let mentioned: MentionedUser[] = [];
-      let unresolved: UnresolvedMention[] = [];
       let article: Record<string, unknown> | undefined;
 
       if (input.article) {
+        // No `groupId`: this one note is filed on many tickets, which need not
+        // share a group, so there is no single set of agents to narrow to. The
+        // agent filter still applies, and Zammad still refuses per ticket any
+        // mention of someone without access to that ticket's group.
         const mentions = await rewriteMentions(input.article.body, authoredContentType(input.article.body), {
           client: context.client,
           lookup: context.lookup,
@@ -950,7 +960,6 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
           internal: input.article.internal,
         };
         mentioned = mentions.mentioned;
-        unresolved = mentions.unresolved;
       }
 
       if (Object.keys(attributes).length === 0 && !article) {
@@ -973,7 +982,6 @@ export function registerTicketTools(server: McpServer, base: ToolContext, vocabu
         ticket_count: input.ticket_ids.length,
         result,
         ...(mentioned.length > 0 ? { mentioned } : {}),
-        ...(unresolved.length > 0 ? { mentions_unresolved: unresolved } : {}),
       });
     }),
   );

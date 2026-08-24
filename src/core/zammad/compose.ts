@@ -233,19 +233,19 @@ export interface ComposedBody {
  * That is also what the agent UI does. Its SMS, Telegram, Facebook and WhatsApp
  * composers run `App.Utils.html2text` over the composed HTML, which flattens any
  * anchor the mention picker inserted, so a mention typed into one of those
- * screens subscribes nobody either. The behaviour is right; what would be wrong
- * is reporting it as a mention that was made, which is why this exists.
+ * screens subscribes nobody either.
  *
- * The name still reaches the reader: the token is resolved and rewritten before
- * the text conversion, so `@@jane@acme.com` arrives as "Jane Doe" rather than as
- * the token somebody typed.
+ * Which makes a `@@` in one of these bodies a request that cannot be met, and
+ * the answer is to refuse it rather than write the article and let the mention
+ * quietly not happen. The caller still has its text and can send it again
+ * without the mention, or put the mention where mentions work.
  */
 export function mentionsNotCarried(type: string): string | null {
   if (!TEXT_DELIVERED.has(type)) return null;
   return (
-    `a \`${type}\` article is stored as text, so the mention anchor Zammad subscribes from cannot survive ` +
-    'in it — the name was written into the message, but nobody was subscribed. Mention them in an internal ' +
-    'note on the same ticket instead.'
+    `A \`${type}\` article is stored as plain text, so the anchor Zammad reads a mention from cannot ` +
+    'survive in it and nobody would be notified. Send this message without the `@@` mention, and mention ' +
+    'the colleague in an internal note on the same ticket instead.'
   );
 }
 

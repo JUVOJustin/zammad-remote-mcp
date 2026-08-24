@@ -572,7 +572,27 @@ export async function appendGroupSignature(args: {
  * in place, which is what picks the signature.
  */
 export function ticketLoader(client: ZammadClient, ticketId: number): () => Promise<RenderContext> {
-  return async () => (await client.get<RenderContext>(`/api/v1/tickets/${ticketId}`, { expand: true })) ?? {};
+  // Memoised because two things now ask for the same ticket in one call — the
+  // signature, for the group whose signature to use, and the mention lookup, for
+  // the group whose agents may be mentioned. Still nothing when neither asks.
+  let pending: Promise<RenderContext> | undefined;
+  return () => {
+    pending ??= client
+      .get<RenderContext>(`/api/v1/tickets/${ticketId}`, { expand: true })
+      .then((ticket) => ticket ?? {});
+    return pending;
+  };
+}
+
+/**
+ * The group id of the ticket an article is being filed on, for the mention
+ * lookup — `resolveMentionableUser` offers the agents with access to it, as the
+ * UI's picker does. `undefined` when the ticket has no readable group id, which
+ * only widens the candidates to every agent rather than failing the write.
+ */
+export async function groupIdOf(loadTicket: () => Promise<RenderContext>): Promise<number | undefined> {
+  const groupId = (await loadTicket()).group_id;
+  return typeof groupId === 'number' ? groupId : undefined;
 }
 
 /** `App.SignatureHelper.findForGroup` — group → signature, active and non-empty. */

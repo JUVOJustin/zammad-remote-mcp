@@ -65,6 +65,18 @@ export interface Signature {
   active: boolean;
 }
 
+/** A user a `@@mention` may name: an agent, with the name to print for them. */
+export interface MentionableUser {
+  id: number;
+  name: string;
+}
+
+/** What a mention anchor shows — the full name, falling back to what identifies them. */
+function displayName(user: ZammadUser, fallback: string): string {
+  const full = [user.firstname, user.lastname].filter(Boolean).join(' ').trim();
+  return full || user.email || user.login || fallback;
+}
+
 export interface ZammadUser {
   id: number;
   login?: string;
@@ -328,6 +340,75 @@ export class LookupService {
       ids.push(await this.resolveOneUser(value));
     }
     return ids;
+  }
+
+  /**
+   * The one agent a `@@token` names, or an error saying why there is not one.
+   *
+   * Mirrors `App.Mention.searchUser` (mention.coffee), which is what the agent
+   * UI's `@@` picker offers: `/api/v1/users/search` narrowed to the roles that
+   * carry `ticket.agent` and to the users with `read` access to the ticket's
+   * group. Both filters are honoured by `User.search` on the database and the
+   * Elasticsearch path alike (`app/models/user/search.rb`); `permissions` is
+   * turned into those role ids by `search_params_pre`, so the roles do not have
+   * to be fetched and matched here.
+   *
+   * Narrowing is not a nicety. `Validations::MentionValidator` refuses a mention
+   * of anyone without `agent_read_access?` to the ticket, and both writing
+   * endpoints set `check_mentions_raises_error = true`
+   * (`creates_ticket_articles.rb`), so mentioning a customer does not quietly do
+   * nothing — it fails the article with a 422 and nothing is written at all.
+   * Offering the same candidates the UI offers is what keeps that from
+   * happening; it also removes most of the ambiguity, since the four users
+   * matching "Jannik" on a real instance are one agent and three customers.
+   *
+   * Ambiguity that survives is an error rather than a guess. A mention is a
+   * notification to a named person: picking one of several is how the wrong
+   * colleague gets told, and picking none silently is the failure this whole
+   * path exists to prevent.
+   */
+  async resolveMentionableUser(term: string, groupId?: number): Promise<MentionableUser> {
+    const key = this.key(`mention:${groupId ?? 'any'}:${term.toLowerCase()}`);
+    return this.cache.read(key, async () => {
+      const users = await this.client.get<ZammadUser[]>('/api/v1/users/search', {
+        query: term,
+        permissions: 'ticket.agent',
+        // Rails reads `group_ids[7]=read` as `{group_ids: {"7" => "read"}}`,
+        // which is the shape `User.search` expects.
+        ...(groupId === undefined ? {} : { [`group_ids[${groupId}]`]: 'read' }),
+        limit: 25,
+      });
+
+      const candidates = Array.isArray(users) ? users : [];
+      if (candidates.length === 0) {
+        throw new ToolInputError(
+          `No agent matches "${term}"${groupId === undefined ? '' : " among those with access to the ticket's group"}. ` +
+            'A mention reaches agents only — a customer cannot be mentioned, and Zammad rejects the whole ' +
+            'article if one is. Pass an email address, a login, or a full name in quotes (`@@"First Last"`), ' +
+            'and use `zammad_search_users` to find the right account.',
+        );
+      }
+
+      const needle = term.trim().toLowerCase();
+      const exact = candidates.find(
+        (u) => u.email?.toLowerCase() === needle || u.login?.toLowerCase() === needle,
+      );
+      const chosen = exact ?? (candidates.length === 1 ? candidates[0] : undefined);
+      if (!chosen) {
+        const listed = candidates
+          .slice(0, 10)
+          .map(
+            (u) => `${[u.firstname, u.lastname].filter(Boolean).join(' ')} <${u.email ?? u.login ?? u.id}>`,
+          )
+          .join('; ');
+        throw new ToolInputError(
+          `"${term}" matches ${candidates.length} agents, so there is no one to mention. Pass an exact ` +
+            `email address or login — a full name needs quoting as \`@@"First Last"\`. Candidates — ${listed}`,
+        );
+      }
+
+      return { id: chosen.id, name: displayName(chosen, term) };
+    });
   }
 
   private async resolveOneUser(term: string): Promise<number> {

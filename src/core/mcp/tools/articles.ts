@@ -1,16 +1,18 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { bytesToBase64, textFromBytes } from '../../util/base64.js';
+import { ToolInputError } from '../../util/errors.js';
 import {
   authoredContentType,
   composeBody,
   HTML_BODY_NOTE,
   mentionsNotCarried,
 } from '../../zammad/compose.js';
-import { demoteMentions, rewriteMentions } from '../../zammad/mentions.js';
+import { hasMention, MENTION_NOTE, rewriteMentions } from '../../zammad/mentions.js';
 import {
   appendGroupSignature,
   appendSignatureFlag,
+  groupIdOf,
   type SignatureOutcome,
   ticketLoader,
 } from '../../zammad/signature.js';
@@ -170,8 +172,7 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
         '`internal: false` is actually delivered to the addresses in `to`/`cc`; the defaults (`note`, internal) ' +
         'record text without notifying anyone.\n\n' +
         `${HTML_BODY_NOTE}\n\n` +
-        'Mention a colleague by writing `@@jane@acme.com`, `@@jdoe` or `@@"Jane Doe"` in the body — they are ' +
-        'linked and notified. Keep such a note `internal: true`, or the customer sees the mention too.\n\n' +
+        `${MENTION_NOTE}\n\n` +
         "An email article is signed with the group's signature, as the reply composer does, unless " +
         '`append_signature` is turned off.',
       inputSchema: createInput.strict(),
@@ -186,21 +187,27 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
       const input = createInput.parse(rawInput);
       const context = withOnBehalfOf(base, input.on_behalf_of);
 
+      // The ticket is read once and shared: the mention lookup needs its group
+      // to offer the agents the UI would offer, and the signature needs it to
+      // pick a signature. Only fetched when something actually asks.
+      const loadTicket = ticketLoader(context.client, input.ticket_id);
+
       // `@@name` is rewritten into the anchor Zammad recognises; its own
       // create-callback turns that into the mention and the notification.
       // Mentions read the body as authored — before the HTML conversion, whose
       // escaping would break the `@@"Jane Doe"` quoting.
-      const rewritten = await rewriteMentions(input.body, authoredContentType(input.body), {
+      const wantsMention = hasMention(input.body);
+      // A type stored as text keeps no anchor, so the mention would not happen.
+      // Refused rather than filed silently — see zammad/compose.ts.
+      const notCarried = wantsMention ? mentionsNotCarried(input.type) : null;
+      if (notCarried) throw new ToolInputError(notCarried);
+
+      const mentions = await rewriteMentions(input.body, authoredContentType(input.body), {
         client: context.client,
         lookup: context.lookup,
         zammadUrl: base.config.ZAMMAD_URL,
+        groupId: wantsMention ? await groupIdOf(loadTicket) : undefined,
       });
-
-      // A type that stores its body as text keeps the name and loses the anchor,
-      // so the mention it looked like never happens — say so rather than report
-      // a subscription Zammad did not make.
-      const notCarried = mentionsNotCarried(input.type);
-      const mentions = notCarried ? demoteMentions(rewritten, notCarried) : rewritten;
 
       // The body and its content type are decided by the channel this article
       // is going to — see zammad/compose.ts.
@@ -213,7 +220,7 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
           logger: context.logger,
           article: { ...input, body: text },
           // The reply composer signs with the group of the ticket it is on.
-          loadTicket: ticketLoader(context.client, input.ticket_id),
+          loadTicket,
         });
         text = signed;
         signature = outcome;
@@ -238,7 +245,6 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
         ...(signature ? { signature } : {}),
         article: presentArticle(article, { bodyFormat: input.body_format }),
         ...(mentions.mentioned.length > 0 ? { mentioned: mentions.mentioned } : {}),
-        ...(mentions.unresolved.length > 0 ? { mentions_unresolved: mentions.unresolved } : {}),
       });
     }),
   );

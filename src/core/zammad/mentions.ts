@@ -19,6 +19,15 @@ import type { LookupService } from './lookup.js';
  * separate /api/v1/mentions endpoint is for subscribing without writing an
  * article and is not involved here. The callback is create-only, so editing a
  * body afterwards does not mention anyone — this runs on create alone.
+ *
+ * A token that does not name exactly one mentionable agent fails the call, and
+ * nothing is written. The alternative — file the article and report the miss —
+ * was tried and is worse: the caller has the text it just sent and can send it
+ * again, so nothing is lost by refusing, whereas an article that is already on
+ * the ticket cannot be un-filed and its mention cannot be added afterwards. The
+ * callback is create-only, so "write now, fix the mention later" is not a thing
+ * that exists. Candidates are narrowed the way the UI narrows them, which is
+ * also what keeps ambiguity rare — see `resolveMentionableUser` in lookup.ts.
  */
 
 /**
@@ -35,109 +44,91 @@ export interface MentionedUser {
   name: string;
 }
 
-/**
- * A `@@` mention that did not happen, and why.
- *
- * Two ways to get here: the token named nobody, or it named someone the article
- * type cannot carry a mention to (`demoteMentions`). Reported rather than
- * raised, and reported rather than passed over. Leaving the article alone is the
- * right outcome — a typo must not cost the text somebody wrote — but on its own
- * it repeats the failure this module exists to prevent: the note reads as
- * intended to its author and the colleague is never told. The write already
- * happened by the time anyone could look, so the answer has to carry the miss.
- */
-export interface UnresolvedMention {
-  /**
-   * The `@@` token as written, without the `@@` — or, when the mention resolved
-   * but the channel cannot carry it, the name of the person it named.
-   */
-  token: string;
-  /** Why nobody was mentioned: the lookup's own words, or the channel's limit. */
-  reason: string;
-}
-
 export interface RewriteResult {
   body: string;
   /** `text/html` once a mention is present — the anchor needs it. */
   content_type: string;
   mentioned: MentionedUser[];
-  unresolved: UnresolvedMention[];
 }
 
 function escapeHtml(value: string): string {
   return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-interface UserRecord {
-  id?: number;
-  firstname?: string;
-  lastname?: string;
-  email?: string;
-  login?: string;
-}
-
-function displayName(user: UserRecord, fallback: string): string {
-  const full = [user.firstname, user.lastname].filter(Boolean).join(' ').trim();
-  return full || user.email || user.login || fallback;
-}
-
 /**
- * The same result with its mentions moved into `unresolved`, for an article type
- * that cannot carry one — see `mentionsNotCarried` in compose.ts.
+ * What every tool that takes an article body says about `@@`.
  *
- * The rewrite still ran and the body keeps it: the anchor is what makes the text
- * conversion print "Jane Doe" instead of the token somebody typed. What must not
- * survive is the claim. `mentioned` says a colleague was subscribed, and on
- * these types none was, so it is emptied rather than returned alongside a body
- * that no longer contains a single anchor.
- */
-export function demoteMentions(result: RewriteResult, reason: string): RewriteResult {
-  if (result.mentioned.length === 0) return result;
-  return {
-    ...result,
-    mentioned: [],
-    unresolved: [...result.unresolved, ...result.mentioned.map((user) => ({ token: user.name, reason }))],
-  };
-}
-
-/**
- * Why a token resolved to nobody, said in a way the next attempt can act on.
+ * One copy, three tools, as with `HTML_BODY_NOTE` — the rule lives with the
+ * feature it describes rather than in three descriptions that drift apart.
  *
- * The lookup's own message is the useful part — it names the candidates when a
- * term is ambiguous — so it is passed through rather than replaced. What it
- * cannot know is the shape of the token it was handed: an unquoted `@@` stops at
- * the first space, so `@@Jannik Pollmeier` reaches it as `Jannik` and a name that
- * looked complete to its author was never searched for. That hint is added only
- * for unquoted tokens, where it is the likely mistake.
+ * It has to carry the two things a caller cannot find out by trying: that the
+ * candidates are agents and not everybody, and that a name matching none or
+ * several of them fails the whole call. The second is what stops a model from
+ * writing `@@Jannik` and assuming silence meant success.
  */
-function reasonFor(error: unknown, wasQuoted: boolean): string {
-  const message = error instanceof Error ? error.message : String(error);
-  if (wasQuoted) return message;
-  return `${message} If the name contains a space, quote it: \`@@"First Last"\`.`;
+export const MENTION_NOTE =
+  'Mention a colleague by writing `@@jane@acme.com`, `@@jdoe` or `@@"Jane Doe"` in the body — they are ' +
+  'linked and notified. Only agents with access to the ticket group can be mentioned, and the name must ' +
+  'match exactly one of them: a name that matches none or several fails the call and writes nothing, so ' +
+  'prefer an email address or login. Keep the article `internal: true`, or the customer sees the mention too.';
+
+/**
+ * How much of the text after an unquoted token is the rest of the name it named.
+ *
+ * `@@Jannik Pollmeier` is the form a colleague's name is written in, and the
+ * token grammar stops at the space — so `Jannik` is what gets resolved, and the
+ * surname is left behind as text. Once resolution narrows to agents that token
+ * usually does name one person, which turns a lookup failure into a sentence
+ * reading "Jannik Pollmeier Pollmeier bitte übernehmen".
+ *
+ * So when the resolved name begins with the token, and the text carries straight
+ * on with the rest of that name, those words are part of the mention and are
+ * consumed with it. Nothing else is touched: an email address or a login does
+ * not prefix the name it resolved to, so nothing is ever swallowed after one.
+ */
+function nameTail(name: string, token: string, rest: string): number {
+  if (!name.toLowerCase().startsWith(token.toLowerCase())) return 0;
+  const remainder = name.slice(token.length).trim();
+  if (!remainder) return 0;
+  const escaped = remainder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`^\\s+${escaped}`, 'i').exec(rest)?.[0].length ?? 0;
+}
+
+/** Does this body ask for a mention at all? */
+export function hasMention(body: string): boolean {
+  MENTION.lastIndex = 0;
+  return MENTION.test(body);
 }
 
 /**
- * Rewrites `@@token` into a mention anchor.
+ * Rewrites `@@token` into a mention anchor, or throws.
  *
  * A plain-text body is escaped and promoted to HTML, because the anchor cannot
  * survive as `text/plain` — without that, adding a mention would silently turn
  * the rest of the note into markup.
+ *
+ * `groupId` narrows the candidates to the agents with access to that group, as
+ * the UI's picker does. It is the group the article is being filed under, which
+ * on an update is the one this same call is moving the ticket to. Left out only
+ * where there is no single group to speak of — a bulk update spans many — and
+ * then the agent filter still applies.
+ *
+ * Nothing is caught here. A token that names nobody, or names more than one
+ * agent, fails the tool call before the article is written; see the module doc
+ * for why refusing beats filing the article and reporting the miss.
  */
 export async function rewriteMentions(
   body: string,
   contentType: string,
-  context: { client: ZammadClient; lookup: LookupService; zammadUrl: string },
+  context: { client: ZammadClient; lookup: LookupService; zammadUrl: string; groupId?: number },
 ): Promise<RewriteResult> {
-  MENTION.lastIndex = 0;
-  if (!MENTION.test(body)) return { body, content_type: contentType, mentioned: [], unresolved: [] };
+  if (!hasMention(body)) return { body, content_type: contentType, mentioned: [] };
 
   const wasPlain = contentType !== 'text/html';
   const base = context.zammadUrl.replace(/\/+$/, '');
 
   const segments: string[] = [];
   const mentioned = new Map<number, MentionedUser>();
-  /** Keyed by token, so a name misspelled the same way twice is reported once. */
-  const unresolved = new Map<string, UnresolvedMention>();
   let cursor = 0;
 
   MENTION.lastIndex = 0;
@@ -149,28 +140,25 @@ export async function rewriteMentions(
     const consumed = quoted === undefined ? `@@${raw}` : match[0];
     const before = body.slice(cursor, match.index);
     segments.push(wasPlain ? escapeHtml(before) : before);
+    /** Characters after the token that belong to the name it resolved to. */
+    let tail = 0;
 
-    let anchor: string | null = null;
-    if (raw.length > 0) {
-      try {
-        const [id] = await context.lookup.resolveUsers([raw]);
-        if (id === undefined) throw new Error(`no Zammad user matches "${raw}"`);
-        const user = await context.client.get<UserRecord>(`/api/v1/users/${id}`);
-        const name = displayName(user ?? {}, raw);
-        mentioned.set(id, { id, name });
-        anchor =
-          `<a href="${base}/#user/profile/${id}" data-mention-user-id="${id}">` + `${escapeHtml(name)}</a>`;
-      } catch (error) {
-        // An unresolvable @@token stays as written. Failing the whole article
-        // over a typo would lose the text the caller actually wanted to record
-        // — but the caller is told, in `unresolved`, that nobody was mentioned.
-        anchor = null;
-        unresolved.set(raw, { token: raw, reason: reasonFor(error, quoted !== undefined) });
-      }
+    // `@@` followed by nothing is not a mention; it is two characters of text.
+    if (raw.length === 0) {
+      segments.push(wasPlain ? escapeHtml(consumed) : consumed);
+    } else {
+      const user = await context.lookup.resolveMentionableUser(raw, context.groupId);
+      mentioned.set(user.id, user);
+      segments.push(
+        `<a href="${base}/#user/profile/${user.id}" data-mention-user-id="${user.id}">` +
+          `${escapeHtml(user.name)}</a>`,
+      );
+      // The anchor prints the whole name, so a surname the token could not reach
+      // must not be left standing next to it.
+      if (quoted === undefined) tail = nameTail(user.name, raw, body.slice(match.index + consumed.length));
     }
 
-    segments.push(anchor ?? (wasPlain ? escapeHtml(consumed) : consumed));
-    cursor = match.index + consumed.length;
+    cursor = match.index + consumed.length + tail;
     MENTION.lastIndex = cursor;
     match = MENTION.exec(body);
   }
@@ -178,16 +166,15 @@ export async function rewriteMentions(
   const tail = body.slice(cursor);
   segments.push(wasPlain ? escapeHtml(tail) : tail);
 
-  // Nothing resolved, so nothing was rewritten: hand back the body as authored
-  // rather than a re-escaped copy of it. The misses still travel.
-  if (mentioned.size === 0)
-    return { body, content_type: contentType, mentioned: [], unresolved: [...unresolved.values()] };
+  // Every token that reached the lookup resolved, or this line was never got to.
+  // An empty `mentioned` here means the body held only `@@` with nothing after
+  // it, which changed nothing and must not promote the body to HTML.
+  if (mentioned.size === 0) return { body, content_type: contentType, mentioned: [] };
 
   const rewritten = segments.join('');
   return {
     body: wasPlain ? rewritten.replace(/\r?\n/g, '<br>') : rewritten,
     content_type: 'text/html',
     mentioned: [...mentioned.values()],
-    unresolved: [...unresolved.values()],
   };
 }

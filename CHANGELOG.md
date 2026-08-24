@@ -6,33 +6,45 @@ notes, with the pull-request list appended automatically — see
 
 ## Unreleased
 
-### A `@@mention` that named nobody now says so
+### A `@@mention` either happens or fails the call
 
-`@@name` is resolved to a real user and rewritten into the anchor Zammad turns
-into a mention. When the name resolves to nobody the token is left as written,
-deliberately — a typo must not cost the caller the note they were writing. But
-that was all that happened: the article was created, the response omitted
-`mentioned`, and an omitted `mentioned` reads exactly like a body that never
-contained a mention. Which is the failure this whole path exists to prevent: the
-note looks right to whoever wrote it and the colleague is never told.
+`@@name` is resolved to a user and rewritten into the anchor Zammad turns into a
+mention. Everything about what happened when it could not be is new.
 
-Seen on a real internal note written as `@@Jannik Pollmeier`. The unquoted form
-stops at the first space, so only `Jannik` was ever searched for; that matched
-four users, the lookup declined to guess, and the note was filed with the
-literal text in it.
+It used to be nothing. The token was left as written, the article was filed, and
+the response omitted `mentioned` — which reads exactly like a body that never
+contained a mention. Seen on a real internal note written as `@@Jannik
+Pollmeier`: the unquoted form stops at the first space, `Jannik` matched four
+users, the lookup declined to guess, and the note was filed with the literal
+text in it while nobody was told.
 
-Every writing tool now returns `mentions_unresolved` alongside `mentioned` — the
-token as written and why it resolved to nobody, in the lookup's own words, so an
-ambiguous name comes back with its candidates. An unquoted token also carries
-the hint the lookup cannot give, because it never saw the rest of the name:
-quote it as `@@"First Last"`.
+The call now fails instead, and nothing is written. `check_mentions` is a
+create-only callback, so an article filed without its anchor can never be given
+the mention afterwards — there is no state to repair, only a call to make again.
+A caller that still has the text it just sent loses nothing by being refused.
 
-The same field carries the one mention that resolves and still does not happen.
-`check_mentions` subscribes from `a[data-mention-user-id]` and nothing else, so
-on a type stored as text there is no anchor left to find — a `@@name` in an SMS
-subscribes nobody, exactly as it subscribes nobody when typed into the UI's SMS
-composer. The name is still written into the message rather than the raw token;
-what no longer happens is the article reporting a subscription Zammad never made.
+Candidates are narrowed the way the agent UI narrows them. `App.Mention.
+searchUser` queries `/api/v1/users/search` for the roles carrying `ticket.agent`
+and the users with read access to the ticket's group, and this now sends the
+same two filters. That is not decoration: `Validations::MentionValidator` refuses
+a mention of anyone without agent access to the ticket, and both writing
+endpoints set `check_mentions_raises_error`, so mentioning a customer never
+half-worked — it failed the article with a 422. Narrowing also removes most
+ambiguity, since the four users matching "Jannik" are one agent and three
+customers.
+
+With the narrowing, `@@Jannik Pollmeier` resolves — and the surname the token
+could not reach is now taken with it, rather than left standing beside an anchor
+that already prints the full name.
+
+An article type stored as plain text carries no anchor at all, so a `@@` in an
+SMS, Telegram, Facebook or WhatsApp body is refused outright. The agent UI
+reaches the same place from the other side: those composers run
+`App.Utils.html2text` over the body, which flattens any anchor its own picker
+inserted.
+
+`mentions_unresolved`, added earlier in this release, is gone with the behaviour
+that needed it. A mention is now reported in `mentioned` or the call failed.
 
 ### A paragraph written as `<p>` reaches the reader as one
 

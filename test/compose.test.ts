@@ -178,11 +178,12 @@ describe('mentionsNotCarried', () => {
     }
   });
 
-  it('names the limit for a type stored as text', () => {
+  it('gives a refusal a caller can act on for a type stored as text', () => {
     for (const type of ['sms', 'telegram personal-message', 'whatsapp message', 'facebook feed post']) {
       const reason = mentionsNotCarried(type);
       assert.ok(reason, type);
       assert.ok(reason.includes(type), reason);
+      assert.match(reason, /internal note/, 'it has to say where the mention does work');
     }
   });
 });
