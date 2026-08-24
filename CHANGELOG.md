@@ -27,6 +27,13 @@ ambiguous name comes back with its candidates. An unquoted token also carries
 the hint the lookup cannot give, because it never saw the rest of the name:
 quote it as `@@"First Last"`.
 
+The same field carries the one mention that resolves and still does not happen.
+`check_mentions` subscribes from `a[data-mention-user-id]` and nothing else, so
+on a type stored as text there is no anchor left to find — a `@@name` in an SMS
+subscribes nobody, exactly as it subscribes nobody when typed into the UI's SMS
+composer. The name is still written into the message rather than the raw token;
+what no longer happens is the article reporting a subscription Zammad never made.
+
 ### A paragraph written as `<p>` reaches the reader as one
 
 The tools ask for HTML, and `<p>` is the tag a paragraph is written with — but

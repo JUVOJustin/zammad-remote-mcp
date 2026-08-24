@@ -1,8 +1,13 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { bytesToBase64, textFromBytes } from '../../util/base64.js';
-import { authoredContentType, composeBody, HTML_BODY_NOTE } from '../../zammad/compose.js';
-import { rewriteMentions } from '../../zammad/mentions.js';
+import {
+  authoredContentType,
+  composeBody,
+  HTML_BODY_NOTE,
+  mentionsNotCarried,
+} from '../../zammad/compose.js';
+import { demoteMentions, rewriteMentions } from '../../zammad/mentions.js';
 import {
   appendGroupSignature,
   appendSignatureFlag,
@@ -185,11 +190,17 @@ export function registerArticleTools(server: McpServer, base: ToolContext): void
       // create-callback turns that into the mention and the notification.
       // Mentions read the body as authored — before the HTML conversion, whose
       // escaping would break the `@@"Jane Doe"` quoting.
-      const mentions = await rewriteMentions(input.body, authoredContentType(input.body), {
+      const rewritten = await rewriteMentions(input.body, authoredContentType(input.body), {
         client: context.client,
         lookup: context.lookup,
         zammadUrl: base.config.ZAMMAD_URL,
       });
+
+      // A type that stores its body as text keeps the name and loses the anchor,
+      // so the mention it looked like never happens — say so rather than report
+      // a subscription Zammad did not make.
+      const notCarried = mentionsNotCarried(input.type);
+      const mentions = notCarried ? demoteMentions(rewritten, notCarried) : rewritten;
 
       // The body and its content type are decided by the channel this article
       // is going to — see zammad/compose.ts.

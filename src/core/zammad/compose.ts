@@ -222,6 +222,34 @@ export interface ComposedBody {
 }
 
 /**
+ * Why an article of this type cannot carry a `@@mention`, or `null` when it can.
+ *
+ * A mention is an anchor and nothing else: `Ticket::Article#check_mentions` runs
+ * `Nokogiri::HTML(body).css('a[data-mention-user-id]')` on create and subscribes
+ * whoever it finds. On a `TEXT_DELIVERED` type the body is finished as text
+ * before it is stored, so there is no anchor left to find and nobody is
+ * subscribed — the mention simply does not happen.
+ *
+ * That is also what the agent UI does. Its SMS, Telegram, Facebook and WhatsApp
+ * composers run `App.Utils.html2text` over the composed HTML, which flattens any
+ * anchor the mention picker inserted, so a mention typed into one of those
+ * screens subscribes nobody either. The behaviour is right; what would be wrong
+ * is reporting it as a mention that was made, which is why this exists.
+ *
+ * The name still reaches the reader: the token is resolved and rewritten before
+ * the text conversion, so `@@jane@acme.com` arrives as "Jane Doe" rather than as
+ * the token somebody typed.
+ */
+export function mentionsNotCarried(type: string): string | null {
+  if (!TEXT_DELIVERED.has(type)) return null;
+  return (
+    `a \`${type}\` article is stored as text, so the mention anchor Zammad subscribes from cannot survive ` +
+    'in it — the name was written into the message, but nobody was subscribed. Mention them in an internal ' +
+    'note on the same ticket instead.'
+  );
+}
+
+/**
  * The body and the content type to store, for the article type it is going to.
  *
  * Email is where HTML belongs and where it is not the end of the line: the

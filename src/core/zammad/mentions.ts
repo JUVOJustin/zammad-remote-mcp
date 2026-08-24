@@ -36,19 +36,23 @@ export interface MentionedUser {
 }
 
 /**
- * A `@@token` that named nobody, and what the lookup said about it.
+ * A `@@` mention that did not happen, and why.
  *
- * Reported rather than raised, and reported rather than passed over. The token
- * staying as written is the right outcome for the article — a typo must not cost
- * the text somebody wrote — but on its own it repeats the failure this module
- * exists to prevent: the note reads as intended to its author and the colleague
- * is never told. The write already happened by the time anyone could look, so
- * the answer has to carry the miss.
+ * Two ways to get here: the token named nobody, or it named someone the article
+ * type cannot carry a mention to (`demoteMentions`). Reported rather than
+ * raised, and reported rather than passed over. Leaving the article alone is the
+ * right outcome — a typo must not cost the text somebody wrote — but on its own
+ * it repeats the failure this module exists to prevent: the note reads as
+ * intended to its author and the colleague is never told. The write already
+ * happened by the time anyone could look, so the answer has to carry the miss.
  */
 export interface UnresolvedMention {
-  /** As written, without the `@@`. */
+  /**
+   * The `@@` token as written, without the `@@` — or, when the mention resolved
+   * but the channel cannot carry it, the name of the person it named.
+   */
   token: string;
-  /** Why it resolved to nobody, in the lookup's own words. */
+  /** Why nobody was mentioned: the lookup's own words, or the channel's limit. */
   reason: string;
 }
 
@@ -75,6 +79,25 @@ interface UserRecord {
 function displayName(user: UserRecord, fallback: string): string {
   const full = [user.firstname, user.lastname].filter(Boolean).join(' ').trim();
   return full || user.email || user.login || fallback;
+}
+
+/**
+ * The same result with its mentions moved into `unresolved`, for an article type
+ * that cannot carry one — see `mentionsNotCarried` in compose.ts.
+ *
+ * The rewrite still ran and the body keeps it: the anchor is what makes the text
+ * conversion print "Jane Doe" instead of the token somebody typed. What must not
+ * survive is the claim. `mentioned` says a colleague was subscribed, and on
+ * these types none was, so it is emptied rather than returned alongside a body
+ * that no longer contains a single anchor.
+ */
+export function demoteMentions(result: RewriteResult, reason: string): RewriteResult {
+  if (result.mentioned.length === 0) return result;
+  return {
+    ...result,
+    mentioned: [],
+    unresolved: [...result.unresolved, ...result.mentioned.map((user) => ({ token: user.name, reason }))],
+  };
 }
 
 /**

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { ZammadClient } from '../src/core/zammad/client.js';
 import type { LookupService } from '../src/core/zammad/lookup.js';
-import { rewriteMentions } from '../src/core/zammad/mentions.js';
+import { demoteMentions, rewriteMentions } from '../src/core/zammad/mentions.js';
 
 /** Resolves anything in `directory`; anything else fails the way Zammad's search does. */
 function stub(directory: Record<string, { id: number; firstname?: string; lastname?: string }>) {
@@ -181,5 +181,48 @@ describe('rewriteMentions', () => {
 
     assert.equal(first.mentioned.length, 1);
     assert.equal(second.mentioned.length, 1, 'a lastIndex left behind would skip this match');
+  });
+});
+
+describe('demoteMentions', () => {
+  const reason = 'an `sms` article is stored as text, so the anchor cannot survive in it';
+
+  it('stops claiming a mention the channel cannot carry', async () => {
+    const context = stub(directory);
+    const rewritten = await rewriteMentions('Bitte @@jane@acme.com anrufen', 'text/plain', context);
+    const demoted = demoteMentions(rewritten, reason);
+
+    // Zammad subscribes from `a[data-mention-user-id]` alone. A body stored as
+    // text has none, so reporting `mentioned` would claim a subscription that
+    // was never made.
+    assert.deepEqual(demoted.mentioned, []);
+    assert.deepEqual(demoted.unresolved, [{ token: 'Jane Doe', reason }]);
+  });
+
+  it('keeps the rewritten body, so the reader gets the name and not the token', async () => {
+    const context = stub(directory);
+    const rewritten = await rewriteMentions('Bitte @@jane@acme.com anrufen', 'text/plain', context);
+    const demoted = demoteMentions(rewritten, reason);
+
+    assert.equal(demoted.body, rewritten.body);
+    assert.match(demoted.body, /Jane Doe/);
+  });
+
+  it('keeps tokens that named nobody alongside the demoted ones', async () => {
+    const context = stub(directory);
+    const rewritten = await rewriteMentions('@@nobody@acme.com and @@jdoe', 'text/plain', context);
+    const demoted = demoteMentions(rewritten, reason);
+
+    assert.deepEqual(
+      demoted.unresolved.map((entry) => entry.token),
+      ['nobody@acme.com', 'Jane Doe'],
+    );
+  });
+
+  it('is a no-op when nothing resolved', async () => {
+    const context = stub(directory);
+    const rewritten = await rewriteMentions('@@nobody@acme.com', 'text/plain', context);
+
+    assert.equal(demoteMentions(rewritten, reason), rewritten);
   });
 });

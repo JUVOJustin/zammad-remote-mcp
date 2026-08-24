@@ -5,6 +5,7 @@ import {
   composeBody,
   ensureHtml,
   looksLikeMarkup,
+  mentionsNotCarried,
   spaceParagraphs,
   text2html,
   textCleanup,
@@ -167,5 +168,21 @@ describe('composeBody', () => {
       body: 'Hallo\n\nAda',
       content_type: 'text/plain',
     });
+  });
+});
+
+describe('mentionsNotCarried', () => {
+  it('says nothing for the types that store their body as HTML', () => {
+    for (const type of ['email', 'note', 'phone', 'web', 'chat', 'fax']) {
+      assert.equal(mentionsNotCarried(type), null, type);
+    }
+  });
+
+  it('names the limit for a type stored as text', () => {
+    for (const type of ['sms', 'telegram personal-message', 'whatsapp message', 'facebook feed post']) {
+      const reason = mentionsNotCarried(type);
+      assert.ok(reason, type);
+      assert.ok(reason.includes(type), reason);
+    }
   });
 });
