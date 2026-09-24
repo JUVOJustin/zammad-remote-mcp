@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import type { Config } from '../src/core/config.js';
 import type { CacheStore } from '../src/core/util/cache.js';
 import { createMemoryCacheStore, JsonCache } from '../src/core/util/cache.js';
+import type { ZammadClient } from '../src/core/zammad/client.js';
+import { LookupService } from '../src/core/zammad/lookup.js';
 
 describe('memory cache store', () => {
   it('round-trips a value', async () => {
@@ -131,5 +134,26 @@ describe('JsonCache', () => {
     await assert.rejects(() => cache.read('k', load));
     await assert.rejects(() => cache.read('k', load));
     assert.equal(calls, 2, 'a failure must not be remembered');
+  });
+});
+
+describe('lookup cache', () => {
+  it('merges concurrent loads across the per-request services', async () => {
+    // Every MCP request builds its own LookupService; a cold burst of them must
+    // still read each list from Zammad once.
+    let calls = 0;
+    const client = {
+      baseUrl: 'http://merge.test',
+      fingerprint: 'one-credential',
+      get: async () => {
+        calls++;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return [{ id: 1, name: 'open', state_type_id: 2, active: true }];
+      },
+    } as unknown as ZammadClient;
+    const config = { METADATA_CACHE_TTL_SECONDS: 60 } as Config;
+
+    await Promise.all([1, 2, 3].map(() => new LookupService(client, config).states()));
+    assert.equal(calls, 1);
   });
 });

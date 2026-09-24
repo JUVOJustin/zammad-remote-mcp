@@ -27,6 +27,21 @@ export function setLookupCacheStore(next: CacheStore): void {
   store = next;
 }
 
+/**
+ * The read-through cache over `store`, shared by every LookupService. Each
+ * request builds its own service, so a cache per service would never see the
+ * concurrent loads it exists to merge: a burst of cold requests would fetch the
+ * same lists once each instead of once.
+ */
+let shared: { store: CacheStore; ttlSeconds: number; cache: JsonCache } | undefined;
+
+function sharedCache(ttlSeconds: number): JsonCache {
+  if (shared?.store !== store || shared.ttlSeconds !== ttlSeconds) {
+    shared = { store, ttlSeconds, cache: new JsonCache(store, ttlSeconds) };
+  }
+  return shared.cache;
+}
+
 /** Exposed for tests and for the `zammad_refresh_metadata_cache` tool. */
 export function clearLookupCache(): Promise<void> {
   return store.clear();
@@ -135,7 +150,7 @@ export class LookupService {
   ) {}
 
   private get cache(): JsonCache {
-    return new JsonCache(store, this.config.METADATA_CACHE_TTL_SECONDS);
+    return sharedCache(this.config.METADATA_CACHE_TTL_SECONDS);
   }
 
   private key(name: string): string {
