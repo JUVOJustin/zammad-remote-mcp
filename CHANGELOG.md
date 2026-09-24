@@ -4,6 +4,24 @@ Notable changes per release. The section matching a tag is used as that release'
 notes, with the pull-request list appended automatically — see
 `.github/workflows/deploy.yml`.
 
+## 4.0.1
+
+### A signature of the model's own is checked against the group's first
+
+Models kept closing a body with a signature block of their own — name, role,
+company, phone — on groups Zammad was about to sign, so the mail went out signed
+twice. The rule against it was stated only on the `append_signature` flag,
+nested in the article schema, where it went unread.
+
+The server instructions now carry one line: before writing a manual signature,
+check for a group signature with `zammad_get_group_signature` and avoid the
+overlap. It is a check, not a ban — a group without a signature still needs one,
+and the model signs as it would.
+
+The flag's own description now names a signature block of one's own alongside
+the sender's name, and applies only when the group has a signature. Nothing in
+any tool's schema changed.
+
 ## 4.0.0
 
 The server now speaks MCP 2026-07-28, the revision that made the protocol

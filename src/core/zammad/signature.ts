@@ -61,14 +61,17 @@ const PLACEHOLDER = /#\{\s{0,2}(.+?)\s{0,2}\}/g;
  * identically — a flag that meant something subtly different per tool would be
  * worse than no flag.
  *
- * This is also the only place the doubled-sign-off rule is stated. It is the
- * failure the mechanism cannot catch — `placeSignature` de-duplicates the
- * signature *element*, but "Viele Grüße, Justin Vogt" typed into the body is
- * ordinary prose — and the flag is what the caller is reading when it decides.
+ * The doubled-sign-off rule is stated here and, in one line, in the server
+ * instructions. It is the failure the mechanism cannot catch — `placeSignature`
+ * de-duplicates the signature *element*, but "Viele Grüße, Justin Vogt" typed
+ * into the body is ordinary prose. The flag alone proved too quiet: models kept
+ * writing their own signature block, so the instructions carry it too — as a
+ * check, not a ban, since a group without a signature still needs one.
  *
- * Only the name is stated as a rule. A signature always ends with it, which is
- * what makes it a signature, but the closing line above it is optional and
- * Zammad's own default has none: an instruction to leave the closing out would
+ * Only the name and a signature block of one's own are stated as a rule, and
+ * only for a group that has a signature. A signature always ends with the name,
+ * which is what makes it a signature, but the closing line above it is optional
+ * and Zammad's own default has none: an instruction to leave the closing out would
  * produce mail that jumps from the last sentence straight to a name. For that
  * judgement the caller needs to see the signature, which is what
  * `zammad_get_group_signature` is for.
@@ -81,8 +84,9 @@ export const appendSignatureFlag = z
       'applies on the email channel (`type: "email"`, `sender: "Agent"`) and only when the group has an ' +
       'active signature — a note or a phone article is never signed. Placeholders such as ' +
       '`#{user.firstname}` are resolved here.\n\n' +
-      "While this is on, do NOT write the sender's own name at the end of `body`. The signature is " +
-      'appended after it and ends with that name, so writing it yourself shows it twice. Whether a ' +
+      "While this is on and the group has a signature, do NOT write the sender's own name or a signature " +
+      'block of your own at the end of `body`. The signature is appended after it and ends with that ' +
+      'name, so writing it yourself shows it twice. Whether a ' +
       'closing line belongs in `body` depends on the signature: some carry one above the name, and ' +
       "Zammad's own default does not. Call `zammad_get_group_signature` to read the exact text that " +
       'will be appended before you write the body — that is the reliable way to decide. Set this to ' +
