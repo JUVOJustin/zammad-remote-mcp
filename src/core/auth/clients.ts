@@ -36,7 +36,11 @@ interface SignedClientPayload {
 }
 
 export async function resolveClient(config: Config, clientId: string): Promise<RegisteredClient | undefined> {
-  if (clientId.startsWith('https://')) return resolveMetadataDocumentClient(config, clientId);
+  if (clientId.startsWith('https://')) {
+    return config.OAUTH_CLIENT_ID_METADATA_DOCUMENTS
+      ? resolveMetadataDocumentClient(config, clientId)
+      : undefined;
+  }
 
   const scope = config.ZAMMAD_OAUTH_SCOPES.join(' ');
 
@@ -208,27 +212,35 @@ export function redirectProblem(config: Config, raw: string): string | undefined
 // ------------------------------------------------ client ID metadata documents
 
 const DOCUMENT_TIMEOUT_MS = 5_000;
-const DOCUMENT_MAX_BYTES = 64 * 1024;
+/** Real documents are well under a kilobyte; this bounds what one cache entry can hold. */
+const DOCUMENT_MAX_BYTES = 16 * 1024;
 const DOCUMENT_DEFAULT_TTL_SECONDS = 300;
 const DOCUMENT_MAX_TTL_SECONDS = 86_400;
 
 /**
  * Fetched documents, per process. Each `/authorize`, `/token` and `/revoke`
  * resolves the client again, and without this every one of them would be an
- * outbound request to the client's host.
+ * outbound request to the client's host. The keys are URLs anyone can choose,
+ * which is why the store's bound has to hold for entries that have not expired.
  */
 const documentCache = createMemoryCacheStore(200);
+/** Concurrent resolutions of one URL share a single fetch. */
+const pendingDocuments = new Map<string, Promise<RegisteredClient>>();
 
 /**
  * Resolve a client whose `client_id` is the URL of its metadata document
  * (draft-ietf-oauth-client-id-metadata-document).
  *
  * Fetching a URL that anyone can name is a server-side request forgery surface,
- * so the fetch is narrowed as far as a legitimate client allows: HTTPS to a
- * named host only — no IP literals, no `localhost` — no redirects, a short
- * timeout and a small body limit. The document itself grants nothing: the
- * redirect URI it lists still has to pass the same allowlist as a registered
- * one before a code is sent there.
+ * so the fetch is narrowed as far as a legitimate client allows: HTTPS on the
+ * default port to a public-looking host name — no IP literals, no single-label
+ * or local-only names — no redirects, a short timeout and a small body limit.
+ * A public name that resolves to a private address is not caught here, since
+ * the core cannot resolve names on every runtime; TLS certificate validation is
+ * what keeps such a fetch from succeeding against an ordinary internal service.
+ *
+ * The document itself grants nothing: the redirect URI it lists still has to
+ * pass the same allowlist as a registered one before a code is sent there.
  */
 async function resolveMetadataDocumentClient(config: Config, clientId: string): Promise<RegisteredClient> {
   const url = metadataDocumentUrl(clientId);
@@ -236,8 +248,25 @@ async function resolveMetadataDocumentClient(config: Config, clientId: string): 
   const cached = await documentCache.get(clientId);
   if (cached !== undefined) return JSON.parse(cached) as RegisteredClient;
 
+  let pending = pendingDocuments.get(clientId);
+  if (!pending) {
+    pending = fetchMetadataDocument(config, url, clientId).finally(() => pendingDocuments.delete(clientId));
+    pendingDocuments.set(clientId, pending);
+  }
+  return pending;
+}
+
+async function fetchMetadataDocument(config: Config, url: URL, clientId: string): Promise<RegisteredClient> {
   const reject = (reason: string) =>
     new OAuthError('invalid_client', `The client metadata document at ${clientId} ${reason}.`);
+  // Answered as a server fault rather than `invalid_client`: a client told its
+  // id is invalid discards its tokens, which an outage at its host must not cause.
+  const unavailable = (reason: string) =>
+    new OAuthError(
+      'server_error',
+      `The client metadata document at ${clientId} ${reason}; try again later.`,
+      502,
+    );
 
   let response: Response;
   try {
@@ -248,10 +277,13 @@ async function resolveMetadataDocumentClient(config: Config, clientId: string): 
       signal: AbortSignal.timeout(DOCUMENT_TIMEOUT_MS),
     });
   } catch {
-    throw reject('could not be fetched');
+    throw unavailable('could not be fetched');
   }
   if (response.status !== 200) {
     await response.body?.cancel();
+    if (response.status >= 500 || response.status === 429) {
+      throw unavailable(`answered HTTP ${response.status}`);
+    }
     throw reject(`answered HTTP ${response.status} instead of 200`);
   }
 
@@ -259,9 +291,9 @@ async function resolveMetadataDocumentClient(config: Config, clientId: string): 
   try {
     document = JSON.parse(await readLimited(response, DOCUMENT_MAX_BYTES));
   } catch (error) {
-    throw reject(
-      error instanceof RangeError ? `is larger than ${DOCUMENT_MAX_BYTES} bytes` : 'is not valid JSON',
-    );
+    if (error instanceof RangeError) throw reject(`is larger than ${DOCUMENT_MAX_BYTES} bytes`);
+    if (error instanceof SyntaxError) throw reject('is not valid JSON');
+    throw unavailable('could not be read');
   }
 
   if (!isRecord(document)) throw reject('is not a JSON object');
@@ -294,6 +326,9 @@ async function resolveMetadataDocumentClient(config: Config, clientId: string): 
   return client;
 }
 
+/** Names that only ever resolve inside a network, `localhost.localdomain` included. */
+const LOCAL_SUFFIXES = ['.localhost', '.localdomain', '.local', '.internal', '.home.arpa'];
+
 function metadataDocumentUrl(clientId: string): URL {
   const invalid = (reason: string) =>
     new OAuthError(
@@ -305,10 +340,13 @@ function metadataDocumentUrl(clientId: string): URL {
   if (url?.protocol !== 'https:') throw invalid('it must be an https URL');
   if (url.pathname === '/' || url.pathname === '') throw invalid('it must have a path');
   if (url.hash || url.username || url.password) throw invalid('it must not carry a fragment or credentials');
+  if (url.port) throw invalid('it must use the default https port');
 
-  const host = url.hostname.toLowerCase();
+  // `localhost.` is the same host as `localhost`, and `URL` keeps the dot.
+  const host = url.hostname.toLowerCase().replace(/\.+$/, '');
   if (host.startsWith('[') || /^\d{1,3}(\.\d{1,3}){3}$/.test(host)) throw invalid('the host must be a name');
-  if (host === 'localhost' || host.endsWith('.localhost')) throw invalid('the host must not be local');
+  if (!host.includes('.')) throw invalid('the host must be a fully qualified name');
+  if (LOCAL_SUFFIXES.some((suffix) => host.endsWith(suffix))) throw invalid('the host must not be local');
   return url;
 }
 

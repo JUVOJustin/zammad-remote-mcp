@@ -442,12 +442,82 @@ describe('client ID metadata documents', () => {
     assert.match((await response.json()).error_description, /OAUTH_ALLOWED_REDIRECT_HOSTS/);
   });
 
-  it('never fetches a document from an address instead of a host name', async () => {
+  it('never fetches from an address, a local or single-label name, or a custom port', async () => {
     const before = upstreamCalls.length;
-    const response = await fetch(authorizeUrl({ client_id: 'https://169.254.169.254/latest/meta-data' }), {
-      redirect: 'manual',
-    });
+    for (const clientId of [
+      'https://169.254.169.254/latest/meta-data',
+      'https://localhost./client.json',
+      'https://intranet/client.json',
+      'https://localhost.localdomain/client.json',
+      'https://printer.local/client.json',
+      'https://client.example:8443/client.json',
+    ]) {
+      const response = await fetch(authorizeUrl({ client_id: clientId }), { redirect: 'manual' });
+      assert.equal(response.status, 400, clientId);
+      assert.equal((await response.json()).error, 'invalid_client', clientId);
+    }
+    assert.equal(upstreamCalls.length, before);
+  });
 
+  it("answers an outage at the client's host as a server fault, not an unknown client", async () => {
+    // A client told its id is invalid discards its tokens; a brief outage at
+    // its own host must not cost the user their connection.
+    const clientId = documentUrl('outage');
+    upstream.set(clientId, () => new Response('upstream down', { status: 503 }));
+
+    const response = await fetch(`http://127.0.0.1:${appPort}/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'refresh_token', client_id: clientId, refresh_token: 'r' }),
+    });
+    assert.equal(response.status, 502);
+    assert.equal((await response.json()).error, 'server_error');
+  });
+
+  it('fetches a document once for concurrent requests', async () => {
+    const clientId = documentUrl('concurrent');
+    upstream.set(clientId, async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return Response.json({
+        client_id: clientId,
+        client_name: 'Concurrent',
+        redirect_uris: ['http://localhost:4567/callback'],
+      });
+    });
+    const before = upstreamCalls.length;
+
+    const responses = await Promise.all(
+      [1, 2, 3].map(() => fetch(authorizeUrl({ client_id: clientId }), { redirect: 'manual' })),
+    );
+    for (const response of responses) assert.equal(response.status, 302);
+    assert.equal(upstreamCalls.length - before, 1);
+  });
+
+  it('can be switched off for a server without outbound internet access', async () => {
+    const offline = createApp(
+      loadConfig({
+        ZAMMAD_URL,
+        ZAMMAD_OAUTH_CLIENT_ID: 'zammad-client-id',
+        OAUTH_STATE_SECRET: 'test-secret-that-is-long-enough',
+        PUBLIC_URL,
+        LOG_LEVEL: 'silent',
+        OAUTH_CLIENT_ID_METADATA_DOCUMENTS: 'false',
+      } as NodeJS.ProcessEnv),
+      createLogger('silent'),
+    );
+
+    const metadata = await (
+      await offline.fetch(new Request(`${PUBLIC_URL}/.well-known/oauth-authorization-server`))
+    ).json();
+    assert.equal(metadata.client_id_metadata_document_supported, false);
+    assert.ok(metadata.registration_endpoint, 'clients must still be able to register');
+
+    const before = upstreamCalls.length;
+    const response = await offline.fetch(
+      new Request(
+        `${PUBLIC_URL}/authorize?${new URLSearchParams({ client_id: documentUrl('offline'), response_type: 'code' })}`,
+      ),
+    );
     assert.equal(response.status, 400);
     assert.equal((await response.json()).error, 'invalid_client');
     assert.equal(upstreamCalls.length, before);
@@ -537,6 +607,8 @@ describe('mcp endpoint', () => {
 
     assert.equal(response.status, 200);
     assert.ok(response.body.result.supportedVersions.includes(MODERN));
+    // Nothing is ever published, so no client should hold a listen stream open for it.
+    assert.equal(response.body.result.capabilities.tools.listChanged, false);
     assert.deepEqual(response.body.result._meta['io.modelcontextprotocol/serverInfo'], {
       name: 'zammad-remote-mcp',
       version: manifest.version,

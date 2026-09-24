@@ -110,8 +110,26 @@ export function createApp(config: Config, logger: Logger): Hono {
   // negotiate with `initialize` — through the SDK's stateless fallback, so both
   // generations of client reach the same tools.
   const mcp = createMcpHandler(
-    ({ authInfo }) => createMcpServer({ config, logger, credential: credentialFor(config, authInfo) }),
-    { onerror: (error) => logger.error('mcp request failed', { error: error.message }) },
+    async ({ authInfo }) => {
+      try {
+        return await createMcpServer({ config, logger, credential: credentialFor(config, authInfo) });
+      } catch (error) {
+        logger.error('could not build the MCP server for a request', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
+    },
+    {
+      // The SDK reports every request it refuses here — an unsupported protocol
+      // version, a missing header, the wrong media type. Anyone can send those,
+      // so they are not errors of this server; its own failures are logged above.
+      onerror: (error) => logger.debug('mcp request refused', { error: error.message }),
+      // Nothing is ever published to a `subscriptions/listen` stream (see the
+      // capabilities in createMcpServer), so the few a client might still open
+      // are capped well below the SDK's default of 1024 held connections.
+      maxSubscriptions: 16,
+    },
   );
 
   app.all(config.MCP_PATH, async (c) => {

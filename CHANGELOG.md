@@ -12,14 +12,19 @@ that was already stateless mostly gets to delete code: the transport wiring, the
 validator workaround and the OAuth library it borrowed are gone, and the
 authorization server the proxy presents to clients is now this package's own.
 
-Nothing in any tool changed, and no environment variable was added or removed.
-What an upgrader has to check is short:
+Nothing in any tool changed, and no environment variable was removed. What an
+upgrader has to check is short:
 
 - **Node 22 or later.** Node 20 reached end of life in April 2026 and SDK v2
   leaves it behind.
 - **The OAuth endpoints no longer rate-limit themselves.** Limit them in the
   reverse proxy or with Cloudflare Rate Limiting — see below for why the
   built-in limit was worse than none.
+- **The proxy may now fetch from the internet.** Claude, Claude Code and VS Code
+  identify themselves with a client metadata document once the proxy advertises
+  support, and the proxy fetches it from their host. A server without outbound
+  HTTPS sets `OAUTH_CLIENT_ID_METADATA_DOCUMENTS=false`, and those clients
+  register dynamically as before.
 - **A refused registration answers `invalid_redirect_uri`**, the RFC 7591 code
   for exactly that case, instead of `invalid_client_metadata`.
 - **Code that imports the library** gets the SDK v2 `McpServer` from
@@ -59,8 +64,10 @@ Four smaller consequences:
   method and tool name in `Mcp-Method` and `Mcp-Name`, and a CORS preflight that
   does not allow them stops a browser-based client before it reaches the server.
   The session headers, which this server never issued, are no longer allowed.
-- **The logging capability is no longer advertised.** The server never sent a
-  log message, and the revision deprecates the feature.
+- **Neither logging nor list changes are advertised.** The server never sent a
+  log message, and the revision deprecates the feature. It never announced a
+  changed tool list either — a stateless server cannot — and advertising it only
+  invited clients to hold a `subscriptions/listen` stream open for nothing.
 
 ### Clients can identify themselves with a metadata document
 
@@ -73,14 +80,23 @@ client.
 
 The proxy now advertises `client_id_metadata_document_supported` and accepts
 such a client at `/authorize`, `/token` and `/revoke`. A URL anyone can name is
-one the server can be made to fetch, so the fetch is kept narrow: HTTPS to a
-host name only, never an IP address or `localhost`, no redirects, five seconds
-and 64 KB at most, cached per process as the response's own `Cache-Control`
-allows. A document gains a client nothing on its own either: the redirect URI it
-lists has to pass `OAUTH_ALLOWED_REDIRECT_HOSTS` and
-`OAUTH_ALLOWED_REDIRECT_SCHEMES` exactly like a registered one before a code is
-sent there. A document asking for a client authentication method other than
-`none` is refused, since the proxy relies on PKCE and cannot verify a key.
+one the server can be made to fetch, so the fetch is kept narrow: HTTPS on the
+default port to a fully qualified host name — never an IP literal, a
+single-label name or one under a local-only suffix such as `.localhost`,
+`.localdomain` or `.internal` — no redirects, five seconds and 16 KB at most.
+A public name that resolves to a private address is not caught, since the core
+cannot resolve names on every runtime; certificate validation is what stops
+such a fetch from succeeding. Documents are cached per process as their own `Cache-Control`
+allows, in a cache whose bound holds however many URLs a caller invents, and
+concurrent requests for one document share a single fetch.
+
+A document gains a client nothing on its own: the redirect URI it lists has to
+pass `OAUTH_ALLOWED_REDIRECT_HOSTS` and `OAUTH_ALLOWED_REDIRECT_SCHEMES` exactly
+like a registered one before a code is sent there. A document asking for a
+client authentication method other than `none` is refused, since the proxy
+relies on PKCE and cannot verify a key. A document that cannot be fetched at all
+answers 502 rather than `invalid_client`, so an outage at the client's own host
+does not make it throw away its tokens.
 
 Dynamic registration stays for clients that predate the documents. A request
 without `redirect_uris` now answers 400 rather than 500.

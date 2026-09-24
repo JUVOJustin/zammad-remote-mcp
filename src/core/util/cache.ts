@@ -33,12 +33,21 @@ export function createMemoryCacheStore(maxEntries = 500): CacheStore {
     },
 
     async set(key, value, ttlSeconds) {
+      // Re-inserting moves the key to the end, so iteration order is write order.
+      entries.delete(key);
       entries.set(key, { value, expiresAt: Date.now() + ttlSeconds * 1000 });
 
-      // Opportunistic eviction — keeps the map bounded without a timer.
+      // Evicted on write rather than by a timer. Expired entries go first; if
+      // that is not enough, the oldest writes do — otherwise the bound would
+      // hold only while entries happen to expire, and a caller that chooses
+      // the keys could grow the map until the process runs out of memory.
       if (entries.size > maxEntries) {
         const now = Date.now();
         for (const [k, entry] of entries) if (entry.expiresAt <= now) entries.delete(k);
+        for (const k of entries.keys()) {
+          if (entries.size <= maxEntries) break;
+          entries.delete(k);
+        }
       }
     },
 

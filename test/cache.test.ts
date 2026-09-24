@@ -22,6 +22,18 @@ describe('memory cache store', () => {
     await store.clear();
     assert.equal(await store.get('k'), undefined);
   });
+
+  it('stays within its bound when nothing has expired, dropping the oldest writes', async () => {
+    // The OAuth proxy caches under keys a caller chooses; a bound that only
+    // held once entries expired let those callers grow it without limit.
+    const store = createMemoryCacheStore(3);
+    for (const key of ['a', 'b', 'c', 'd', 'e']) await store.set(key, key, 3600);
+
+    assert.equal(await store.get('a'), undefined);
+    assert.equal(await store.get('b'), undefined);
+    assert.equal(await store.get('e'), 'e');
+    assert.equal(await store.get('c'), 'c');
+  });
 });
 
 describe('JsonCache', () => {

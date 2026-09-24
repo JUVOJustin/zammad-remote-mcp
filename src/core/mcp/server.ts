@@ -56,7 +56,11 @@ export async function createMcpServer(options: CreateServerOptions): Promise<Mcp
     { name: 'zammad-remote-mcp', version: SERVER_VERSION },
     {
       instructions: instructionsFor(options.config.ZAMMAD_URL),
-      capabilities: { tools: {} },
+      // The tool list is fixed for the life of a server, and a stateless server
+      // could not tell anyone if it were not. Advertising `listChanged` would
+      // only invite clients to hold a `subscriptions/listen` stream open for
+      // notifications that never come.
+      capabilities: { tools: { listChanged: false } },
       cacheHints: {
         // The tool schemas carry this instance's states, priorities, groups and
         // macros, which the lookup cache holds for the same TTL — so a client may

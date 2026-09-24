@@ -308,6 +308,8 @@ database:
 
 - A client with a Client ID Metadata Document needs no registration: its `client_id` is the HTTPS
   URL of a JSON document listing its redirect URIs, fetched on first use and cached per process.
+  This needs outbound HTTPS to the client's host; set `OAUTH_CLIENT_ID_METADATA_DOCUMENTS=false`
+  where the server has none, and clients fall back to dynamic registration.
 - Dynamic registration mints a `client_id` of the form `zmcp_<payload>.<hmac>`, where the payload
   *is* the registration record (the client's redirect URIs and name), verified and decoded on use.
 - `/authorize` swaps the client's redirect URI for this server's single `/oauth/callback` — the one

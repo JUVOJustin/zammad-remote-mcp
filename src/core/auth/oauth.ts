@@ -110,7 +110,7 @@ export function createOAuthLayer(config: Config, logger: Logger): OAuthLayer | u
     code_challenge_methods_supported: ['S256'],
     token_endpoint_auth_methods_supported: ['none'],
     revocation_endpoint_auth_methods_supported: ['none'],
-    client_id_metadata_document_supported: true,
+    client_id_metadata_document_supported: config.OAUTH_CLIENT_ID_METADATA_DOCUMENTS,
     // RFC 9207: every redirect back to a client names this issuer, so a client
     // talking to several authorization servers can tell whose code it holds.
     authorization_response_iss_parameter_supported: true,
