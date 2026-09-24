@@ -360,7 +360,7 @@ silently issuing tokens the request path would discard.
 | Mode | Behaviour |
 |---|---|
 | `proxy` *(default under `oauth`)* | This server is the authorization server from the client's perspective and proxies to Zammad. Supports client ID metadata documents, dynamic client registration and ephemeral redirect URIs. One callback URL to register in Zammad. |
-| `passthrough` | Clients talk to Zammad directly. Every client redirect URI must be registered in Zammad by hand, and Doorkeeper publishes no authorization-server metadata, so this server publishes it on Zammad's behalf. Brittle with clients that self-register. |
+| `passthrough` | Clients talk to Zammad directly. Every client redirect URI must be registered in Zammad by hand, and Doorkeeper publishes no authorization-server metadata, so this server publishes it on Zammad's behalf — which requires an HTTPS `ZAMMAD_PUBLIC_URL` outside localhost. Brittle with clients that self-register. |
 | `disabled` *(automatic under `token`/`basic`)* | No OAuth metadata is served. Worth setting explicitly under `oauth` only when an API gateway in front already handles discovery and just forwards the bearer token. |
 
 Tools accept an optional `on_behalf_of` argument, which maps to Zammad's `X-On-Behalf-Of` header for

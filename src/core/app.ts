@@ -1,5 +1,12 @@
-import { type AuthInfo, createMcpHandler } from '@modelcontextprotocol/server';
-import { type Context, Hono } from 'hono';
+import {
+  type AuthInfo,
+  createMcpHandler,
+  OAuthError,
+  OAuthErrorCode,
+  type OAuthTokenVerifier,
+  requireBearerAuth,
+} from '@modelcontextprotocol/server';
+import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { createOAuthLayer } from './auth/oauth.js';
 import type { Config } from './config.js';
@@ -92,18 +99,14 @@ export function createApp(config: Config, logger: Logger): Hono {
   );
 
   // --------------------------------------------------------------- mcp path
-  const unauthorized = (c: Context, detail: string) => {
-    // RFC 9728: point the client at the protected-resource metadata so it can
-    // discover where to authorize, and name the scopes to ask for.
-    if (oauth) {
-      c.header(
-        'WWW-Authenticate',
-        `Bearer realm="zammad-mcp", error="invalid_token", error_description="${detail.replace(/"/g, "'")}", ` +
-          `scope="${config.ZAMMAD_OAUTH_SCOPES.join(' ')}", resource_metadata="${oauth.resourceMetadataUrl}"`,
-      );
-    }
-    return c.json({ error: 'unauthorized', error_description: detail }, 401);
-  };
+  // A refused request gets the RFC 6750 challenge pointing at the RFC 9728
+  // metadata, so the client can discover where to authorize and which scope to
+  // ask for — `requiredScopes` is what puts that scope into the challenge.
+  const authenticate = requireBearerAuth({
+    verifier: zammadTokenVerifier(config),
+    requiredScopes: config.ZAMMAD_OAUTH_SCOPES,
+    resourceMetadataUrl: oauth?.resourceMetadataUrl,
+  });
 
   // One handler for the process. It builds a fresh server per request from the
   // factory, answers 2026-07-28 requests natively and 2025-era ones — which
@@ -135,32 +138,9 @@ export function createApp(config: Config, logger: Logger): Hono {
   app.all(config.MCP_PATH, async (c) => {
     if (config.ZAMMAD_AUTH_MODE !== 'oauth') return mcp.fetch(c.req.raw);
 
-    const header = c.req.header('Authorization') ?? c.req.header('authorization');
-    const token = header?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
-    if (!token) {
-      return unauthorized(
-        c,
-        'Missing bearer token. Authorize against Zammad and send the access token as `Authorization: Bearer <token>`.',
-      );
-    }
-
-    if (config.VALIDATE_TOKEN_EAGERLY) {
-      const response = await fetch(`${config.ZAMMAD_URL}/api/v1/users/me`, {
-        headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
-        signal: AbortSignal.timeout(config.ZAMMAD_TIMEOUT_MS),
-      }).catch(() => undefined);
-
-      if (!response?.ok) {
-        return unauthorized(
-          c,
-          `Zammad rejected the access token (HTTP ${response?.status ?? 'unreachable'}).`,
-        );
-      }
-    }
-
-    return mcp.fetch(c.req.raw, {
-      authInfo: { token, clientId: 'zammad', scopes: config.ZAMMAD_OAUTH_SCOPES },
-    });
+    const authInfo = await authenticate(c.req.raw);
+    if (authInfo instanceof Response) return authInfo;
+    return mcp.fetch(c.req.raw, { authInfo });
   });
 
   app.notFound((c) =>
@@ -182,11 +162,56 @@ export function createApp(config: Config, logger: Logger): Hono {
 }
 
 /**
+ * Accepts a Zammad access token as the credential for one request.
+ *
+ * Zammad tokens are opaque: this server can read neither their scope nor their
+ * expiry, and Zammad enforces both on every API call anyway. With
+ * VALIDATE_TOKEN_EAGERLY the token is first confirmed against Zammad, so a dead
+ * one is refused with a challenge before any tool runs rather than on the first
+ * tool call. The SDK refuses a token without an expiry; the answer is given
+ * again on every request, so it only has to hold for this one.
+ */
+function zammadTokenVerifier(config: Config): OAuthTokenVerifier {
+  return {
+    async verifyAccessToken(token) {
+      if (config.VALIDATE_TOKEN_EAGERLY) {
+        const response = await fetch(`${config.ZAMMAD_URL}/api/v1/users/me`, {
+          headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+          signal: AbortSignal.timeout(config.ZAMMAD_TIMEOUT_MS),
+        }).catch(() => undefined);
+        await response?.body?.cancel();
+
+        if (response?.status === 401) {
+          throw new OAuthError(OAuthErrorCode.InvalidToken, 'Zammad rejected the access token.');
+        }
+        if (!response?.ok) {
+          throw new OAuthError(
+            OAuthErrorCode.ServerError,
+            `Zammad could not confirm the access token (${response ? `HTTP ${response.status}` : 'unreachable'}).`,
+          );
+        }
+      }
+      return {
+        token,
+        clientId: 'zammad',
+        scopes: config.ZAMMAD_OAUTH_SCOPES,
+        expiresAt: Math.floor(Date.now() / 1000) + 60,
+      };
+    },
+  };
+}
+
+/**
  * The Zammad credential for one MCP request: the caller's bearer token in
  * `oauth` mode, the configured one otherwise.
  */
 function credentialFor(config: Config, authInfo: AuthInfo | undefined): Credential {
-  if (config.ZAMMAD_AUTH_MODE === 'oauth') return { kind: 'bearer', token: authInfo?.token ?? '' };
+  if (config.ZAMMAD_AUTH_MODE === 'oauth') {
+    // The bearer gate hands every oauth request over with its AuthInfo; one
+    // without it is a wiring fault, and must not reach Zammad as an empty token.
+    if (!authInfo) throw new Error('An oauth-mode MCP request reached the server without a verified token.');
+    return { kind: 'bearer', token: authInfo.token };
+  }
   if (config.ZAMMAD_AUTH_MODE === 'token') return { kind: 'token', token: config.ZAMMAD_API_TOKEN! };
   return { kind: 'basic', username: config.ZAMMAD_USERNAME!, password: config.ZAMMAD_PASSWORD! };
 }
