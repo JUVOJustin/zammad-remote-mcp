@@ -1,6 +1,7 @@
+import { OAuthClientInformationFullSchema, OAuthClientMetadataSchema } from '@modelcontextprotocol/core';
+import { type OAuthClientMetadata, OAuthError, OAuthErrorCode } from '@modelcontextprotocol/server';
 import type { Config } from '../config.js';
 import { createMemoryCacheStore } from '../util/cache.js';
-import { OAuthError } from '../util/errors.js';
 import { SignatureError, seal, unseal } from './signing.js';
 
 /**
@@ -81,45 +82,40 @@ export async function resolveClient(config: Config, clientId: string): Promise<R
  * clients authenticate with PKCE alone, so every registration is a public
  * client whatever it asked for.
  */
-export async function registerClient(config: Config, metadata: unknown): Promise<Record<string, unknown>> {
-  if (!isRecord(metadata)) {
-    throw new OAuthError('invalid_client_metadata', 'The registration request must be a JSON object.');
+export async function registerClient(config: Config, body: unknown): Promise<Record<string, unknown>> {
+  const parsed = OAuthClientMetadataSchema.safeParse(body);
+  if (!parsed.success) {
+    throw new OAuthError(OAuthErrorCode.InvalidClientMetadata, firstIssue(parsed.error));
   }
+  const metadata = parsed.data;
 
-  const redirectUris = metadata.redirect_uris;
-  if (!isStringList(redirectUris)) {
-    throw new OAuthError('invalid_redirect_uri', 'redirect_uris must be a non-empty array of URIs.');
+  if (metadata.redirect_uris.length === 0) {
+    throw new OAuthError(OAuthErrorCode.InvalidRedirectUri, 'redirect_uris must list at least one URI.');
   }
-  for (const uri of redirectUris) {
+  for (const uri of metadata.redirect_uris) {
     const problem = redirectProblem(config, uri);
-    if (problem) throw new OAuthError('invalid_redirect_uri', problem);
+    if (problem) throw new OAuthError(OAuthErrorCode.InvalidRedirectUri, problem);
   }
 
   const payload: SignedClientPayload = {
-    redirect_uris: redirectUris,
-    client_name: typeof metadata.client_name === 'string' ? metadata.client_name : undefined,
-    scope:
-      typeof metadata.scope === 'string' && metadata.scope.trim()
-        ? metadata.scope
-        : config.ZAMMAD_OAUTH_SCOPES.join(' '),
+    redirect_uris: metadata.redirect_uris,
+    client_name: metadata.client_name,
+    scope: metadata.scope?.trim() ? metadata.scope : config.ZAMMAD_OAUTH_SCOPES.join(' '),
     iat: Math.floor(Date.now() / 1000),
   };
 
+  // The schema drops anything that is not client metadata, so a `client_secret`
+  // in the request cannot be echoed back — none is issued, because a secret
+  // that cannot be verified statelessly would only break the token exchange.
   return {
     ...metadata,
     client_id: await seal(config.OAUTH_STATE_SECRET!, payload, CLIENT_ID_PREFIX),
     client_id_issued_at: payload.iat,
-    client_name: payload.client_name,
-    redirect_uris: payload.redirect_uris,
     scope: payload.scope,
     grant_types: ['authorization_code', 'refresh_token'],
     response_types: ['code'],
     token_endpoint_auth_method: 'none',
-    // A secret that cannot be verified statelessly would only break the token
-    // exchange, so none is issued even when the request asked for one.
-    client_secret: undefined,
-    client_secret_expires_at: undefined,
-  };
+  } satisfies OAuthClientMetadata & { client_id: string; client_id_issued_at: number };
 }
 
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
@@ -136,7 +132,7 @@ export function chooseRedirectUri(config: Config, client: RegisteredClient, requ
   if (requested === undefined) {
     if (client.redirect_uris.length !== 1) {
       throw new OAuthError(
-        'invalid_request',
+        OAuthErrorCode.InvalidRequest,
         'redirect_uri must be specified when the client has more than one registered redirect URI.',
       );
     }
@@ -147,14 +143,17 @@ export function chooseRedirectUri(config: Config, client: RegisteredClient, requ
   ) {
     chosen = requested;
   } else {
-    throw new OAuthError('invalid_request', `redirect_uri "${requested}" is not registered for this client.`);
+    throw new OAuthError(
+      OAuthErrorCode.InvalidRequest,
+      `redirect_uri "${requested}" is not registered for this client.`,
+    );
   }
 
   // A registration signed before the allowlist was narrowed, or a metadata
   // document listing hosts this deployment does not trust, still must not
   // receive a code.
   const problem = redirectProblem(config, chosen);
-  if (problem) throw new OAuthError('invalid_request', problem);
+  if (problem) throw new OAuthError(OAuthErrorCode.InvalidRequest, problem);
   return chosen;
 }
 
@@ -258,14 +257,13 @@ async function resolveMetadataDocumentClient(config: Config, clientId: string): 
 
 async function fetchMetadataDocument(config: Config, url: URL, clientId: string): Promise<RegisteredClient> {
   const reject = (reason: string) =>
-    new OAuthError('invalid_client', `The client metadata document at ${clientId} ${reason}.`);
+    new OAuthError(OAuthErrorCode.InvalidClient, `The client metadata document at ${clientId} ${reason}.`);
   // Answered as a server fault rather than `invalid_client`: a client told its
   // id is invalid discards its tokens, which an outage at its host must not cause.
   const unavailable = (reason: string) =>
     new OAuthError(
-      'server_error',
+      OAuthErrorCode.ServerError,
       `The client metadata document at ${clientId} ${reason}; try again later.`,
-      502,
     );
 
   let response: Response;
@@ -296,29 +294,29 @@ async function fetchMetadataDocument(config: Config, url: URL, clientId: string)
     throw unavailable('could not be read');
   }
 
-  if (!isRecord(document)) throw reject('is not a JSON object');
-  if (document.client_id !== clientId) throw reject('names a different client_id than its own URL');
-  if (typeof document.client_name !== 'string' || !document.client_name.trim()) {
-    throw reject('has no client_name');
-  }
-  if (!isStringList(document.redirect_uris)) throw reject('lists no redirect_uris');
-  if ('client_secret' in document) throw reject('contains a client_secret, which a public document must not');
+  const parsed = OAuthClientInformationFullSchema.safeParse(document);
+  if (!parsed.success) throw reject(`is not valid client metadata: ${firstIssue(parsed.error)}`);
+  const metadata = parsed.data;
 
-  const authMethod = document.token_endpoint_auth_method ?? 'none';
+  if (metadata.client_id !== clientId) throw reject('names a different client_id than its own URL');
+  if (!metadata.client_name?.trim()) throw reject('has no client_name');
+  if (metadata.redirect_uris.length === 0) throw reject('lists no redirect_uris');
+  if (metadata.client_secret !== undefined) {
+    throw reject('contains a client_secret, which a public document must not');
+  }
+
+  const authMethod = metadata.token_endpoint_auth_method ?? 'none';
   if (authMethod !== 'none') {
     throw reject(
-      `asks for token_endpoint_auth_method "${String(authMethod)}"; this server only accepts public clients ("none") and relies on PKCE`,
+      `asks for token_endpoint_auth_method "${authMethod}"; this server only accepts public clients ("none") and relies on PKCE`,
     );
   }
 
   const client: RegisteredClient = {
     client_id: clientId,
-    client_name: document.client_name,
-    redirect_uris: document.redirect_uris,
-    scope:
-      typeof document.scope === 'string' && document.scope.trim()
-        ? document.scope
-        : config.ZAMMAD_OAUTH_SCOPES.join(' '),
+    client_name: metadata.client_name,
+    redirect_uris: metadata.redirect_uris,
+    scope: metadata.scope?.trim() ? metadata.scope : config.ZAMMAD_OAUTH_SCOPES.join(' '),
   };
 
   const ttl = cacheLifetime(response.headers.get('cache-control'));
@@ -332,7 +330,7 @@ const LOCAL_SUFFIXES = ['.localhost', '.localdomain', '.local', '.internal', '.h
 function metadataDocumentUrl(clientId: string): URL {
   const invalid = (reason: string) =>
     new OAuthError(
-      'invalid_client',
+      OAuthErrorCode.InvalidClient,
       `client_id ${clientId} is not a usable metadata document URL: ${reason}.`,
     );
 
@@ -359,30 +357,28 @@ function cacheLifetime(header: string | null): number {
   return Math.min(Number(maxAge), DOCUMENT_MAX_TTL_SECONDS);
 }
 
-/** The body as text, or a `RangeError` once it grows past `limit` bytes. */
+/**
+ * The body as text, or a `RangeError` once it grows past `limit` bytes.
+ *
+ * The SDK's `readRequestBody` reads the same way but takes a `Request` and
+ * leaves an oversized stream open; this cancels it, so the sender stops too.
+ */
 async function readLimited(response: Response, limit: number): Promise<string> {
   if (!response.body) return '';
   const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
+  const decoder = new TextDecoder();
   let size = 0;
+  let text = '';
   for (;;) {
     const { done, value } = await reader.read();
-    if (done) break;
+    if (done) return text + decoder.decode();
     size += value.byteLength;
     if (size > limit) {
       await reader.cancel();
       throw new RangeError('response body too large');
     }
-    chunks.push(value);
+    text += decoder.decode(value, { stream: true });
   }
-
-  const bytes = new Uint8Array(size);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return new TextDecoder().decode(bytes);
 }
 
 function parseUrl(raw: string): URL | undefined {
@@ -393,10 +389,9 @@ function parseUrl(raw: string): URL | undefined {
   }
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function isStringList(value: unknown): value is string[] {
-  return Array.isArray(value) && value.length > 0 && value.every((item) => typeof item === 'string');
+/** The first schema complaint, naming the field — enough for a client developer to act on. */
+function firstIssue(error: { issues: ReadonlyArray<{ path: PropertyKey[]; message: string }> }): string {
+  const issue = error.issues[0];
+  if (!issue) return 'invalid client metadata';
+  return issue.path.length ? `${issue.path.map(String).join('.')}: ${issue.message}` : issue.message;
 }

@@ -131,6 +131,31 @@ form, and forwarded the MCP client's `client_id` to Doorkeeper, which has never
 heard of it. It now takes the form body and revokes with the Zammad application's
 credentials, like `/token`.
 
+### The resource-server side is the SDK's
+
+What the SDK already implements is no longer written here. `requireBearerAuth`
+checks the bearer token and answers a missing or refused one with the RFC 6750
+challenge. The SDK builds the protected-resource metadata and refuses an issuer
+that is not HTTPS outside loopback, at startup. Registration requests, metadata
+documents, Doorkeeper's token responses and its errors are read with the SDK's
+schemas, and every OAuth error is the SDK's `OAuthError`.
+
+Four things a client or operator can notice:
+
+- **A refused bearer token answers `invalid_token`**, the RFC 6750 code, where
+  it used to answer a made-up `unauthorized`. The challenge header loses its
+  `realm`, which no client reads.
+- **Zammad being down is not the token's fault.** With
+  `VALIDATE_TOKEN_EAGERLY`, an unreachable or failing Zammad now answers 500
+  instead of 401, which sent clients through a pointless re-authorization.
+- **Passthrough mode checks its issuer too.** It refuses to start when
+  `ZAMMAD_PUBLIC_URL` is not HTTPS outside loopback, as proxy mode does for
+  `PUBLIC_URL` — conforming clients reject such metadata anyway.
+- **Registration is read as client metadata.** A request that is not valid
+  metadata answers `invalid_client_metadata`, fields the specification does not
+  define are no longer echoed back, and `javascript:`, `data:` and `vbscript:`
+  redirect URIs are refused before the allowlist is even consulted.
+
 ### The built-in rate limit is gone
 
 The OAuth endpoints were limited by a middleware that keyed every caller to one

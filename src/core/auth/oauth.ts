@@ -1,6 +1,14 @@
+import { OAuthErrorResponseSchema, OAuthTokensSchema } from '@modelcontextprotocol/core';
+import {
+  buildOAuthProtectedResourceMetadata,
+  getOAuthProtectedResourceMetadataUrl,
+  OAuthError,
+  OAuthErrorCode,
+  type OAuthMetadata,
+  type OAuthTokens,
+} from '@modelcontextprotocol/server';
 import { type Context, Hono } from 'hono';
 import type { Config } from '../config.js';
-import { OAuthError } from '../util/errors.js';
 import type { Logger } from '../util/logger.js';
 import {
   chooseRedirectUri,
@@ -57,7 +65,6 @@ export function createOAuthLayer(config: Config, logger: Logger): OAuthLayer | u
 
   const log = logger.child({ component: 'oauth' });
   const router = new Hono();
-  const resourceMetadataUrl = `${config.publicUrl}/.well-known/oauth-protected-resource${config.MCP_PATH}`;
 
   if (config.ZAMMAD_OAUTH_MODE === 'passthrough') {
     // The MCP client talks to Zammad directly. Doorkeeper does not publish
@@ -66,7 +73,7 @@ export function createOAuthLayer(config: Config, logger: Logger): OAuthLayer | u
     // hosted here. Every client redirect URI must be registered in Zammad.
     // Everything here is consumed by the client, which is not on this server's
     // network, so every endpoint has to be the browser-facing one.
-    const metadata = {
+    const resourceMetadataUrl = publishDiscovery(router, config, 'ZAMMAD_PUBLIC_URL', {
       issuer: config.zammadPublicUrl,
       authorization_endpoint: config.zammadAuthorizeUrl,
       token_endpoint: config.zammadPublicTokenUrl,
@@ -76,17 +83,7 @@ export function createOAuthLayer(config: Config, logger: Logger): OAuthLayer | u
       grant_types_supported: ['authorization_code', 'refresh_token'],
       code_challenge_methods_supported: ['S256', 'plain'],
       token_endpoint_auth_methods_supported: ['client_secret_post', 'client_secret_basic', 'none'],
-    };
-    const protectedResource = {
-      resource: config.resourceIdentifier,
-      authorization_servers: [config.zammadPublicUrl],
-      scopes_supported: config.ZAMMAD_OAUTH_SCOPES,
-      resource_name: 'Zammad MCP',
-    };
-
-    router.get('/.well-known/oauth-authorization-server', (c) => c.json(metadata));
-    router.get(`/.well-known/oauth-protected-resource${config.MCP_PATH}`, (c) => c.json(protectedResource));
-    router.get('/.well-known/oauth-protected-resource', (c) => c.json(protectedResource));
+    });
 
     log.info('oauth passthrough mode: clients authorize against Zammad directly', {
       authorization_endpoint: config.zammadAuthorizeUrl,
@@ -96,9 +93,7 @@ export function createOAuthLayer(config: Config, logger: Logger): OAuthLayer | u
 
   // ------------------------------------------------------------- proxy mode
   const issuer = config.publicUrl;
-  assertIssuer(issuer);
-
-  const metadata = {
+  const resourceMetadataUrl = publishDiscovery(router, config, 'PUBLIC_URL', {
     issuer,
     authorization_endpoint: `${issuer}/authorize`,
     token_endpoint: `${issuer}/token`,
@@ -114,18 +109,7 @@ export function createOAuthLayer(config: Config, logger: Logger): OAuthLayer | u
     // RFC 9207: every redirect back to a client names this issuer, so a client
     // talking to several authorization servers can tell whose code it holds.
     authorization_response_iss_parameter_supported: true,
-  };
-  const protectedResource = {
-    resource: config.resourceIdentifier,
-    authorization_servers: [issuer],
-    scopes_supported: config.ZAMMAD_OAUTH_SCOPES,
-    resource_name: 'Zammad MCP',
-  };
-
-  router.get('/.well-known/oauth-authorization-server', (c) => c.json(metadata));
-  router.get(`/.well-known/oauth-protected-resource${config.MCP_PATH}`, (c) => c.json(protectedResource));
-  // Some clients probe the unsuffixed path; mirror the document there too.
-  router.get('/.well-known/oauth-protected-resource', (c) => c.json(protectedResource));
+  });
 
   router.on(['GET', 'POST'], '/authorize', async (c) => {
     c.header('Cache-Control', 'no-store');
@@ -143,7 +127,7 @@ export function createOAuthLayer(config: Config, logger: Logger): OAuthLayer | u
       return errorResponse(c, error, log);
     }
 
-    const refuse = (code: string, description: string) =>
+    const refuse = (code: OAuthErrorCode, description: string) =>
       c.redirect(
         authorizationResponse(redirectUri, issuer, params.state, {
           error: code,
@@ -153,25 +137,25 @@ export function createOAuthLayer(config: Config, logger: Logger): OAuthLayer | u
 
     if (params.response_type !== 'code') {
       return refuse(
-        'unsupported_response_type',
+        OAuthErrorCode.UnsupportedResponseType,
         'Only the authorization code flow (response_type=code) is supported.',
       );
     }
     if (!params.code_challenge || params.code_challenge_method !== 'S256') {
       return refuse(
-        'invalid_request',
+        OAuthErrorCode.InvalidRequest,
         'PKCE is required: send code_challenge with code_challenge_method=S256.',
       );
     }
     if (params.resource !== undefined && !URL.canParse(params.resource)) {
-      return refuse('invalid_request', 'resource must be an absolute URI.');
+      return refuse(OAuthErrorCode.InvalidRequest, 'resource must be an absolute URI.');
     }
 
     const requested = params.scope?.split(' ').filter(Boolean) ?? [];
     const permitted = new Set(client.scope.split(' '));
     const unregistered = requested.find((scope) => !permitted.has(scope));
     if (unregistered)
-      return refuse('invalid_scope', `The client was not registered with scope ${unregistered}.`);
+      return refuse(OAuthErrorCode.InvalidScope, `The client was not registered with scope ${unregistered}.`);
 
     const search = new URLSearchParams({
       client_id: config.ZAMMAD_OAUTH_CLIENT_ID!,
@@ -206,7 +190,7 @@ export function createOAuthLayer(config: Config, logger: Logger): OAuthLayer | u
   router.get('/oauth/callback', async (c) => {
     const query = c.req.query();
     if (!query.state) {
-      return c.json({ error: 'invalid_request', error_description: 'Missing state parameter' }, 400);
+      return errorResponse(c, new OAuthError(OAuthErrorCode.InvalidRequest, 'Missing state parameter'), log);
     }
 
     let payload: SignedStatePayload;
@@ -216,19 +200,19 @@ export function createOAuthLayer(config: Config, logger: Logger): OAuthLayer | u
       log.warn('rejected oauth callback with an unverifiable state', {
         error: error instanceof Error ? error.message : String(error),
       });
-      return c.json(
-        {
-          error: 'invalid_request',
-          error_description:
-            'The state parameter is invalid or expired. Restart the authorization flow. ' +
+      return errorResponse(
+        c,
+        new OAuthError(
+          OAuthErrorCode.InvalidRequest,
+          'The state parameter is invalid or expired. Restart the authorization flow. ' +
             'If this persists across restarts, make sure OAUTH_STATE_SECRET is stable and shared by all replicas.',
-        },
-        400,
+        ),
+        log,
       );
     }
 
     const problem = redirectProblem(config, payload.redirect_uri);
-    if (problem) return c.json({ error: 'invalid_request', error_description: problem }, 400);
+    if (problem) return errorResponse(c, new OAuthError(OAuthErrorCode.InvalidRequest, problem), log);
 
     // Relay whatever Zammad sent — success (`code`) or failure (`error`).
     const relayed: Record<string, string> = {};
@@ -248,7 +232,7 @@ export function createOAuthLayer(config: Config, logger: Logger): OAuthLayer | u
       switch (params.grant_type) {
         case 'authorization_code': {
           if (!params.code || !params.code_verifier) {
-            throw new OAuthError('invalid_request', 'code and code_verifier are required.');
+            throw new OAuthError(OAuthErrorCode.InvalidRequest, 'code and code_verifier are required.');
           }
           return c.json(
             await zammadToken(
@@ -268,7 +252,9 @@ export function createOAuthLayer(config: Config, logger: Logger): OAuthLayer | u
           );
         }
         case 'refresh_token': {
-          if (!params.refresh_token) throw new OAuthError('invalid_request', 'refresh_token is required.');
+          if (!params.refresh_token) {
+            throw new OAuthError(OAuthErrorCode.InvalidRequest, 'refresh_token is required.');
+          }
           return c.json(
             await zammadToken(
               config,
@@ -285,7 +271,7 @@ export function createOAuthLayer(config: Config, logger: Logger): OAuthLayer | u
         }
         default:
           throw new OAuthError(
-            'unsupported_grant_type',
+            OAuthErrorCode.UnsupportedGrantType,
             'Supported grant types: authorization_code, refresh_token.',
           );
       }
@@ -314,7 +300,7 @@ export function createOAuthLayer(config: Config, logger: Logger): OAuthLayer | u
     try {
       const params = await requestParams(c);
       await requireClient(config, params.client_id);
-      if (!params.token) throw new OAuthError('invalid_request', 'token is required.');
+      if (!params.token) throw new OAuthError(OAuthErrorCode.InvalidRequest, 'token is required.');
 
       await zammadRequest(config, log, config.zammadRevokeUrl, 'revocation', {
         token: params.token,
@@ -336,26 +322,47 @@ export function createOAuthLayer(config: Config, logger: Logger): OAuthLayer | u
 }
 
 /**
- * RFC 8414 requires an HTTPS issuer without query or fragment. Loopback is
- * exempt so the proxy can be exercised locally; anything else would publish
- * metadata that conforming clients refuse, so it stops the server at startup.
+ * Serve the discovery documents and return the protected-resource metadata URL.
+ *
+ * The RFC 9728 document is built by the SDK, which also refuses an issuer that
+ * is not HTTPS outside loopback or that carries a query or fragment — metadata
+ * conforming clients would reject. Building it here, once, turns that into a
+ * startup failure naming the setting instead of a broken login later.
  */
-function assertIssuer(issuer: string): void {
-  const url = new URL(issuer);
-  if (url.protocol !== 'https:' && url.hostname !== 'localhost' && url.hostname !== '127.0.0.1') {
-    throw new Error(`PUBLIC_URL must be an https URL when ZAMMAD_OAUTH_MODE=proxy (got ${issuer})`);
+function publishDiscovery(
+  router: Hono,
+  config: Config,
+  issuerSetting: string,
+  metadata: OAuthMetadata,
+): string {
+  const resourceServerUrl = new URL(config.resourceIdentifier);
+  let protectedResource: ReturnType<typeof buildOAuthProtectedResourceMetadata>;
+  try {
+    protectedResource = buildOAuthProtectedResourceMetadata({
+      oauthMetadata: metadata,
+      resourceServerUrl,
+      scopesSupported: config.ZAMMAD_OAUTH_SCOPES,
+      resourceName: 'Zammad MCP',
+    });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`${issuerSetting} cannot be the OAuth issuer (${metadata.issuer}): ${reason}`);
   }
-  if (url.search || url.hash) {
-    throw new Error(
-      `PUBLIC_URL must not carry a query or fragment when ZAMMAD_OAUTH_MODE=proxy (got ${issuer})`,
-    );
-  }
+  const resourceMetadataUrl = getOAuthProtectedResourceMetadataUrl(resourceServerUrl);
+
+  router.get('/.well-known/oauth-authorization-server', (c) => c.json(metadata));
+  router.get(new URL(resourceMetadataUrl).pathname, (c) => c.json(protectedResource));
+  // Some clients probe the unsuffixed path; mirror the document there too.
+  router.get('/.well-known/oauth-protected-resource', (c) => c.json(protectedResource));
+  return resourceMetadataUrl;
 }
 
 async function requireClient(config: Config, clientId: string | undefined): Promise<RegisteredClient> {
-  if (!clientId) throw new OAuthError('invalid_request', 'client_id is required.');
+  if (!clientId) throw new OAuthError(OAuthErrorCode.InvalidRequest, 'client_id is required.');
   const client = await resolveClient(config, clientId);
-  if (!client) throw new OAuthError('invalid_client', 'Unknown client_id. Register the client again.');
+  if (!client) {
+    throw new OAuthError(OAuthErrorCode.InvalidClient, 'Unknown client_id. Register the client again.');
+  }
   return client;
 }
 
@@ -387,29 +394,23 @@ async function zammadToken(
   log: Logger,
   fields: Record<string, string>,
   kind: string,
-): Promise<Record<string, unknown>> {
+): Promise<OAuthTokens> {
   const text = await zammadRequest(config, log, config.zammadTokenUrl, kind, fields);
-  try {
-    const tokens: unknown = JSON.parse(text);
-    if (typeof tokens === 'object' && tokens !== null && 'access_token' in tokens) {
-      return tokens as Record<string, unknown>;
-    }
-  } catch {
-    // Reported below with the same message as a body without a token.
-  }
-  log.warn('zammad token endpoint returned no access token', { kind, body: text.slice(0, 300) });
+  const tokens = OAuthTokensSchema.safeParse(parseJson(text));
+  if (tokens.success) return tokens.data;
+
+  log.warn('zammad token endpoint returned no usable tokens', { kind, body: text.slice(0, 300) });
   throw new OAuthError(
-    'server_error',
+    OAuthErrorCode.ServerError,
     `Zammad's token endpoint returned no access token for the ${kind} exchange.`,
-    502,
   );
 }
 
-const RELAYED_GRANT_ERRORS = new Set([
-  'invalid_grant',
-  'invalid_request',
-  'invalid_scope',
-  'unsupported_grant_type',
+const RELAYED_GRANT_ERRORS = new Set<string>([
+  OAuthErrorCode.InvalidGrant,
+  OAuthErrorCode.InvalidRequest,
+  OAuthErrorCode.InvalidScope,
+  OAuthErrorCode.UnsupportedGrantType,
 ]);
 
 async function zammadRequest(
@@ -435,15 +436,18 @@ async function zammadRequest(
       kind,
       error: error instanceof Error ? error.message : String(error),
     });
-    throw new OAuthError('server_error', `Zammad could not be reached for the ${kind} request.`, 502);
+    throw new OAuthError(OAuthErrorCode.ServerError, `Zammad could not be reached for the ${kind} request.`);
   }
 
   const text = await response.text();
   if (response.ok) return text;
 
-  const upstream = parseOAuthError(text);
-  if (upstream && RELAYED_GRANT_ERRORS.has(upstream.error)) {
-    throw new OAuthError(upstream.error, upstream.error_description ?? `Zammad refused the ${kind} request.`);
+  const upstream = OAuthErrorResponseSchema.safeParse(parseJson(text));
+  if (upstream.success && RELAYED_GRANT_ERRORS.has(upstream.data.error)) {
+    throw new OAuthError(
+      upstream.data.error,
+      upstream.data.error_description ?? `Zammad refused the ${kind} request.`,
+    );
   }
 
   log.warn('zammad oauth endpoint rejected the request', {
@@ -452,23 +456,15 @@ async function zammadRequest(
     body: text.slice(0, 500),
   });
   throw new OAuthError(
-    'server_error',
+    OAuthErrorCode.ServerError,
     `Zammad rejected the ${kind} request with HTTP ${response.status}. Check ZAMMAD_OAUTH_CLIENT_ID and ` +
       'ZAMMAD_OAUTH_CLIENT_SECRET against the application registered in Zammad.',
-    502,
   );
 }
 
-function parseOAuthError(text: string): { error: string; error_description?: string } | undefined {
+function parseJson(text: string): unknown {
   try {
-    const body: unknown = JSON.parse(text);
-    if (typeof body !== 'object' || body === null) return undefined;
-    const { error, error_description } = body as Record<string, unknown>;
-    if (typeof error !== 'string') return undefined;
-    return {
-      error,
-      error_description: typeof error_description === 'string' ? error_description : undefined,
-    };
+    return JSON.parse(text);
   } catch {
     return undefined;
   }
@@ -493,8 +489,15 @@ async function formParams(c: Context): Promise<Record<string, string | undefined
   );
 }
 
+/**
+ * The RFC 6749 §5.2 error response. Every `server_error` this module raises is
+ * Zammad or a client's host failing upstream, hence 502; anything that is not
+ * an `OAuthError` is a fault of this server.
+ */
 function errorResponse(c: Context, error: unknown, log: Logger): Response {
-  if (error instanceof OAuthError) return c.json(error.toJSON(), error.status);
+  if (error instanceof OAuthError) {
+    return c.json(error.toResponseObject(), error.code === OAuthErrorCode.ServerError ? 502 : 400);
+  }
   log.error('oauth request failed', { error: error instanceof Error ? error.message : String(error) });
-  return c.json({ error: 'server_error', error_description: 'Internal Server Error' }, 500);
+  return c.json({ error: OAuthErrorCode.ServerError, error_description: 'Internal Server Error' }, 500);
 }

@@ -297,14 +297,21 @@ describe('dynamic client registration', () => {
     assert.match(body.error_description, /OAUTH_ALLOWED_REDIRECT_HOSTS/);
   });
 
-  it('answers a registration without redirect URIs with a 400, not a 500', async () => {
-    const response = await fetch(`http://127.0.0.1:${appPort}/register`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ client_name: 'No redirect' }),
-    });
-    assert.equal(response.status, 400);
-    assert.equal((await response.json()).error, 'invalid_redirect_uri');
+  it('answers a registration without usable redirect URIs with a 400, not a 500', async () => {
+    const register = (body: unknown) =>
+      fetch(`http://127.0.0.1:${appPort}/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+    const missing = await register({ client_name: 'No redirect' });
+    assert.equal(missing.status, 400);
+    assert.equal((await missing.json()).error, 'invalid_client_metadata');
+
+    const empty = await register({ client_name: 'Empty redirect', redirect_uris: [] });
+    assert.equal(empty.status, 400);
+    assert.equal((await empty.json()).error, 'invalid_redirect_uri');
   });
 
   it('rejects a tampered state on the callback', async () => {
@@ -600,6 +607,60 @@ describe('mcp endpoint', () => {
     const challenge = response.headers.get('www-authenticate') ?? '';
     assert.match(challenge, /resource_metadata=/);
     assert.match(challenge, /scope="full"/);
+  });
+
+  it('confirms the token with Zammad first when asked to, and says whose fault a refusal is', async () => {
+    const eager = createApp(
+      loadConfig({
+        ZAMMAD_URL,
+        ZAMMAD_OAUTH_CLIENT_ID: 'zammad-client-id',
+        OAUTH_STATE_SECRET: 'test-secret-that-is-long-enough',
+        PUBLIC_URL,
+        LOG_LEVEL: 'silent',
+        DYNAMIC_TOOL_SCHEMAS: 'false',
+        VALIDATE_TOKEN_EAGERLY: 'true',
+      } as NodeJS.ProcessEnv),
+      createLogger('silent'),
+    );
+    const discover = () =>
+      eager.fetch(
+        new Request(`${PUBLIC_URL}/mcp`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json, text/event-stream',
+            Authorization: 'Bearer dead-token',
+            'MCP-Protocol-Version': MODERN,
+            'Mcp-Method': 'server/discover',
+          },
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            method: 'server/discover',
+            params: {
+              _meta: {
+                'io.modelcontextprotocol/protocolVersion': MODERN,
+                'io.modelcontextprotocol/clientCapabilities': {},
+              },
+            },
+          }),
+        }),
+      );
+    const me = `${ZAMMAD_URL}/api/v1/users/me`;
+
+    upstream.set(me, () => Response.json({ error: 'Invalid token' }, { status: 401 }));
+    const refused = await discover();
+    assert.equal(refused.status, 401);
+    assert.match(refused.headers.get('www-authenticate') ?? '', /error="invalid_token".*resource_metadata=/);
+
+    // Zammad being down is not the token's fault; a 401 would send the client
+    // through a pointless re-authorization.
+    upstream.set(me, () => new Response('maintenance', { status: 503 }));
+    const unavailable = await discover();
+    assert.equal(unavailable.status, 500);
+    assert.equal(unavailable.headers.get('www-authenticate'), null);
+
+    upstream.delete(me);
   });
 
   it('answers a 2026-07-28 discovery request with its version and identity', async () => {
