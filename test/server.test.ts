@@ -1,37 +1,53 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 import { serve } from '@hono/node-server';
+import manifest from '../package.json' with { type: 'json' };
 import { createApp } from '../src/core/app.js';
 import { loadConfig } from '../src/core/config.js';
 import { createLogger } from '../src/core/util/logger.js';
 
 /**
  * The parts of the server that are the server's own: OAuth discovery, the
- * dynamic-client-registration proxy, and the Streamable HTTP transport.
+ * authorization-server proxy, and the Streamable HTTP transport.
  *
- * Nothing here talks to Zammad, and nothing here stands in for it. There used to
- * be a stub Zammad in this file answering canned JSON for the tool calls; every
- * one of those tests now runs against the real instance in
+ * No tool call here reaches Zammad, and nothing stands in for its API. There
+ * used to be a stub Zammad in this file answering canned JSON for the tool
+ * calls; every one of those tests now runs against the real instance in
  * `test/integration/tools.integration.test.ts`. A fake Zammad can only confirm
  * what we already assumed about the real one — which is exactly how a silently
  * ignored `tags` argument and an article nested in the wrong parameter both
  * survived until someone read the response back off a live instance.
  *
- * `DYNAMIC_TOOL_SCHEMAS` is off so no vocabulary fetch is even attempted:
- * `ZAMMAD_URL` below is used to build redirect targets and is never dialled.
+ * The one exception is Doorkeeper's token endpoint, answered in-process by
+ * `upstream` below. What is under test there is the request this server builds
+ * — whose credentials, which redirect URI — and how it relays the verdict; the
+ * verdict itself is plain RFC 6749, and a code can only be minted by a person
+ * logging in to a real Zammad.
+ *
+ * `DYNAMIC_TOOL_SCHEMAS` is off so no vocabulary fetch is even attempted.
  */
 
-/** Only ever appears inside URLs that are compared, never requested. */
+/** Only ever appears inside URLs that are compared or intercepted, never dialled. */
 const ZAMMAD_URL = 'http://zammad.invalid';
+const PUBLIC_URL = 'http://127.0.0.1:39999';
+const MODERN = '2026-07-28';
 
 let appServer: ReturnType<typeof serve>;
 let appPort: number;
 
+/**
+ * Outbound requests the app makes to hosts that do not exist, answered by the
+ * test that expects them. Everything else goes to the real network stack.
+ */
+const upstream = new Map<string, (request: Request) => Response | Promise<Response>>();
+const upstreamCalls: Request[] = [];
+const realFetch = globalThis.fetch;
+
 /** Issue one MCP JSON-RPC call over Streamable HTTP. */
 async function mcp(
   method: string,
-  params: unknown,
-  options: { token?: string | null; id?: number } = {},
+  params: Record<string, unknown>,
+  options: { token?: string | null; id?: number; modern?: boolean } = {},
 ): Promise<{ status: number; body: any; headers: Headers }> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -41,10 +57,27 @@ async function mcp(
   const token = options.token === undefined ? 'good-token' : options.token;
   if (token) headers.Authorization = `Bearer ${token}`;
 
+  // A 2026-07-28 request states its protocol version and capabilities itself,
+  // in the headers and in `_meta`, instead of relying on an earlier handshake.
+  let body = params;
+  if (options.modern) {
+    headers['MCP-Protocol-Version'] = MODERN;
+    headers['Mcp-Method'] = method;
+    if (typeof params.name === 'string') headers['Mcp-Name'] = params.name;
+    body = {
+      ...params,
+      _meta: {
+        'io.modelcontextprotocol/protocolVersion': MODERN,
+        'io.modelcontextprotocol/clientCapabilities': {},
+        'io.modelcontextprotocol/clientInfo': { name: 'test', version: '1.0.0' },
+      },
+    };
+  }
+
   const response = await fetch(`http://127.0.0.1:${appPort}/mcp`, {
     method: 'POST',
     headers,
-    body: JSON.stringify({ jsonrpc: '2.0', id: options.id ?? 1, method, params }),
+    body: JSON.stringify({ jsonrpc: '2.0', id: options.id ?? 1, method, params: body }),
   });
 
   const text = await response.text();
@@ -62,7 +95,35 @@ async function mcp(
   return { status: response.status, body: JSON.parse(text), headers: response.headers };
 }
 
+/** Register a client over DCR and return its signed id. */
+async function registerTestClient(redirectUri = 'http://localhost:33418/callback'): Promise<string> {
+  const response = await fetch(`http://127.0.0.1:${appPort}/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ client_name: 'Test MCP Client', redirect_uris: [redirectUri] }),
+  });
+  assert.equal(response.status, 201);
+  return (await response.json()).client_id;
+}
+
+function authorizeUrl(params: Record<string, string>): string {
+  return `http://127.0.0.1:${appPort}/authorize?${new URLSearchParams({
+    response_type: 'code',
+    code_challenge: 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM',
+    code_challenge_method: 'S256',
+    ...params,
+  })}`;
+}
+
 before(async () => {
+  globalThis.fetch = async (input, init) => {
+    const request = new Request(input, init);
+    const answer = upstream.get(request.url);
+    if (!answer) return realFetch(input, init);
+    upstreamCalls.push(request.clone());
+    return answer(request);
+  };
+
   const config = loadConfig({
     ZAMMAD_URL,
     ZAMMAD_AUTH_MODE: 'oauth',
@@ -70,7 +131,7 @@ before(async () => {
     ZAMMAD_OAUTH_CLIENT_ID: 'zammad-client-id',
     ZAMMAD_OAUTH_CLIENT_SECRET: 'zammad-client-secret',
     OAUTH_STATE_SECRET: 'test-secret-that-is-long-enough',
-    PUBLIC_URL: 'http://127.0.0.1:39999',
+    PUBLIC_URL,
     LOG_LEVEL: 'silent',
     DYNAMIC_TOOL_SCHEMAS: 'false',
   } as NodeJS.ProcessEnv);
@@ -85,6 +146,7 @@ before(async () => {
 });
 
 after(async () => {
+  globalThis.fetch = realFetch;
   await new Promise<void>((resolve) => appServer.close(() => resolve()));
 });
 
@@ -94,8 +156,8 @@ describe('discovery endpoints', () => {
     assert.equal(response.status, 200);
 
     const body = await response.json();
-    assert.equal(body.resource, 'http://127.0.0.1:39999/mcp');
-    assert.deepEqual(body.authorization_servers, ['http://127.0.0.1:39999']);
+    assert.equal(body.resource, `${PUBLIC_URL}/mcp`);
+    assert.deepEqual(body.authorization_servers, [PUBLIC_URL]);
   });
 
   it('serves authorization-server metadata for the proxy', async () => {
@@ -103,13 +165,16 @@ describe('discovery endpoints', () => {
     assert.equal(response.status, 200);
 
     const body = await response.json();
-    assert.equal(body.issuer, 'http://127.0.0.1:39999');
+    assert.equal(body.issuer, PUBLIC_URL);
     assert.match(body.authorization_endpoint, /\/authorize$/);
     assert.match(body.token_endpoint, /\/token$/);
     assert.ok(
       body.registration_endpoint,
       'dynamic registration must be advertised — Zammad has none of its own',
     );
+    assert.equal(body.client_id_metadata_document_supported, true);
+    assert.equal(body.authorization_response_iss_parameter_supported, true);
+    assert.deepEqual(body.code_challenge_methods_supported, ['S256']);
   });
 
   it('reports health without a credential', async () => {
@@ -166,7 +231,7 @@ describe('dynamic client registration', () => {
     );
     assert.equal(
       location.searchParams.get('redirect_uri'),
-      'http://127.0.0.1:39999/oauth/callback',
+      `${PUBLIC_URL}/oauth/callback`,
       'must swap in the single callback registered with Zammad',
     );
     assert.equal(
@@ -191,6 +256,7 @@ describe('dynamic client registration', () => {
       'client-state',
       "the client's original state must be restored",
     );
+    assert.equal(back.searchParams.get('iss'), PUBLIC_URL, 'RFC 9207: the response must name its issuer');
   });
 
   it('registers a hosted MCP client, not only loopback ones', async () => {
@@ -226,9 +292,19 @@ describe('dynamic client registration', () => {
     assert.equal(response.status, 400);
 
     const body = await response.json();
-    assert.equal(body.error, 'invalid_client_metadata');
+    assert.equal(body.error, 'invalid_redirect_uri');
     assert.match(body.error_description, /attacker\.example/);
     assert.match(body.error_description, /OAUTH_ALLOWED_REDIRECT_HOSTS/);
+  });
+
+  it('answers a registration without redirect URIs with a 400, not a 500', async () => {
+    const response = await fetch(`http://127.0.0.1:${appPort}/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_name: 'No redirect' }),
+    });
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).error, 'invalid_redirect_uri');
   });
 
   it('rejects a tampered state on the callback', async () => {
@@ -240,14 +316,248 @@ describe('dynamic client registration', () => {
   });
 });
 
-describe('mcp endpoint', () => {
-  it('rejects a request with no bearer token and points at the metadata', async () => {
-    const response = await mcp('initialize', {}, { token: null });
-    assert.equal(response.status, 401);
-    assert.match(response.headers.get('www-authenticate') ?? '', /resource_metadata=/);
+describe('authorization endpoint', () => {
+  it('shows an unregistered redirect URI to the user agent instead of following it', async () => {
+    const clientId = await registerTestClient();
+    const response = await fetch(
+      authorizeUrl({ client_id: clientId, redirect_uri: 'http://localhost:33418/elsewhere' }),
+      { redirect: 'manual' },
+    );
+
+    assert.equal(response.status, 400);
+    assert.equal(response.headers.get('location'), null);
+    assert.equal((await response.json()).error, 'invalid_request');
   });
 
-  it('completes the handshake', async () => {
+  it('sends a missing PKCE challenge back to the client with its state and the issuer', async () => {
+    const clientId = await registerTestClient();
+    const response = await fetch(
+      `http://127.0.0.1:${appPort}/authorize?${new URLSearchParams({
+        client_id: clientId,
+        response_type: 'code',
+        state: 'client-state',
+      })}`,
+      { redirect: 'manual' },
+    );
+
+    assert.equal(response.status, 302);
+    const back = new URL(response.headers.get('location')!);
+    assert.equal(back.origin + back.pathname, 'http://localhost:33418/callback');
+    assert.equal(back.searchParams.get('error'), 'invalid_request');
+    assert.equal(back.searchParams.get('state'), 'client-state');
+    assert.equal(back.searchParams.get('iss'), PUBLIC_URL);
+  });
+});
+
+describe('client ID metadata documents', () => {
+  const documentUrl = (name: string) => `https://client.example/${name}.json`;
+
+  function publish(url: string, document: Record<string, unknown>, headers: HeadersInit = {}): void {
+    upstream.set(url, () => Response.json(document, { headers }));
+  }
+
+  it('authorizes a client identified by the URL of its metadata document', async () => {
+    const clientId = documentUrl('valid');
+    publish(clientId, {
+      client_id: clientId,
+      client_name: 'Document Client',
+      redirect_uris: ['http://localhost:4567/callback'],
+      token_endpoint_auth_method: 'none',
+    });
+    const before = upstreamCalls.length;
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const response = await fetch(
+        authorizeUrl({ client_id: clientId, redirect_uri: 'http://localhost:4567/callback', state: 's' }),
+        { redirect: 'manual' },
+      );
+      assert.equal(response.status, 302);
+      const location = new URL(response.headers.get('location')!);
+      assert.equal(location.origin, ZAMMAD_URL);
+      assert.equal(location.searchParams.get('client_id'), 'zammad-client-id');
+    }
+
+    assert.equal(upstreamCalls.length - before, 1, 'the document must be fetched once and then cached');
+  });
+
+  it('accepts a loopback redirect on the port the client picked, not the one it listed', async () => {
+    // Claude Code's published document lists `http://localhost/callback` and
+    // then listens on an ephemeral port (RFC 8252 §7.3).
+    const clientId = documentUrl('loopback');
+    publish(clientId, {
+      client_id: clientId,
+      client_name: 'Claude Code',
+      redirect_uris: ['http://localhost/callback', 'http://127.0.0.1/callback'],
+      token_endpoint_auth_method: 'none',
+    });
+
+    const response = await fetch(
+      authorizeUrl({ client_id: clientId, redirect_uri: 'http://localhost:51234/callback' }),
+      { redirect: 'manual' },
+    );
+    assert.equal(response.status, 302);
+    assert.equal(new URL(response.headers.get('location')!).origin, ZAMMAD_URL);
+  });
+
+  it('refuses a document that names a different client_id', async () => {
+    const clientId = documentUrl('impostor');
+    publish(clientId, {
+      client_id: 'https://someone-else.example/client.json',
+      client_name: 'Impostor',
+      redirect_uris: ['http://localhost:4567/callback'],
+    });
+
+    const response = await fetch(authorizeUrl({ client_id: clientId }), { redirect: 'manual' });
+    assert.equal(response.status, 400);
+    const body = await response.json();
+    assert.equal(body.error, 'invalid_client');
+    assert.match(body.error_description, /different client_id/);
+  });
+
+  it('refuses a document asking for client authentication it cannot verify', async () => {
+    const clientId = documentUrl('private-key-jwt');
+    publish(clientId, {
+      client_id: clientId,
+      client_name: 'Confidential',
+      redirect_uris: ['http://localhost:4567/callback'],
+      token_endpoint_auth_method: 'private_key_jwt',
+    });
+
+    const response = await fetch(authorizeUrl({ client_id: clientId }), { redirect: 'manual' });
+    assert.equal(response.status, 400);
+    assert.match((await response.json()).error_description, /private_key_jwt/);
+  });
+
+  it('holds a listed redirect URI to the same allowlist as a registered one', async () => {
+    const clientId = documentUrl('foreign-redirect');
+    publish(clientId, {
+      client_id: clientId,
+      client_name: 'Foreign',
+      redirect_uris: ['https://attacker.example/callback'],
+    });
+
+    const response = await fetch(authorizeUrl({ client_id: clientId }), { redirect: 'manual' });
+    assert.equal(response.status, 400);
+    assert.equal(response.headers.get('location'), null);
+    assert.match((await response.json()).error_description, /OAUTH_ALLOWED_REDIRECT_HOSTS/);
+  });
+
+  it('never fetches a document from an address instead of a host name', async () => {
+    const before = upstreamCalls.length;
+    const response = await fetch(authorizeUrl({ client_id: 'https://169.254.169.254/latest/meta-data' }), {
+      redirect: 'manual',
+    });
+
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).error, 'invalid_client');
+    assert.equal(upstreamCalls.length, before);
+  });
+});
+
+describe('token endpoint', () => {
+  const tokenUrl = `${ZAMMAD_URL}/oauth/token`;
+
+  async function exchange(clientId: string): Promise<Response> {
+    return fetch(`http://127.0.0.1:${appPort}/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        client_id: clientId,
+        code: 'zammad-auth-code',
+        code_verifier: 'the-verifier',
+        redirect_uri: 'http://localhost:33418/callback',
+      }),
+    });
+  }
+
+  it('redeems the code with the Zammad credentials and the proxy callback', async () => {
+    upstream.set(tokenUrl, () =>
+      Response.json({ access_token: 'zammad-access', token_type: 'Bearer', refresh_token: 'zammad-refresh' }),
+    );
+    const clientId = await registerTestClient();
+    const before = upstreamCalls.length;
+
+    const response = await exchange(clientId);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+    assert.equal((await response.json()).access_token, 'zammad-access');
+
+    assert.equal(upstreamCalls.length - before, 1);
+    const sent = new URLSearchParams(await upstreamCalls.at(-1)!.text());
+    assert.equal(sent.get('client_id'), 'zammad-client-id', 'the MCP client id means nothing to Doorkeeper');
+    assert.equal(sent.get('client_secret'), 'zammad-client-secret');
+    assert.equal(sent.get('redirect_uri'), `${PUBLIC_URL}/oauth/callback`);
+    assert.equal(sent.get('code_verifier'), 'the-verifier', 'PKCE must reach Doorkeeper untouched');
+  });
+
+  it("passes Doorkeeper's invalid_grant through so the client authorizes again", async () => {
+    upstream.set(tokenUrl, () =>
+      Response.json({ error: 'invalid_grant', error_description: 'The grant is expired.' }, { status: 400 }),
+    );
+
+    const response = await exchange(await registerTestClient());
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), {
+      error: 'invalid_grant',
+      error_description: 'The grant is expired.',
+    });
+  });
+
+  it("reports a refusal of the proxy's own credentials as a gateway failure", async () => {
+    upstream.set(tokenUrl, () => Response.json({ error: 'invalid_client' }, { status: 401 }));
+
+    const response = await exchange(await registerTestClient());
+    assert.equal(response.status, 502);
+    const body = await response.json();
+    assert.equal(body.error, 'server_error');
+    assert.match(body.error_description, /ZAMMAD_OAUTH_CLIENT_SECRET/);
+  });
+
+  it('refuses an unknown client before contacting Zammad', async () => {
+    const before = upstreamCalls.length;
+    const response = await exchange('zmcp_forged.signature');
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).error, 'invalid_client');
+    assert.equal(upstreamCalls.length, before);
+  });
+});
+
+describe('mcp endpoint', () => {
+  it('rejects a request with no bearer token and points at the metadata', async () => {
+    const response = await mcp('server/discover', {}, { token: null, modern: true });
+    assert.equal(response.status, 401);
+    const challenge = response.headers.get('www-authenticate') ?? '';
+    assert.match(challenge, /resource_metadata=/);
+    assert.match(challenge, /scope="full"/);
+  });
+
+  it('answers a 2026-07-28 discovery request with its version and identity', async () => {
+    const response = await mcp('server/discover', {}, { modern: true });
+
+    assert.equal(response.status, 200);
+    assert.ok(response.body.result.supportedVersions.includes(MODERN));
+    assert.deepEqual(response.body.result._meta['io.modelcontextprotocol/serverInfo'], {
+      name: 'zammad-remote-mcp',
+      version: manifest.version,
+    });
+    assert.ok(
+      response.body.result.instructions.includes(ZAMMAD_URL),
+      'the instructions must name the instance',
+    );
+  });
+
+  it('lets a client cache the tool list for as long as the lookup cache holds', async () => {
+    const response = await mcp('tools/list', {}, { modern: true });
+
+    assert.equal(response.status, 200);
+    assert.ok(response.body.result.tools.length > 0);
+    // METADATA_CACHE_TTL_SECONDS defaults to 300.
+    assert.equal(response.body.result.ttlMs, 300_000);
+    assert.equal(response.body.result.cacheScope, 'private');
+  });
+
+  it('completes the 2025-era handshake for clients that still negotiate with initialize', async () => {
     const response = await mcp('initialize', {
       protocolVersion: '2025-06-18',
       capabilities: {},
@@ -256,6 +566,7 @@ describe('mcp endpoint', () => {
 
     assert.equal(response.status, 200);
     assert.equal(response.body.result.serverInfo.name, 'zammad-remote-mcp');
+    assert.equal(response.body.result.serverInfo.version, manifest.version);
     assert.match(response.body.result.instructions, /zammad_search_tickets/);
 
     // The configured instance, not a placeholder: a Zammad link carries no clue
@@ -267,6 +578,12 @@ describe('mcp endpoint', () => {
     );
   });
 
+  it('answers a 2025-era request that skips the handshake', async () => {
+    const response = await mcp('tools/list', {});
+    assert.equal(response.status, 200);
+    assert.ok(response.body.result.tools.length > 0);
+  });
+
   it('issues no session id — the transport is stateless', async () => {
     const response = await mcp('initialize', {
       protocolVersion: '2025-06-18',
@@ -274,5 +591,22 @@ describe('mcp endpoint', () => {
       clientInfo: { name: 'test', version: '1.0.0' },
     });
     assert.equal(response.headers.get('mcp-session-id'), null);
+  });
+
+  it('lets a browser send the 2026-07-28 request headers', async () => {
+    const response = await fetch(`http://127.0.0.1:${appPort}/mcp`, {
+      method: 'OPTIONS',
+      headers: {
+        Origin: 'https://inspector.example',
+        'Access-Control-Request-Method': 'POST',
+        'Access-Control-Request-Headers':
+          'authorization, content-type, mcp-method, mcp-name, mcp-protocol-version',
+      },
+    });
+
+    const allowed = (response.headers.get('access-control-allow-headers') ?? '').toLowerCase();
+    for (const header of ['mcp-method', 'mcp-name', 'mcp-protocol-version', 'authorization']) {
+      assert.ok(allowed.includes(header), `${header} is missing from ${allowed}`);
+    }
   });
 });

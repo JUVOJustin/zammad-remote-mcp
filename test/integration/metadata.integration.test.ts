@@ -3,7 +3,7 @@ import { after, before, describe, it } from 'node:test';
 import {
   callTool,
   callToolText,
-  initialize,
+  discover,
   type Json,
   listTools,
   skipReason,
@@ -58,7 +58,7 @@ describe('metadata against a real Zammad', () => {
   it('names the instance it is connected to', async (t) => {
     if (!ready) return t.skip(skipReason);
 
-    const { instructions } = await initialize();
+    const { instructions } = await discover();
 
     // A Zammad link in a ticket or a signature is ambiguous on its own; the
     // client has to be told which instance these tools actually reach.

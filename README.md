@@ -9,7 +9,10 @@ A remote [MCP](https://modelcontextprotocol.io) server for [Zammad](https://zamm
 - **Runtime-agnostic core.** All the logic lives in `src/core`, which imports no Node built-ins. The two
   hosts differ only in where the environment comes from and how the app is served.
 - **OAuth 2.1 against Zammad.** Zammad's own Doorkeeper provider is the authorization server; this
-  server proxies the flow and adds the dynamic client registration Doorkeeper lacks.
+  server proxies the flow and adds the client registration Doorkeeper lacks — client ID metadata
+  documents and dynamic registration.
+- **MCP 2026-07-28.** Built on the MCP TypeScript SDK v2. Clients that still negotiate with the 2025
+  `initialize` handshake are answered too, by the same tools.
 - **Full ticket coverage.** Create, read, update, delete, merge, mass-update, macros, articles,
   attachments, tags, links, time accounting, history.
 - **A search layer that builds real queries** from structured filters, and tool schemas whose enums
@@ -139,7 +142,7 @@ Then register `<PUBLIC_URL>/oauth/callback` in Zammad under **System → API →
 |---|---|---|
 | Config source | `process.env` (+ `.env` file) | `env` binding (vars + secrets) |
 | Lookup cache | one long-lived process, high hit rate | per isolate, so more Zammad calls |
-| OAuth endpoint rate limiting | effective (in-process store) | **per isolate, so largely ineffective** — use [Cloudflare Rate Limiting](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/) in front |
+| OAuth endpoint rate limiting | not built in — limit in the reverse proxy in front | not built in — use [Cloudflare Rate Limiting](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/) in front |
 | Everything else | identical | identical |
 
 ---
@@ -164,23 +167,32 @@ Check it is alive:
 curl -s http://localhost:3000/health
 ```
 
-Drive it with raw JSON-RPC. Note the `Accept` header — the MCP spec requires both types:
+Drive it with raw JSON-RPC. MCP 2026-07-28 has no handshake: every request names its protocol
+version and client capabilities under `_meta`, and repeats the method (and the tool name) in the
+`Mcp-Method` and `Mcp-Name` headers. Note the `Accept` header too — the spec requires both types.
+`server/discover` returns the supported versions, the capabilities and the instructions:
 
 ```bash
-curl -s -X POST http://localhost:3000/mcp -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"1.0"}}}'
+curl -s -X POST http://localhost:3000/mcp -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -H 'MCP-Protocol-Version: 2026-07-28' -H 'Mcp-Method: server/discover' -d '{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}'
 ```
 
-Because the server is stateless there is no session to carry — every call stands alone, so you can
-go straight to a tool without repeating the handshake:
+Every call stands alone, so you can go straight to a tool:
 
 ```bash
-curl -s -X POST http://localhost:3000/mcp -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"zammad_get_user","arguments":{"user":"me"}}}'
+curl -s -X POST http://localhost:3000/mcp -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -H 'MCP-Protocol-Version: 2026-07-28' -H 'Mcp-Method: tools/call' -H 'Mcp-Name: zammad_get_user' -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"zammad_get_user","arguments":{"user":"me"},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}'
 ```
 
 A search, with the generated selector echoed back under `search`:
 
 ```bash
-curl -s -X POST http://localhost:3000/mcp -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"zammad_search_tickets","arguments":{"state":["open"],"updated_at":{"more_than_ago":"7d"},"output":"summary"}}}'
+curl -s -X POST http://localhost:3000/mcp -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -H 'MCP-Protocol-Version: 2026-07-28' -H 'Mcp-Method: tools/call' -H 'Mcp-Name: zammad_search_tickets' -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"zammad_search_tickets","arguments":{"state":["open"],"updated_at":{"more_than_ago":"7d"},"output":"summary"},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}'
+```
+
+A request without the `_meta` claim is read as the 2025 protocol and still answered, which keeps the
+shorter form working for quick checks:
+
+```bash
+curl -s -X POST http://localhost:3000/mcp -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -d '{"jsonrpc":"2.0","id":4,"method":"tools/list"}'
 ```
 
 ### With the MCP Inspector
@@ -264,9 +276,9 @@ curl -s -X POST http://localhost:3000/mcp -H 'Content-Type: application/json' -H
 
 ### Without any Zammad at all
 
-`test/server.test.ts` runs the real Hono app against a stub Zammad over real HTTP, covering the OAuth
-registration/authorize/callback round trip and the MCP handshake. `npm test` needs no network and no
-Zammad instance.
+`test/server.test.ts` runs the real Hono app over real HTTP, covering OAuth discovery, registration,
+client ID metadata documents, the authorize/callback round trip, the token relay and both protocol
+generations. `npm test` needs no network and no Zammad instance.
 
 ---
 
@@ -277,10 +289,11 @@ scaling out needs no shared store, no sticky sessions and no session affinity at
 
 Three things make that work:
 
-**1. The transport runs in stateless mode.** `StreamableHTTPTransport` is constructed with
-`sessionIdGenerator: undefined`, so no `Mcp-Session-Id` is ever issued or expected. Each POST gets a
-fresh `McpServer` and transport, both discarded once the response is written. `enableJsonResponse`
-returns a complete JSON body rather than an SSE stream, which is what makes that teardown safe.
+**1. The protocol has no session.** MCP 2026-07-28 removed the `initialize` handshake and the
+`Mcp-Session-Id` header: every request carries its protocol version and client capabilities itself.
+The endpoint is the SDK's `createMcpHandler`, which builds a fresh `McpServer` for each request and
+discards it once the response is written. Clients that still speak a 2025 revision negotiate with
+`initialize`; the SDK answers them through its stateless fallback, which issues no session either.
 
 **2. Credentials are never stored.** In the default `oauth` mode the MCP client sends its Zammad
 access token on every request, and the server forwards it to the Zammad API unchanged. Zammad is the
@@ -288,17 +301,21 @@ authorization server and the source of truth for identity; this server holds no 
 no refresh-token bookkeeping. It also means Zammad's own permission model applies unchanged — an
 agent sees agent tickets, a customer sees their own.
 
-**3. The OAuth proxy carries its state in signed parameters.** Doorkeeper has no dynamic client
-registration and a Zammad application is pinned to fixed redirect URIs, which does not fit MCP
-clients that self-register on an ephemeral localhost port. Instead of a client database:
+**3. The OAuth proxy carries its state in signed parameters.** Doorkeeper registers no clients on the
+fly and a Zammad application is pinned to fixed redirect URIs, which does not fit MCP clients that
+identify themselves on the fly and listen on an ephemeral localhost port. Instead of a client
+database:
 
-- Registration mints a `client_id` of the form `zmcp_<payload>.<hmac>`, where the payload *is* the
-  registration record (the client's redirect URIs and name). `getClient` verifies and decodes it.
+- A client with a Client ID Metadata Document needs no registration: its `client_id` is the HTTPS
+  URL of a JSON document listing its redirect URIs, fetched on first use and cached per process.
+- Dynamic registration mints a `client_id` of the form `zmcp_<payload>.<hmac>`, where the payload
+  *is* the registration record (the client's redirect URIs and name), verified and decoded on use.
 - `/authorize` swaps the client's redirect URI for this server's single `/oauth/callback` — the one
   URI registered in Zammad — and packs the original URI plus the client's `state` into an
   HMAC-signed `state`.
-- `/oauth/callback` verifies that signature and bounces the code back to the client's own URI.
-- `/token` substitutes the real Zammad client credentials.
+- `/oauth/callback` verifies that signature and bounces the code back to the client's own URI,
+  naming this server as the issuer (`iss`, RFC 9207).
+- `/token` and `/revoke` substitute the real Zammad client credentials.
 
 PKCE flows through untouched: the client's `code_challenge` reaches Doorkeeper directly and its
 `code_verifier` is forwarded on exchange, so the proxy is never trusted with proof of possession.
@@ -340,7 +357,7 @@ silently issuing tokens the request path would discard.
 
 | Mode | Behaviour |
 |---|---|
-| `proxy` *(default under `oauth`)* | This server is the authorization server from the client's perspective and proxies to Zammad. Supports dynamic client registration and ephemeral redirect URIs. One callback URL to register in Zammad. |
+| `proxy` *(default under `oauth`)* | This server is the authorization server from the client's perspective and proxies to Zammad. Supports client ID metadata documents, dynamic client registration and ephemeral redirect URIs. One callback URL to register in Zammad. |
 | `passthrough` | Clients talk to Zammad directly. Every client redirect URI must be registered in Zammad by hand, and Doorkeeper publishes no authorization-server metadata, so this server publishes it on Zammad's behalf. Brittle with clients that self-register. |
 | `disabled` *(automatic under `token`/`basic`)* | No OAuth metadata is served. Worth setting explicitly under `oauth` only when an API gateway in front already handles discovery and just forwards the bearer token. |
 
@@ -625,7 +642,7 @@ whether an article is being written or not.
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /mcp` | MCP Streamable HTTP (stateless) |
+| `POST /mcp` | MCP Streamable HTTP, protocol 2026-07-28 (2025 revisions answered too) |
 | `GET /health` | Liveness probe |
 | `GET /` | Server info: transport, auth mode, metadata URL |
 | `GET /.well-known/oauth-protected-resource/mcp` | RFC 9728 protected-resource metadata |
@@ -648,8 +665,9 @@ npm run check:fix  # apply Biome formatting and safe lint fixes
 Lint and formatting are handled by [Biome](https://biomejs.dev) (`biome.json`).
 
 The test suite covers the search builder's compilation rules against a fake lookup service, and runs
-the real Hono app end to end against a stub Zammad — including the OAuth registration/authorize/
-callback round trip and the MCP handshake. It needs no network and no Zammad instance.
+the real Hono app end to end — OAuth discovery, registration, the authorize/callback round trip, the
+token relay and both protocol generations. It needs no network and no Zammad instance.
+`npm run test:integration` drives every tool against a real Zammad in Docker (`npm run zammad:up`).
 
 ### Layout
 
@@ -659,7 +677,8 @@ src/
     index.ts                 public surface: bootstrap(), createApp(), loadConfig()
     config.ts                Zod-validated environment
     app.ts                   Hono app: CORS, auth extraction, MCP endpoint
-    auth/                    oauth.ts (stateless proxy) · signing.ts (WebCrypto HMAC)
+    version.ts               server version, read from package.json
+    auth/                    oauth.ts (proxy endpoints) · clients.ts (who may authorize) · signing.ts (WebCrypto HMAC)
     util/                    base64 · cache · logger · errors
     zammad/                  client · lookup · vocabulary · selector · search/
     mcp/                     server · context · result · tools/
@@ -697,14 +716,13 @@ Three substitutions were enough, and each is a plain platform API rather than a 
 | `Buffer` | `atob` / `btoa` / `TextEncoder` | Would otherwise tie the core to the `nodejs_compat` flag |
 | `process.stderr.write` | injectable sink, default `console.error` | `process.stderr` is not reliably present off Node |
 
-Two further changes made one build valid on both runtimes:
+Two properties of the MCP SDK keep one build valid on both runtimes:
 
-- The transport is the SDK's own `WebStandardStreamableHTTPServerTransport` (`Request` → `Response`),
-  not a Node- or Hono-specific one.
-- `McpServer` is constructed with `jsonSchemaValidator: new CfWorkerJsonSchemaValidator()`. The SDK
-  otherwise instantiates Ajv eagerly, and Ajv compiles schemas with `new Function`, which edge
-  runtimes forbid. The validator is only consulted for elicitation responses, which a stateless
-  server never issues.
+- The endpoint is the SDK's web-standard `createMcpHandler` (`Request` → `Response`), not a Node- or
+  Hono-specific transport.
+- The SDK chooses its JSON Schema validator through package export conditions: Ajv on Node, and
+  `@cfworker/json-schema` under workerd, where Ajv's `new Function` is forbidden. Nothing has to be
+  configured for it.
 
 ## Releasing
 

@@ -5,7 +5,7 @@
   "license": "MIT",
   "type": "module",
   "engines": {
-    "node": ">=20.12"
+    "node": ">=22"
   },
   "keywords": [
     "zammad",
@@ -69,20 +69,17 @@
     "test:integration": "node --test --test-concurrency=1 --import tsx test/integration/*.test.ts"
   },
   "dependencies": {
-    "@cfworker/json-schema": "^4.1.1",
-    "@hono/mcp": "^0.3.1",
-    "@hono/node-server": "^2.1.0",
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "hono": "^4.12.32",
-    "hono-rate-limiter": "^0.5.3",
+    "@hono/node-server": "^2.1.1",
+    "@modelcontextprotocol/server": "^2.1.0",
+    "hono": "^4.13.9",
     "turndown": "^7.2.4",
-    "zod": "^4.4.3"
+    "zod": "^4.6.5"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.5.5",
-    "@types/node": "^22.15.0",
+    "@biomejs/biome": "2.5.14",
+    "@types/node": "^22.20.4",
     "@types/turndown": "^5.0.6",
-    "tsx": "^4.19.2",
-    "typescript": "^5.7.3"
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
   }
 }

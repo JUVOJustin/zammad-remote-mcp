@@ -16,10 +16,12 @@ import { ADMIN_LOGIN, ADMIN_PASSWORD, BASE_URL, isReachable } from './zammad.js'
  *
  * Tools are called over the real /mcp endpoint rather than by importing their
  * handlers, so schema parsing, name resolution and error mapping are all part
- * of what is under test — the layers where a mistake reaches users.
+ * of what is under test — the layers where a mistake reaches users. Every call
+ * speaks the 2026-07-28 protocol, the one current clients use; the 2025-era
+ * fallback is covered in `test/server.test.ts`.
  */
 
-// biome-ignore lint/suspicious/noExplicitAny: MCP envelopes are asserted field by field.
+/** MCP envelopes are asserted field by field. */
 export type Json = any;
 
 let server: ReturnType<typeof serve> | undefined;
@@ -102,12 +104,40 @@ export async function withRejectedCredential<T>(run: (call: Caller) => Promise<T
 
 export type Caller = (name: string, args: unknown) => Promise<Json>;
 
-/** One tools/call against a given port, returning the raw MCP result envelope. */
-async function rpc(onPort: number, name: string, args: unknown): Promise<Json> {
+const PROTOCOL_VERSION = '2026-07-28';
+
+/**
+ * One JSON-RPC request against a given port, returning the response envelope.
+ *
+ * A 2026-07-28 request carries its protocol version and client capabilities in
+ * `_meta` and repeats the method and tool name in headers, so every call stands
+ * alone without a handshake.
+ */
+async function post(onPort: number, method: string, params: Record<string, unknown> = {}): Promise<Json> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Accept: 'application/json, text/event-stream',
+    'MCP-Protocol-Version': PROTOCOL_VERSION,
+    'Mcp-Method': method,
+  };
+  if (typeof params.name === 'string') headers['Mcp-Name'] = params.name;
+
   const response = await fetch(`http://127.0.0.1:${onPort}/mcp`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
+    headers,
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method,
+      params: {
+        ...params,
+        _meta: {
+          'io.modelcontextprotocol/protocolVersion': PROTOCOL_VERSION,
+          'io.modelcontextprotocol/clientCapabilities': {},
+          'io.modelcontextprotocol/clientInfo': { name: 'integration', version: '1' },
+        },
+      },
+    }),
   });
 
   const text = await response.text();
@@ -118,29 +148,19 @@ async function rpc(onPort: number, name: string, args: unknown): Promise<Json> {
         ?.slice(5)
         .trim()
     : text;
-  return JSON.parse(payload ?? '{}').result;
+  return JSON.parse(payload ?? '{}');
+}
+
+/** One tools/call against a given port, returning the raw MCP result envelope. */
+async function rpc(onPort: number, name: string, args: unknown): Promise<Json> {
+  return (await post(onPort, 'tools/call', { name, arguments: args })).result;
 }
 
 export const skipReason = `no Zammad on ${BASE_URL} — run npm run zammad:up`;
 
 /** Calls a tool and returns its parsed payload, throwing on a JSON-RPC error. */
 export async function callTool(name: string, args: unknown): Promise<Json> {
-  const response = await fetch(`http://127.0.0.1:${port}/mcp`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
-  });
-
-  const text = await response.text();
-  const payload = response.headers.get('content-type')?.includes('text/event-stream')
-    ? text
-        .split('\n')
-        .find((line) => line.startsWith('data:'))
-        ?.slice(5)
-        .trim()
-    : text;
-
-  const body = JSON.parse(payload ?? '{}');
+  const body = await post(port, 'tools/call', { name, arguments: args });
   if (body.error) throw new Error(`${name}: ${JSON.stringify(body.error)}`);
 
   const content = body.result?.content?.[0]?.text;
@@ -157,47 +177,14 @@ export async function callTool(name: string, args: unknown): Promise<Json> {
   }
 }
 
-/** The initialize result, which carries the server's instructions. */
-export async function initialize(): Promise<{ instructions?: string }> {
-  const response = await fetch(`http://127.0.0.1:${port}/mcp`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'initialize',
-      params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '1' } },
-    }),
-  });
-
-  const text = await response.text();
-  const payload = response.headers.get('content-type')?.includes('text/event-stream')
-    ? text
-        .split('\n')
-        .find((line) => line.startsWith('data:'))
-        ?.slice(5)
-        .trim()
-    : text;
-  return JSON.parse(payload ?? '{}').result;
+/** The server/discover result, which carries the server's instructions. */
+export async function discover(): Promise<{ instructions?: string }> {
+  return (await post(port, 'server/discover')).result;
 }
 
 /** The tool list as a client receives it, enums and all. */
 export async function listTools(): Promise<Json[]> {
-  const response = await fetch(`http://127.0.0.1:${port}/mcp`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
-  });
-
-  const text = await response.text();
-  const payload = response.headers.get('content-type')?.includes('text/event-stream')
-    ? text
-        .split('\n')
-        .find((line) => line.startsWith('data:'))
-        ?.slice(5)
-        .trim()
-    : text;
-  return JSON.parse(payload ?? '{}').result.tools;
+  return (await post(port, 'tools/list')).result.tools;
 }
 
 /** For the few tools whose payload is prose rather than JSON. */

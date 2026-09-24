@@ -1,7 +1,7 @@
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { CfWorkerJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/cfworker';
+import { McpServer } from '@modelcontextprotocol/server';
 import type { Config } from '../config.js';
 import type { Logger } from '../util/logger.js';
+import { SERVER_VERSION } from '../version.js';
 import type { Credential } from '../zammad/client.js';
 import { loadVocabulary } from '../zammad/vocabulary.js';
 import { createToolContext } from './context.js';
@@ -53,16 +53,17 @@ export interface CreateServerOptions {
  */
 export async function createMcpServer(options: CreateServerOptions): Promise<McpServer> {
   const server = new McpServer(
-    { name: 'zammad-remote-mcp', version: '1.0.0' },
+    { name: 'zammad-remote-mcp', version: SERVER_VERSION },
     {
       instructions: instructionsFor(options.config.ZAMMAD_URL),
-      capabilities: { tools: {}, logging: {} },
-      // The SDK otherwise instantiates Ajv eagerly in the Server constructor,
-      // and Ajv compiles schemas with `new Function` — which edge runtimes
-      // forbid. The validator is only consulted for elicitation responses,
-      // which a stateless server never issues, so the pure-JS implementation
-      // costs nothing and keeps one build valid on both runtimes.
-      jsonSchemaValidator: new CfWorkerJsonSchemaValidator(),
+      capabilities: { tools: {} },
+      cacheHints: {
+        // The tool schemas carry this instance's states, priorities, groups and
+        // macros, which the lookup cache holds for the same TTL — so a client may
+        // keep the list exactly as long as this server would. They differ per
+        // credential (a customer sees fewer groups), hence private.
+        'tools/list': { ttlMs: options.config.METADATA_CACHE_TTL_SECONDS * 1000, cacheScope: 'private' },
+      },
     },
   );
 
