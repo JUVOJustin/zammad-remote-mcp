@@ -284,12 +284,13 @@ describe('zammad_get_group_signature', () => {
 
 describe('the rule against a doubled sign-off', () => {
   /**
-   * Stated in exactly one place: the flag itself.
+   * Stated in two places: the flag itself, and one line of the server
+   * instructions.
    *
-   * It was briefly repeated in the body field, the tool descriptions and the
-   * server instructions — four copies to keep in step, and the instructions are
-   * read on every connection whether an article is being written or not. The
-   * rule lives with the argument it qualifies, and nowhere else.
+   * It was briefly repeated in the body field and the tool descriptions too —
+   * copies to keep in step. Those stay out. The flag alone, though, was too
+   * quiet in practice: models kept writing their own signature block, so the
+   * instructions carry the rule as well.
    */
   const flags = async () => {
     const tools = await listTools();
@@ -307,6 +308,7 @@ describe('the rule against a doubled sign-off', () => {
 
     for (const [tool, description] of Object.entries(await flags())) {
       assert.match(description, /do NOT write the sender's own name/i, tool);
+      assert.match(description, /signature block/i, tool);
       assert.match(description, /twice/i, tool);
       // The closing line stays a judgement call, not an instruction: Zammad's
       // own default signature has none, so "leave the closing out" would produce

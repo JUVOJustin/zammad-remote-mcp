@@ -658,6 +658,11 @@ describe('mcp endpoint', () => {
       instructions.includes(ZAMMAD_URL),
       `the instructions do not name the instance: ${instructions.slice(0, 200)}`,
     );
+
+    // A check, not a ban: a group without a signature still needs one. It sits
+    // in the instructions because the flag's description alone was too quiet.
+    assert.match(instructions, /Before writing a manual signature, check for a group signature/);
+    assert.match(instructions, /zammad_get_group_signature/);
   });
 
   it('answers a 2025-era request that skips the handshake', async () => {

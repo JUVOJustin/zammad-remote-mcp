@@ -23,6 +23,9 @@ import { registerTicketTools } from './tools/tickets.js';
  * that tool is reached for or not, and it is a second copy to keep in step —
  * the reason the delete warning, the tag lookup and the internal-note default
  * are gone. Each is stated where it applies, on the tool itself.
+ *
+ * The signature bullet spans tools — three that write, one that previews — and
+ * stated on the `append_signature` flag alone it went unread.
  */
 function instructionsFor(zammadUrl: string): string {
   const base = zammadUrl.replace(/\/+$/, '');
@@ -34,7 +37,9 @@ function instructionsFor(zammadUrl: string): string {
     tickets and filtering yourself. Names resolve on their own (\`owner: ["me"]\`, \`group: ["1st Level"]\`),
     \`output: "count"\` sizes a broad query, and the response echoes the generated selector under \`search\`.
   • \`zammad_get_user\` with \`me\` shows whose credential is in play; agents and customers see different
-    tickets.`;
+    tickets.
+  • Before writing a manual signature, check for a group signature (\`zammad_get_group_signature\`) and avoid
+    overlap.`;
 }
 
 export interface CreateServerOptions {
