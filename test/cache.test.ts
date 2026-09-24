@@ -92,6 +92,34 @@ describe('JsonCache', () => {
     assert.deepEqual(await cache.read('k', async () => ({ ok: true })), { ok: true });
   });
 
+  it('lets a loaded value set its own lifetime, capped by the cache and 0 meaning never', async () => {
+    const writes: Array<[string, number]> = [];
+    const store = createMemoryCacheStore();
+    const recording: CacheStore = { ...store, set: async (key, _value, ttl) => void writes.push([key, ttl]) };
+    const cache = new JsonCache(recording, 600);
+
+    await cache.read(
+      'short',
+      async () => ({ ttl: 30 }),
+      (value) => value.ttl,
+    );
+    await cache.read(
+      'long',
+      async () => ({ ttl: 86_400 }),
+      (value) => value.ttl,
+    );
+    await cache.read(
+      'never',
+      async () => ({ ttl: 0 }),
+      (value) => value.ttl,
+    );
+
+    assert.deepEqual(writes, [
+      ['short', 30],
+      ['long', 600],
+    ]);
+  });
+
   it('does not cache a failed load', async () => {
     let calls = 0;
     const cache = new JsonCache(createMemoryCacheStore(), 60);

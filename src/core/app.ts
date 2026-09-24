@@ -206,7 +206,12 @@ function zammadTokenVerifier(config: Config): OAuthTokenVerifier {
  * `oauth` mode, the configured one otherwise.
  */
 function credentialFor(config: Config, authInfo: AuthInfo | undefined): Credential {
-  if (config.ZAMMAD_AUTH_MODE === 'oauth') return { kind: 'bearer', token: authInfo?.token ?? '' };
+  if (config.ZAMMAD_AUTH_MODE === 'oauth') {
+    // The bearer gate hands every oauth request over with its AuthInfo; one
+    // without it is a wiring fault, and must not reach Zammad as an empty token.
+    if (!authInfo) throw new Error('An oauth-mode MCP request reached the server without a verified token.');
+    return { kind: 'bearer', token: authInfo.token };
+  }
   if (config.ZAMMAD_AUTH_MODE === 'token') return { kind: 'token', token: config.ZAMMAD_API_TOKEN! };
   return { kind: 'basic', username: config.ZAMMAD_USERNAME!, password: config.ZAMMAD_PASSWORD! };
 }

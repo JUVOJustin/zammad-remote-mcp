@@ -25,8 +25,10 @@ upgrader has to check is short:
   support, and the proxy fetches it from their host. A server without outbound
   HTTPS sets `OAUTH_CLIENT_ID_METADATA_DOCUMENTS=false`, and those clients
   register dynamically as before.
-- **A refused registration answers `invalid_redirect_uri`**, the RFC 7591 code
-  for exactly that case, instead of `invalid_client_metadata`.
+- **A redirect URI outside the allowlist answers `invalid_redirect_uri`**, the
+  RFC 7591 code for exactly that case, instead of `invalid_client_metadata`.
+  Metadata that is malformed in any other way — a missing or unparseable
+  redirect URI included — still answers `invalid_client_metadata`.
 - **Code that imports the library** gets the SDK v2 `McpServer` from
   `createMcpServer`. `@modelcontextprotocol/sdk` is no longer a dependency; its
   successor is `@modelcontextprotocol/server`.

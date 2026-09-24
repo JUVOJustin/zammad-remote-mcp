@@ -2,6 +2,7 @@ import { serve } from '@hono/node-server';
 import { createApp } from '../../src/core/app.js';
 import { loadConfig } from '../../src/core/config.js';
 import { createLogger } from '../../src/core/util/logger.js';
+import { modernRequest, readEnvelope } from '../mcp-request.js';
 import { ADMIN_LOGIN, ADMIN_PASSWORD, BASE_URL, isReachable } from './zammad.js';
 
 /**
@@ -104,51 +105,19 @@ export async function withRejectedCredential<T>(run: (call: Caller) => Promise<T
 
 export type Caller = (name: string, args: unknown) => Promise<Json>;
 
-const PROTOCOL_VERSION = '2026-07-28';
-
-/**
- * One JSON-RPC request against a given port, returning the response envelope.
- *
- * A 2026-07-28 request carries its protocol version and client capabilities in
- * `_meta` and repeats the method and tool name in headers, so every call stands
- * alone without a handshake.
- */
+/** One JSON-RPC request against a given port, returning the response envelope. */
 async function post(onPort: number, method: string, params: Record<string, unknown> = {}): Promise<Json> {
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    Accept: 'application/json, text/event-stream',
-    'MCP-Protocol-Version': PROTOCOL_VERSION,
-    'Mcp-Method': method,
-  };
-  if (typeof params.name === 'string') headers['Mcp-Name'] = params.name;
-
+  const request = modernRequest(method, params, 'integration');
   const response = await fetch(`http://127.0.0.1:${onPort}/mcp`, {
     method: 'POST',
-    headers,
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      id: 1,
-      method,
-      params: {
-        ...params,
-        _meta: {
-          'io.modelcontextprotocol/protocolVersion': PROTOCOL_VERSION,
-          'io.modelcontextprotocol/clientCapabilities': {},
-          'io.modelcontextprotocol/clientInfo': { name: 'integration', version: '1' },
-        },
-      },
-    }),
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json, text/event-stream',
+      ...request.headers,
+    },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params: request.params }),
   });
-
-  const text = await response.text();
-  const payload = response.headers.get('content-type')?.includes('text/event-stream')
-    ? text
-        .split('\n')
-        .find((line) => line.startsWith('data:'))
-        ?.slice(5)
-        .trim()
-    : text;
-  return JSON.parse(payload ?? '{}');
+  return (await readEnvelope(response)) ?? {};
 }
 
 /** One tools/call against a given port, returning the raw MCP result envelope. */

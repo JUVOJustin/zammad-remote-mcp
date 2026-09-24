@@ -5,6 +5,7 @@ import manifest from '../package.json' with { type: 'json' };
 import { createApp } from '../src/core/app.js';
 import { loadConfig } from '../src/core/config.js';
 import { createLogger } from '../src/core/util/logger.js';
+import { modernRequest, PROTOCOL_VERSION, readEnvelope } from './mcp-request.js';
 
 /**
  * The parts of the server that are the server's own: OAuth discovery, the
@@ -30,7 +31,6 @@ import { createLogger } from '../src/core/util/logger.js';
 /** Only ever appears inside URLs that are compared or intercepted, never dialled. */
 const ZAMMAD_URL = 'http://zammad.invalid';
 const PUBLIC_URL = 'http://127.0.0.1:39999';
-const MODERN = '2026-07-28';
 
 let appServer: ReturnType<typeof serve>;
 let appPort: number;
@@ -43,56 +43,48 @@ const upstream = new Map<string, (request: Request) => Response | Promise<Respon
 const upstreamCalls: Request[] = [];
 const realFetch = globalThis.fetch;
 
-/** Issue one MCP JSON-RPC call over Streamable HTTP. */
+/**
+ * The app as configured for these tests, in proxy mode against a Zammad that
+ * is never dialled; `overrides` adds or replaces environment variables.
+ */
+function buildApp(overrides: Record<string, string> = {}) {
+  return createApp(
+    loadConfig({
+      ZAMMAD_URL,
+      ZAMMAD_OAUTH_CLIENT_ID: 'zammad-client-id',
+      ZAMMAD_OAUTH_CLIENT_SECRET: 'zammad-client-secret',
+      OAUTH_STATE_SECRET: 'test-secret-that-is-long-enough',
+      PUBLIC_URL,
+      LOG_LEVEL: 'silent',
+      DYNAMIC_TOOL_SCHEMAS: 'false',
+      ...overrides,
+    } as NodeJS.ProcessEnv),
+    createLogger('silent'),
+  );
+}
+
+/** Issue one MCP JSON-RPC call over Streamable HTTP, as a 2026-07-28 or a 2025-era client. */
 async function mcp(
   method: string,
   params: Record<string, unknown>,
   options: { token?: string | null; id?: number; modern?: boolean } = {},
 ): Promise<{ status: number; body: any; headers: Headers }> {
+  const request = options.modern ? modernRequest(method, params) : { headers: {}, params };
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     // The spec requires the client to accept both.
     Accept: 'application/json, text/event-stream',
+    ...request.headers,
   };
   const token = options.token === undefined ? 'good-token' : options.token;
   if (token) headers.Authorization = `Bearer ${token}`;
 
-  // A 2026-07-28 request states its protocol version and capabilities itself,
-  // in the headers and in `_meta`, instead of relying on an earlier handshake.
-  let body = params;
-  if (options.modern) {
-    headers['MCP-Protocol-Version'] = MODERN;
-    headers['Mcp-Method'] = method;
-    if (typeof params.name === 'string') headers['Mcp-Name'] = params.name;
-    body = {
-      ...params,
-      _meta: {
-        'io.modelcontextprotocol/protocolVersion': MODERN,
-        'io.modelcontextprotocol/clientCapabilities': {},
-        'io.modelcontextprotocol/clientInfo': { name: 'test', version: '1.0.0' },
-      },
-    };
-  }
-
   const response = await fetch(`http://127.0.0.1:${appPort}/mcp`, {
     method: 'POST',
     headers,
-    body: JSON.stringify({ jsonrpc: '2.0', id: options.id ?? 1, method, params: body }),
+    body: JSON.stringify({ jsonrpc: '2.0', id: options.id ?? 1, method, params: request.params }),
   });
-
-  const text = await response.text();
-  if (!text) return { status: response.status, body: undefined, headers: response.headers };
-
-  // Stateless replies may still come back as a single SSE event.
-  if (response.headers.get('content-type')?.includes('text/event-stream')) {
-    const dataLine = text.split('\n').find((line) => line.startsWith('data:'));
-    return {
-      status: response.status,
-      body: dataLine ? JSON.parse(dataLine.slice(5).trim()) : undefined,
-      headers: response.headers,
-    };
-  }
-  return { status: response.status, body: JSON.parse(text), headers: response.headers };
+  return { status: response.status, body: await readEnvelope(response), headers: response.headers };
 }
 
 /** Register a client over DCR and return its signed id. */
@@ -124,19 +116,7 @@ before(async () => {
     return answer(request);
   };
 
-  const config = loadConfig({
-    ZAMMAD_URL,
-    ZAMMAD_AUTH_MODE: 'oauth',
-    ZAMMAD_OAUTH_MODE: 'proxy',
-    ZAMMAD_OAUTH_CLIENT_ID: 'zammad-client-id',
-    ZAMMAD_OAUTH_CLIENT_SECRET: 'zammad-client-secret',
-    OAUTH_STATE_SECRET: 'test-secret-that-is-long-enough',
-    PUBLIC_URL,
-    LOG_LEVEL: 'silent',
-    DYNAMIC_TOOL_SCHEMAS: 'false',
-  } as NodeJS.ProcessEnv);
-
-  const app = createApp(config, createLogger('silent'));
+  const app = buildApp();
   await new Promise<void>((resolve) => {
     appServer = serve({ fetch: app.fetch, hostname: '127.0.0.1', port: 0 }, (info) => {
       appPort = info.port;
@@ -501,17 +481,7 @@ describe('client ID metadata documents', () => {
   });
 
   it('can be switched off for a server without outbound internet access', async () => {
-    const offline = createApp(
-      loadConfig({
-        ZAMMAD_URL,
-        ZAMMAD_OAUTH_CLIENT_ID: 'zammad-client-id',
-        OAUTH_STATE_SECRET: 'test-secret-that-is-long-enough',
-        PUBLIC_URL,
-        LOG_LEVEL: 'silent',
-        OAUTH_CLIENT_ID_METADATA_DOCUMENTS: 'false',
-      } as NodeJS.ProcessEnv),
-      createLogger('silent'),
-    );
+    const offline = buildApp({ OAUTH_CLIENT_ID_METADATA_DOCUMENTS: 'false' });
 
     const metadata = await (
       await offline.fetch(new Request(`${PUBLIC_URL}/.well-known/oauth-authorization-server`))
@@ -610,18 +580,8 @@ describe('mcp endpoint', () => {
   });
 
   it('confirms the token with Zammad first when asked to, and says whose fault a refusal is', async () => {
-    const eager = createApp(
-      loadConfig({
-        ZAMMAD_URL,
-        ZAMMAD_OAUTH_CLIENT_ID: 'zammad-client-id',
-        OAUTH_STATE_SECRET: 'test-secret-that-is-long-enough',
-        PUBLIC_URL,
-        LOG_LEVEL: 'silent',
-        DYNAMIC_TOOL_SCHEMAS: 'false',
-        VALIDATE_TOKEN_EAGERLY: 'true',
-      } as NodeJS.ProcessEnv),
-      createLogger('silent'),
-    );
+    const eager = buildApp({ VALIDATE_TOKEN_EAGERLY: 'true' });
+    const request = modernRequest('server/discover');
     const discover = () =>
       eager.fetch(
         new Request(`${PUBLIC_URL}/mcp`, {
@@ -630,20 +590,9 @@ describe('mcp endpoint', () => {
             'Content-Type': 'application/json',
             Accept: 'application/json, text/event-stream',
             Authorization: 'Bearer dead-token',
-            'MCP-Protocol-Version': MODERN,
-            'Mcp-Method': 'server/discover',
+            ...request.headers,
           },
-          body: JSON.stringify({
-            jsonrpc: '2.0',
-            id: 1,
-            method: 'server/discover',
-            params: {
-              _meta: {
-                'io.modelcontextprotocol/protocolVersion': MODERN,
-                'io.modelcontextprotocol/clientCapabilities': {},
-              },
-            },
-          }),
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'server/discover', params: request.params }),
         }),
       );
     const me = `${ZAMMAD_URL}/api/v1/users/me`;
@@ -667,7 +616,7 @@ describe('mcp endpoint', () => {
     const response = await mcp('server/discover', {}, { modern: true });
 
     assert.equal(response.status, 200);
-    assert.ok(response.body.result.supportedVersions.includes(MODERN));
+    assert.ok(response.body.result.supportedVersions.includes(PROTOCOL_VERSION));
     // Nothing is ever published, so no client should hold a listen stream open for it.
     assert.equal(response.body.result.capabilities.tools.listChanged, false);
     assert.deepEqual(response.body.result._meta['io.modelcontextprotocol/serverInfo'], {

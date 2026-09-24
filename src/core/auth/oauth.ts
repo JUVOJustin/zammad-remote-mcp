@@ -229,52 +229,39 @@ export function createOAuthLayer(config: Config, logger: Logger): OAuthLayer | u
       const params = await requestParams(c);
       await requireClient(config, params.client_id);
 
+      let fields: Record<string, string> & { grant_type: string };
       switch (params.grant_type) {
-        case 'authorization_code': {
+        case 'authorization_code':
           if (!params.code || !params.code_verifier) {
             throw new OAuthError(OAuthErrorCode.InvalidRequest, 'code and code_verifier are required.');
           }
-          return c.json(
-            await zammadToken(
-              config,
-              log,
-              {
-                grant_type: 'authorization_code',
-                code: params.code,
-                // Must match the redirect URI Doorkeeper recorded with the code —
-                // this server's callback, never the MCP client's.
-                redirect_uri: config.oauthCallbackUrl,
-                code_verifier: params.code_verifier,
-                ...(params.resource ? { resource: params.resource } : {}),
-              },
-              'authorization_code',
-            ),
-          );
-        }
-        case 'refresh_token': {
+          fields = {
+            grant_type: 'authorization_code',
+            code: params.code,
+            // Must match the redirect URI Doorkeeper recorded with the code —
+            // this server's callback, never the MCP client's.
+            redirect_uri: config.oauthCallbackUrl,
+            code_verifier: params.code_verifier,
+          };
+          break;
+        case 'refresh_token':
           if (!params.refresh_token) {
             throw new OAuthError(OAuthErrorCode.InvalidRequest, 'refresh_token is required.');
           }
-          return c.json(
-            await zammadToken(
-              config,
-              log,
-              {
-                grant_type: 'refresh_token',
-                refresh_token: params.refresh_token,
-                ...(params.scope ? { scope: params.scope } : {}),
-                ...(params.resource ? { resource: params.resource } : {}),
-              },
-              'refresh_token',
-            ),
-          );
-        }
+          fields = {
+            grant_type: 'refresh_token',
+            refresh_token: params.refresh_token,
+            ...(params.scope ? { scope: params.scope } : {}),
+          };
+          break;
         default:
           throw new OAuthError(
             OAuthErrorCode.UnsupportedGrantType,
             'Supported grant types: authorization_code, refresh_token.',
           );
       }
+      if (params.resource) fields.resource = params.resource;
+      return c.json(await zammadToken(config, log, fields));
     } catch (error) {
       return errorResponse(c, error, log);
     }
@@ -392,9 +379,9 @@ function authorizationResponse(
 async function zammadToken(
   config: Config,
   log: Logger,
-  fields: Record<string, string>,
-  kind: string,
+  fields: Record<string, string> & { grant_type: string },
 ): Promise<OAuthTokens> {
+  const kind = fields.grant_type;
   const text = await zammadRequest(config, log, config.zammadTokenUrl, kind, fields);
   const tokens = OAuthTokensSchema.safeParse(parseJson(text));
   if (tokens.success) return tokens.data;
@@ -474,16 +461,17 @@ function parseJson(text: string): unknown {
 async function requestParams(c: Context): Promise<Record<string, string | undefined>> {
   if (c.req.header('Content-Type')?.includes('application/json')) {
     const body: unknown = await c.req.json().catch(() => undefined);
-    if (typeof body !== 'object' || body === null) return {};
-    return Object.fromEntries(
-      Object.entries(body).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
-    );
+    return typeof body === 'object' && body !== null ? stringFields(body) : {};
   }
   return formParams(c);
 }
 
 async function formParams(c: Context): Promise<Record<string, string | undefined>> {
-  const body = await c.req.parseBody().catch(() => ({}));
+  return stringFields(await c.req.parseBody().catch(() => ({})));
+}
+
+/** OAuth parameters are strings; an uploaded file or a nested JSON value is not one. */
+function stringFields(body: object): Record<string, string> {
   return Object.fromEntries(
     Object.entries(body).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
   );

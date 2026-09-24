@@ -73,18 +73,26 @@ export class JsonCache {
     private readonly ttlSeconds: number,
   ) {}
 
-  async read<T>(key: string, load: () => Promise<T>): Promise<T> {
+  /**
+   * `ttlOf` lets a loaded value set its own lifetime — a fetched document that
+   * carries `Cache-Control`, say — capped by the cache's TTL; 0 keeps it out.
+   */
+  async read<T>(key: string, load: () => Promise<T>, ttlOf?: (value: T) => number): Promise<T> {
     if (this.ttlSeconds <= 0) return load();
 
     const pending = this.inFlight.get(key);
     if (pending) return pending as Promise<T>;
 
-    const task = this.readUncached(key, load).finally(() => this.inFlight.delete(key));
+    const task = this.readUncached(key, load, ttlOf).finally(() => this.inFlight.delete(key));
     this.inFlight.set(key, task);
     return task;
   }
 
-  private async readUncached<T>(key: string, load: () => Promise<T>): Promise<T> {
+  private async readUncached<T>(
+    key: string,
+    load: () => Promise<T>,
+    ttlOf?: (value: T) => number,
+  ): Promise<T> {
     try {
       const cached = await this.store.get(key);
       if (cached !== undefined) return JSON.parse(cached) as T;
@@ -94,10 +102,13 @@ export class JsonCache {
 
     const value = await load();
 
-    try {
-      await this.store.set(key, JSON.stringify(value), this.ttlSeconds);
-    } catch {
-      // Same on the way out: a write failure must not fail the caller.
+    const ttl = Math.min(ttlOf ? ttlOf(value) : this.ttlSeconds, this.ttlSeconds);
+    if (ttl > 0) {
+      try {
+        await this.store.set(key, JSON.stringify(value), ttl);
+      } catch {
+        // Same on the way out: a write failure must not fail the caller.
+      }
     }
     return value;
   }

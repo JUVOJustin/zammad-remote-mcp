@@ -1,7 +1,7 @@
 import { OAuthClientInformationFullSchema, OAuthClientMetadataSchema } from '@modelcontextprotocol/core';
 import { type OAuthClientMetadata, OAuthError, OAuthErrorCode } from '@modelcontextprotocol/server';
 import type { Config } from '../config.js';
-import { createMemoryCacheStore } from '../util/cache.js';
+import { createMemoryCacheStore, JsonCache } from '../util/cache.js';
 import { SignatureError, seal, unseal } from './signing.js';
 
 /**
@@ -217,14 +217,13 @@ const DOCUMENT_DEFAULT_TTL_SECONDS = 300;
 const DOCUMENT_MAX_TTL_SECONDS = 86_400;
 
 /**
- * Fetched documents, per process. Each `/authorize`, `/token` and `/revoke`
- * resolves the client again, and without this every one of them would be an
- * outbound request to the client's host. The keys are URLs anyone can choose,
- * which is why the store's bound has to hold for entries that have not expired.
+ * Fetched documents, per process, with concurrent requests for one document
+ * sharing a single fetch. Each `/authorize`, `/token` and `/revoke` resolves the
+ * client again, and without this every one of them would be an outbound request
+ * to the client's host. The keys are URLs anyone can choose, which is why the
+ * store's bound has to hold for entries that have not expired.
  */
-const documentCache = createMemoryCacheStore(200);
-/** Concurrent resolutions of one URL share a single fetch. */
-const pendingDocuments = new Map<string, Promise<RegisteredClient>>();
+const documents = new JsonCache(createMemoryCacheStore(200), DOCUMENT_MAX_TTL_SECONDS);
 
 /**
  * Resolve a client whose `client_id` is the URL of its metadata document
@@ -243,19 +242,19 @@ const pendingDocuments = new Map<string, Promise<RegisteredClient>>();
  */
 async function resolveMetadataDocumentClient(config: Config, clientId: string): Promise<RegisteredClient> {
   const url = metadataDocumentUrl(clientId);
-
-  const cached = await documentCache.get(clientId);
-  if (cached !== undefined) return JSON.parse(cached) as RegisteredClient;
-
-  let pending = pendingDocuments.get(clientId);
-  if (!pending) {
-    pending = fetchMetadataDocument(config, url, clientId).finally(() => pendingDocuments.delete(clientId));
-    pendingDocuments.set(clientId, pending);
-  }
-  return pending;
+  const { client } = await documents.read(
+    clientId,
+    () => fetchMetadataDocument(config, url, clientId),
+    (fetched) => fetched.ttl,
+  );
+  return client;
 }
 
-async function fetchMetadataDocument(config: Config, url: URL, clientId: string): Promise<RegisteredClient> {
+async function fetchMetadataDocument(
+  config: Config,
+  url: URL,
+  clientId: string,
+): Promise<{ client: RegisteredClient; ttl: number }> {
   const reject = (reason: string) =>
     new OAuthError(OAuthErrorCode.InvalidClient, `The client metadata document at ${clientId} ${reason}.`);
   // Answered as a server fault rather than `invalid_client`: a client told its
@@ -319,9 +318,7 @@ async function fetchMetadataDocument(config: Config, url: URL, clientId: string)
     scope: metadata.scope?.trim() ? metadata.scope : config.ZAMMAD_OAUTH_SCOPES.join(' '),
   };
 
-  const ttl = cacheLifetime(response.headers.get('cache-control'));
-  if (ttl > 0) await documentCache.set(clientId, JSON.stringify(client), ttl);
-  return client;
+  return { client, ttl: cacheLifetime(response.headers.get('cache-control')) };
 }
 
 /** Names that only ever resolve inside a network, `localhost.localdomain` included. */
@@ -348,13 +345,12 @@ function metadataDocumentUrl(clientId: string): URL {
   return url;
 }
 
-/** Seconds a document may be served from cache, honouring the response's own headers. */
+/** Seconds a document may be served from cache by its own headers; the cache caps it. */
 function cacheLifetime(header: string | null): number {
   if (!header) return DOCUMENT_DEFAULT_TTL_SECONDS;
   if (/\b(no-store|no-cache)\b/i.test(header)) return 0;
   const maxAge = /\bmax-age=(\d+)/i.exec(header)?.[1];
-  if (maxAge === undefined) return DOCUMENT_DEFAULT_TTL_SECONDS;
-  return Math.min(Number(maxAge), DOCUMENT_MAX_TTL_SECONDS);
+  return maxAge === undefined ? DOCUMENT_DEFAULT_TTL_SECONDS : Number(maxAge);
 }
 
 /**
