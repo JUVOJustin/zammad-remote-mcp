@@ -14,7 +14,7 @@
     "zammad-remote-mcp": "^3.0.0"
   },
   "devDependencies": {
-    "typescript": "^5.7.3",
-    "wrangler": "^4.0.0"
+    "typescript": "^7.0.2",
+    "wrangler": "^4.137.0"
   }
 }

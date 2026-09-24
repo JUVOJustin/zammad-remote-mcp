@@ -4,6 +4,149 @@ Notable changes per release. The section matching a tag is used as that release'
 notes, with the pull-request list appended automatically — see
 `.github/workflows/deploy.yml`.
 
+## 4.0.0
+
+The server now speaks MCP 2026-07-28, the revision that made the protocol
+itself stateless, and is built on version 2 of the MCP TypeScript SDK. A server
+that was already stateless mostly gets to delete code: the transport wiring, the
+validator workaround and the OAuth library it borrowed are gone, and the
+authorization server the proxy presents to clients is now this package's own.
+
+Nothing in any tool changed, and no environment variable was removed. What an
+upgrader has to check is short:
+
+- **Node 22 or later.** Node 20 reached end of life in April 2026 and SDK v2
+  leaves it behind.
+- **The OAuth endpoints no longer rate-limit themselves.** Limit them in the
+  reverse proxy or with Cloudflare Rate Limiting — see below for why the
+  built-in limit was worse than none.
+- **The proxy may now fetch from the internet.** Claude, Claude Code and VS Code
+  identify themselves with a client metadata document once the proxy advertises
+  support, and the proxy fetches it from their host. A server without outbound
+  HTTPS sets `OAUTH_CLIENT_ID_METADATA_DOCUMENTS=false`, and those clients
+  register dynamically as before.
+- **A refused registration answers `invalid_redirect_uri`**, the RFC 7591 code
+  for exactly that case, instead of `invalid_client_metadata`.
+- **Code that imports the library** gets the SDK v2 `McpServer` from
+  `createMcpServer`. `@modelcontextprotocol/sdk` is no longer a dependency; its
+  successor is `@modelcontextprotocol/server`.
+
+Clients that still negotiate with the 2025 `initialize` handshake keep working
+unchanged. The SDK recognises a request without the new per-request envelope and
+answers it statelessly with the same tools, so the new revision is an addition
+for clients, not a cut-over.
+
+### The protocol has no session
+
+2026-07-28 removed `initialize`, `Mcp-Session-Id` and stream resumption. Every
+request names its protocol version and client capabilities in `_meta`, and a
+client learns what the server supports from `server/discover`. The endpoint is
+now the SDK's `createMcpHandler`, which builds a fresh server per request from a
+factory — what this server did by hand before, minus the transport it had to
+construct, connect and tear down around every POST.
+
+The SDK now picks its JSON Schema validator per runtime through export
+conditions, so `@cfworker/json-schema` and the explicit validator that kept Ajv
+out of the Worker are gone as well.
+
+Four smaller consequences:
+
+- **The tool list can be cached.** `tools/list` carries `ttlMs` and
+  `cacheScope`. The schemas embed the instance's states, priorities, groups and
+  macros, which the lookup cache holds for `METADATA_CACHE_TTL_SECONDS`, so a
+  client may keep the list for that long. The scope is `private` because a
+  customer's credential sees fewer groups than an agent's.
+- **The server reports its real version.** It announced itself as `1.0.0`
+  whatever was installed, which mattered little while that appeared once per
+  handshake. 2026-07-28 repeats it in every result, so it is now read from
+  `package.json`.
+- **Browsers may send the new headers.** Every 2026-07-28 request repeats its
+  method and tool name in `Mcp-Method` and `Mcp-Name`, and a CORS preflight that
+  does not allow them stops a browser-based client before it reaches the server.
+  The session headers, which this server never issued, are no longer allowed.
+- **Neither logging nor list changes are advertised.** The server never sent a
+  log message, and the revision deprecates the feature. It never announced a
+  changed tool list either — a stateless server cannot — and advertising it only
+  invited clients to hold a `subscriptions/listen` stream open for nothing.
+
+### Clients can identify themselves with a metadata document
+
+The specification now prefers Client ID Metadata Documents to dynamic
+registration: a client's `client_id` is the HTTPS URL of a JSON document listing
+its name and redirect URIs, and the authorization server fetches it. That suits a
+stateless proxy even better than the signed `client_id` it mints on
+registration, because there is nothing to mint — the record lives with the
+client.
+
+The proxy now advertises `client_id_metadata_document_supported` and accepts
+such a client at `/authorize`, `/token` and `/revoke`. A URL anyone can name is
+one the server can be made to fetch, so the fetch is kept narrow: HTTPS on the
+default port to a fully qualified host name — never an IP literal, a
+single-label name or one under a local-only suffix such as `.localhost`,
+`.localdomain` or `.internal` — no redirects, five seconds and 16 KB at most.
+A public name that resolves to a private address is not caught, since the core
+cannot resolve names on every runtime; certificate validation is what stops
+such a fetch from succeeding. Documents are cached per process as their own `Cache-Control`
+allows, in a cache whose bound holds however many URLs a caller invents, and
+concurrent requests for one document share a single fetch.
+
+A document gains a client nothing on its own: the redirect URI it lists has to
+pass `OAUTH_ALLOWED_REDIRECT_HOSTS` and `OAUTH_ALLOWED_REDIRECT_SCHEMES` exactly
+like a registered one before a code is sent there. A document asking for a
+client authentication method other than `none` is refused, since the proxy
+relies on PKCE and cannot verify a key. A document that cannot be fetched at all
+answers 502 rather than `invalid_client`, so an outage at the client's own host
+does not make it throw away its tokens.
+
+Dynamic registration stays for clients that predate the documents. A request
+without `redirect_uris` now answers 400 rather than 500.
+
+### Every redirect back names its issuer
+
+A client that talks to more than one authorization server has to know which one
+issued the code it just received, or a malicious server can have it redeem an
+honest server's code (the mix-up attack). RFC 9207 closes that with an `iss`
+parameter on the authorization response, and 2026-07-28 asks for it. Both the
+callback and every error the authorization endpoint sends back to a client now
+carry `iss`, and the metadata says so.
+
+The metadata also stops advertising what the proxy does not do: PKCE is `S256`
+only, which it always enforced, and clients authenticate with `none`, which is
+what registration always assigned.
+
+### The token endpoint says why it refused
+
+Every refusal from Zammad at `/token` used to reach the client as `500 Internal
+Server Error` — including an expired refresh token, the one failure a client is
+meant to recover from by authorizing again. Doorkeeper's own verdict on the grant
+(`invalid_grant`, `invalid_scope`, `invalid_request`) is now passed through with
+its description. A refusal of this server's own credentials is a deployment
+fault no client can fix, so it answers 502 and names the settings to check, and
+the full response goes to the log.
+
+### Revocation reaches Zammad
+
+`/revoke` never worked. It read the request as JSON, where RFC 7009 sends a
+form, and forwarded the MCP client's `client_id` to Doorkeeper, which has never
+heard of it. It now takes the form body and revokes with the Zammad application's
+credentials, like `/token`.
+
+### The built-in rate limit is gone
+
+The OAuth endpoints were limited by a middleware that keyed every caller to one
+shared bucket, so a single client could spend the limit for everyone — a denial
+of service rather than a defence. On Workers it counted per isolate and limited
+nothing. Rate limiting belongs where the client's address is known: the reverse
+proxy in front of the Node server, or Cloudflare Rate Limiting in front of the
+Worker.
+
+### Tooling
+
+TypeScript 7 compiles the package, and the type check takes about a third of the
+time. zod 4.6, Hono 4.13 and Biome 2.5 come along. The integration suite now
+speaks 2026-07-28 to the real Zammad; the unit tests keep the 2025 handshake
+covered.
+
 ## 3.2.0
 
 What a written article looks like by the time somebody reads it, which turned

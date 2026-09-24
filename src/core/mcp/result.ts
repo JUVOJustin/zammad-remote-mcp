@@ -1,4 +1,4 @@
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import type { CallToolResult } from '@modelcontextprotocol/server';
 import { describeError } from '../util/errors.js';
 import { type BodyFormat, renderArticleBody } from '../zammad/article-body.js';
 

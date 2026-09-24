@@ -1,20 +1,19 @@
-import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
+import { type AuthInfo, createMcpHandler } from '@modelcontextprotocol/server';
 import { type Context, Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { createOAuthLayer } from './auth/oauth.js';
 import type { Config } from './config.js';
 import { createMcpServer } from './mcp/server.js';
-import { ZammadApiError } from './util/errors.js';
 import type { Logger } from './util/logger.js';
+import { SERVER_VERSION } from './version.js';
 import type { Credential } from './zammad/client.js';
 
 /**
  * Builds the Hono application.
  *
- * The MCP endpoint runs in stateless mode: every POST gets a brand-new
- * `McpServer` and `StreamableHTTPTransport`, both discarded once the response is
- * written. No session IDs are issued, so a client may hit any replica on any
- * request without sticky routing.
+ * The MCP endpoint is stateless: every request is answered by a brand-new
+ * `McpServer`, discarded once the response is written, so a client may hit any
+ * replica on any request without sticky routing.
  */
 function safeHost(url: string): string | undefined {
   try {
@@ -31,15 +30,11 @@ export function createApp(config: Config, logger: Logger): Hono {
     '*',
     cors({
       origin: config.CORS_ORIGINS.includes('*') ? '*' : config.CORS_ORIGINS,
-      allowHeaders: [
-        'Content-Type',
-        'Authorization',
-        'Mcp-Session-Id',
-        'MCP-Protocol-Version',
-        'Last-Event-ID',
-      ],
+      // `Mcp-Method` and `Mcp-Name` accompany every 2026-07-28 request; a browser
+      // client whose preflight does not allow them cannot reach the server at all.
+      allowHeaders: ['Content-Type', 'Authorization', 'MCP-Protocol-Version', 'Mcp-Method', 'Mcp-Name'],
       allowMethods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
-      exposeHeaders: ['Mcp-Session-Id', 'WWW-Authenticate'],
+      exposeHeaders: ['WWW-Authenticate'],
       maxAge: 86_400,
     }),
   );
@@ -86,7 +81,7 @@ export function createApp(config: Config, logger: Logger): Hono {
   app.get('/', (c) =>
     c.json({
       name: 'zammad-remote-mcp',
-      version: '1.0.0',
+      version: SERVER_VERSION,
       transport: 'streamable-http',
       stateless: true,
       mcp_endpoint: `${config.publicUrl}${config.MCP_PATH}`,
@@ -99,90 +94,73 @@ export function createApp(config: Config, logger: Logger): Hono {
   // --------------------------------------------------------------- mcp path
   const unauthorized = (c: Context, detail: string) => {
     // RFC 9728: point the client at the protected-resource metadata so it can
-    // discover where to authorize.
+    // discover where to authorize, and name the scopes to ask for.
     if (oauth) {
       c.header(
         'WWW-Authenticate',
         `Bearer realm="zammad-mcp", error="invalid_token", error_description="${detail.replace(/"/g, "'")}", ` +
-          `resource_metadata="${oauth.resourceMetadataUrl}"`,
+          `scope="${config.ZAMMAD_OAUTH_SCOPES.join(' ')}", resource_metadata="${oauth.resourceMetadataUrl}"`,
       );
     }
     return c.json({ error: 'unauthorized', error_description: detail }, 401);
   };
 
-  app.all(config.MCP_PATH, async (c) => {
-    let credential: Credential;
+  // One handler for the process. It builds a fresh server per request from the
+  // factory, answers 2026-07-28 requests natively and 2025-era ones — which
+  // negotiate with `initialize` — through the SDK's stateless fallback, so both
+  // generations of client reach the same tools.
+  const mcp = createMcpHandler(
+    async ({ authInfo }) => {
+      try {
+        return await createMcpServer({ config, logger, credential: credentialFor(config, authInfo) });
+      } catch (error) {
+        logger.error('could not build the MCP server for a request', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
+    },
+    {
+      // The SDK reports every request it refuses here — an unsupported protocol
+      // version, a missing header, the wrong media type. Anyone can send those,
+      // so they are not errors of this server; its own failures are logged above.
+      onerror: (error) => logger.debug('mcp request refused', { error: error.message }),
+      // Nothing is ever published to a `subscriptions/listen` stream (see the
+      // capabilities in createMcpServer), so the few a client might still open
+      // are capped well below the SDK's default of 1024 held connections.
+      maxSubscriptions: 16,
+    },
+  );
 
-    if (config.ZAMMAD_AUTH_MODE === 'oauth') {
-      const header = c.req.header('Authorization') ?? c.req.header('authorization');
-      const token = header?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
-      if (!token) {
+  app.all(config.MCP_PATH, async (c) => {
+    if (config.ZAMMAD_AUTH_MODE !== 'oauth') return mcp.fetch(c.req.raw);
+
+    const header = c.req.header('Authorization') ?? c.req.header('authorization');
+    const token = header?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
+    if (!token) {
+      return unauthorized(
+        c,
+        'Missing bearer token. Authorize against Zammad and send the access token as `Authorization: Bearer <token>`.',
+      );
+    }
+
+    if (config.VALIDATE_TOKEN_EAGERLY) {
+      const response = await fetch(`${config.ZAMMAD_URL}/api/v1/users/me`, {
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+        signal: AbortSignal.timeout(config.ZAMMAD_TIMEOUT_MS),
+      }).catch(() => undefined);
+
+      if (!response?.ok) {
         return unauthorized(
           c,
-          'Missing bearer token. Authorize against Zammad and send the access token as `Authorization: Bearer <token>`.',
+          `Zammad rejected the access token (HTTP ${response?.status ?? 'unreachable'}).`,
         );
       }
-      credential = { kind: 'bearer', token };
-
-      if (config.VALIDATE_TOKEN_EAGERLY) {
-        const response = await fetch(`${config.ZAMMAD_URL}/api/v1/users/me`, {
-          headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
-          signal: AbortSignal.timeout(config.ZAMMAD_TIMEOUT_MS),
-        }).catch(() => undefined);
-
-        if (!response?.ok) {
-          return unauthorized(
-            c,
-            `Zammad rejected the access token (HTTP ${response?.status ?? 'unreachable'}).`,
-          );
-        }
-      }
-    } else if (config.ZAMMAD_AUTH_MODE === 'token') {
-      credential = { kind: 'token', token: config.ZAMMAD_API_TOKEN! };
-    } else {
-      credential = {
-        kind: 'basic',
-        username: config.ZAMMAD_USERNAME!,
-        password: config.ZAMMAD_PASSWORD!,
-      };
     }
 
-    // The SDK's own Web-standard transport: takes a `Request`, returns a
-    // `Response`, imports no Node built-ins. That is what lets the same core run
-    // on Node and on edge runtimes without a runtime-specific transport.
-    const transport = new WebStandardStreamableHTTPServerTransport({
-      // Stateless: no session tracking, so the transport neither issues nor
-      // expects an `Mcp-Session-Id` and any replica can serve any request.
-      sessionIdGenerator: undefined,
-      // Reply with a complete JSON body rather than an SSE stream. A stateless
-      // server never pushes anything to the client, so a stream buys nothing —
-      // and because `handleRequest` then resolves only once the body is fully
-      // built, the per-request server can be torn down immediately afterwards
-      // without truncating the response.
-      enableJsonResponse: true,
+    return mcp.fetch(c.req.raw, {
+      authInfo: { token, clientId: 'zammad', scopes: config.ZAMMAD_OAUTH_SCOPES },
     });
-    const server = await createMcpServer({ config, logger, credential });
-
-    try {
-      await server.connect(transport);
-      const response = await transport.handleRequest(c.req.raw);
-      return response ?? c.body(null, 204);
-    } catch (error) {
-      if (error instanceof ZammadApiError && error.isAuthError) {
-        return unauthorized(c, 'The Zammad access token is invalid, expired or revoked.');
-      }
-      logger.error('mcp request failed', {
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return c.json(
-        { error: 'internal_error', error_description: 'The MCP request could not be handled.' },
-        500,
-      );
-    } finally {
-      // Release the per-request server/transport pair. Errors here are not
-      // actionable — the response has already been produced.
-      await server.close().catch(() => undefined);
-    }
   });
 
   app.notFound((c) =>
@@ -201,4 +179,14 @@ export function createApp(config: Config, logger: Logger): Hono {
   });
 
   return app;
+}
+
+/**
+ * The Zammad credential for one MCP request: the caller's bearer token in
+ * `oauth` mode, the configured one otherwise.
+ */
+function credentialFor(config: Config, authInfo: AuthInfo | undefined): Credential {
+  if (config.ZAMMAD_AUTH_MODE === 'oauth') return { kind: 'bearer', token: authInfo?.token ?? '' };
+  if (config.ZAMMAD_AUTH_MODE === 'token') return { kind: 'token', token: config.ZAMMAD_API_TOKEN! };
+  return { kind: 'basic', username: config.ZAMMAD_USERNAME!, password: config.ZAMMAD_PASSWORD! };
 }

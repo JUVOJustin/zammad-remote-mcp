@@ -52,6 +52,28 @@ export class MissingCredentialError extends Error {
   }
 }
 
+/**
+ * An error the OAuth endpoints answer with, in the RFC 6749 §5.2 shape.
+ *
+ * `code` is the registered error code clients branch on — `invalid_grant` tells
+ * a client to start the authorization over, anything else is a bug to report —
+ * so it has to be the precise one rather than a generic failure.
+ */
+export class OAuthError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly status: 400 | 401 | 500 | 502 = 400,
+  ) {
+    super(message);
+    this.name = 'OAuthError';
+  }
+
+  toJSON(): { error: string; error_description: string } {
+    return { error: this.code, error_description: this.message };
+  }
+}
+
 /** Raised by tool input post-validation that Zod cannot express on its own. */
 export class ToolInputError extends Error {
   constructor(message: string) {

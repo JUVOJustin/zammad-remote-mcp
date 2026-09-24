@@ -34,9 +34,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        # Node 20 reached end of life in April 2026. `engines` still allows
-        # >=20.12 because nothing in the shipped code needs more than
-        # process.loadEnvFile, but it is no longer exercised here.
+        # The oldest Node `engines` allows and the current LTS.
         node-version: [22, 24]
     steps:
       - name: Checkout code

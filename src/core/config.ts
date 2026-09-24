@@ -95,11 +95,12 @@ const EnvSchema = z
      * follows: `proxy` under `oauth`, `disabled` under `token`/`basic`.
      *
      *  - `proxy`       : this server proxies /authorize + /token to Zammad. It
-     *                    holds the client secret, offers RFC 7591 dynamic client
-     *                    registration (which Zammad lacks) and rewrites the
-     *                    redirect URI, so a single callback needs to be
-     *                    registered in Zammad. Still stateless — the client's
-     *                    redirect/state is carried in an HMAC-signed `state`.
+     *                    holds the client secret, accepts client ID metadata
+     *                    documents and RFC 7591 dynamic registration (Zammad
+     *                    has neither) and rewrites the redirect URI, so a single
+     *                    callback needs to be registered in Zammad. Still
+     *                    stateless — the client's redirect/state is carried in
+     *                    an HMAC-signed `state`.
      *  - `passthrough` : advertise Zammad's own endpoints; the MCP client talks
      *                    to Zammad directly. Requires every client redirect URI
      *                    to be registered in Zammad.
@@ -138,6 +139,14 @@ const EnvSchema = z
     OAUTH_ALLOWED_REDIRECT_HOSTS: csv.default(['localhost', '127.0.0.1', '[::1]', 'claude.ai', 'claude.com']),
     /** Also allow custom-scheme redirects such as `vscode://` or `cursor://`. */
     OAUTH_ALLOWED_REDIRECT_SCHEMES: csv.default(['http', 'https', 'vscode', 'cursor', 'claude']),
+    /**
+     * Accept Client ID Metadata Documents in proxy mode: a client whose
+     * `client_id` is an HTTPS URL is resolved by fetching the document there.
+     * A client that sees them advertised uses them instead of registering, so
+     * turn this off where the server cannot reach the internet — those
+     * clients then register dynamically as before.
+     */
+    OAUTH_CLIENT_ID_METADATA_DOCUMENTS: booleanish.default(true),
 
     // ------------------------------------------------------------------ misc
     /**
