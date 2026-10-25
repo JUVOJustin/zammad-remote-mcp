@@ -37,12 +37,17 @@ export async function consentPage(
     'consent_',
   );
   setCookie(c, `__Host-zmcp-consent-${nonce}`, nonce, cookieOptions(config));
+  // Chromium applies form-action to the redirect chain, including Zammad and the registered client.
+  const redirect = new URL(redirectUri);
+  const redirectSource = redirect.origin === 'null' ? redirect.protocol : redirect.origin;
   c.header(
     'Content-Security-Policy',
-    "default-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+    `default-src 'none'; form-action 'self' ${new URL(config.zammadAuthorizeUrl).origin} ${redirectSource}; frame-ancestors 'none'; base-uri 'none'`,
   );
   c.header('X-Frame-Options', 'DENY');
-  c.header('Referrer-Policy', 'no-referrer');
+  // no-referrer makes browser form POSTs send Origin: null, failing the consent CSRF check.
+  // Send only the origin so authorization parameters stay out of the Referer header.
+  c.header('Referrer-Policy', 'strict-origin');
   return c.html(html`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Authorize Zammad MCP</title><body>
     <main><h1>Connect to Zammad</h1>
     <p><strong>${client.client_name ?? 'MCP client'}</strong> is requesting access to your Zammad account.</p>

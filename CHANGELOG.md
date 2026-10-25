@@ -4,6 +4,14 @@ Notable changes per release. The section matching a tag is used as that release'
 notes, with the pull-request list appended automatically — see
 `.github/workflows/deploy.yml`.
 
+## 5.0.1
+
+- Fix browser consent submission: use an origin-only referrer policy so the browser preserves the
+  same-origin POST `Origin` header. The previous `no-referrer` policy produced `Origin: null` and
+  rejected valid approvals. Cookie, signature, expiry and origin checks remain enforced.
+- Allow only the configured Zammad origin and the selected registered client in the consent page's
+  form redirect policy, so Chromium can follow approval and cancellation redirects.
+
 ## 5.0.0
 
 ### Cloudflare MCP Portals and OAuth hardening

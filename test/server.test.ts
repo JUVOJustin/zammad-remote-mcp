@@ -99,7 +99,11 @@ async function authorize(url: string): Promise<Response> {
   return fetch(`http://127.0.0.1:${appPort}/authorize`, {
     method: 'POST',
     redirect: 'manual',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Cookie: cookies(consent) },
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      Cookie: cookies(consent),
+      Origin: PUBLIC_URL,
+    },
     body: new URLSearchParams({ consent_request: token, decision: 'allow' }),
   });
 }
@@ -807,13 +811,22 @@ describe('proxy consent and grant boundaries', () => {
     const page = await fetch(authorizeUrl({ client_id: clientId }), { redirect: 'manual' });
     assert.equal(page.status, 200);
     assert.match(page.headers.get('content-security-policy')!, /frame-ancestors 'none'/);
+    assert.match(
+      page.headers.get('content-security-policy')!,
+      /form-action 'self' http:\/\/zammad\.invalid http:\/\/localhost:33418;/,
+    );
     assert.equal(page.headers.get('cache-control'), 'no-store');
+    assert.equal(page.headers.get('referrer-policy'), 'strict-origin');
     const text = await page.text();
     assert.match(text, /Test MCP Client/);
     assert.match(text, /http:\/\/localhost:33418\/callback/);
     assert.match(text, /full/);
     const token = /name="consent_request" value="([^"]+)"/.exec(text)![1]!;
-    for (const headers of [{}, { Cookie: cookies(page), Origin: 'https://attacker.example' }]) {
+    for (const headers of [
+      {},
+      { Cookie: cookies(page), Origin: 'https://attacker.example' },
+      { Cookie: cookies(page), Origin: 'null' },
+    ]) {
       const response = await fetch(`http://127.0.0.1:${appPort}/authorize`, {
         method: 'POST',
         redirect: 'manual',

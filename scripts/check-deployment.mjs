@@ -77,8 +77,43 @@ try {
   assert.equal(consent.status, 200, 'Expected the proxy consent page before Zammad authorization');
   assert.match(consent.headers.get('content-type') ?? '', /text\/html/);
   assert.match(consent.headers.get('content-security-policy') ?? '', /frame-ancestors 'none'/);
-  await consent.body?.cancel();
-  process.stdout.write(`PASS: discovery, unauthenticated challenge, PKCE, DCR and consent at ${endpoint}\n`);
+  assert.equal(
+    consent.headers.get('referrer-policy'),
+    'strict-origin',
+    'Browser forms need a non-null Origin without leaking query parameters',
+  );
+  const html = await consent.text();
+  const token = /name="consent_request" value="([^"]+)"/.exec(html)?.[1];
+  assert.ok(token, 'Consent form is missing its signed request');
+  const approval = await request(metadata.authorization_endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      Origin: new URL(issuer).origin,
+      Cookie: consent.headers
+        .getSetCookie()
+        .map((cookie) => cookie.split(';')[0])
+        .join('; '),
+    },
+    body: new URLSearchParams({ consent_request: token, decision: 'allow' }),
+  });
+  assert.equal(approval.status, 302, 'Same-browser approval must redirect to Zammad');
+  const upstream = new URL(approval.headers.get('location'));
+  assert.equal(upstream.searchParams.get('redirect_uri'), `${issuer}/oauth/callback`);
+  const sources =
+    /(?:^|;)\s*form-action\s+([^;]+)/
+      .exec(consent.headers.get('content-security-policy') ?? '')?.[1]
+      .split(/\s+/) ?? [];
+  for (const url of [upstream, new URL(redirectUri)]) {
+    const source = url.origin === 'null' ? url.protocol : url.origin;
+    assert.ok(
+      sources.includes(source) || (source === new URL(issuer).origin && sources.includes("'self'")),
+      'CSP must permit the OAuth redirect chain',
+    );
+  }
+  process.stdout.write(
+    `PASS: discovery, unauthenticated challenge, PKCE, DCR and consent approval at ${endpoint}\n`,
+  );
   process.stdout.write(
     `Callback accepted: ${redirectUri}\nComplete a browser login in the portal to verify user authorization and tool discovery.\n`,
   );
