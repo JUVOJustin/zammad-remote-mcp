@@ -140,3 +140,24 @@ OAuth credentials and browser state are never stored in this cache.
 For deployments requiring an EU boundary, verify the account's controls before handling production
 data and record the resulting guarantees and uncovered paths. The deploy button does not establish
 an EU residency boundary. See [Cloudflare Workers data localization](https://developers.cloudflare.com/data-localization/how-to/workers/).
+
+## Serve MCP on an existing application hostname
+
+Keep `PUBLIC_URL` on the Worker's OAuth hostname and set `MCP_RESOURCE_URL` to the full routed
+endpoint, for example `https://support.example.com/mcp`. This separates the MCP audience and its
+protected-resource discovery from the authorization issuer; the existing Zammad application callback
+remains `<PUBLIC_URL>/oauth/callback`.
+
+Add HTTPS Worker routes for `support.example.com/mcp*` and
+`support.example.com/.well-known/oauth-protected-resource*` in the hostname's active zone. The hostname
+must already have a proxied DNS record and a valid edge certificate covering it. Route only these
+paths; keep the application's root, assets, `/api/*` and its own `/oauth/*` endpoints on its origin.
+The trailing wildcard includes query strings, as required by [Workers route matching](https://developers.cloudflare.com/workers/configuration/routing/routes/#matching-behavior).
+
+The Worker host below passes unmatched paths within those prefixes through to the application
+origin, while MCP and its two discovery paths are handled locally. Do not install an entire-host
+Worker Custom Domain over an existing application. Confirm TLS with normal certificate verification,
+check that the original application's homepage still loads, then run `check:deployment` against the
+new canonical MCP URL. Set the portal's upstream server URL to that URL and reauthorize clients.
+The deployment probe follows the discovered authorization issuer, so the hostname's `/` may serve
+its existing application rather than Worker metadata.

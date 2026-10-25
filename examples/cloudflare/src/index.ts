@@ -46,6 +46,18 @@ export default {
         { status: 500 },
       );
     }
+    const url = new URL(request.url);
+    const resource = new URL(handler.config.resourceIdentifier);
+    const issuer = new URL(handler.config.publicUrl);
+    if (url.origin === resource.origin && resource.origin !== issuer.origin) {
+      const paths = [
+        handler.config.MCP_PATH,
+        '/.well-known/oauth-protected-resource',
+        `/.well-known/oauth-protected-resource${handler.config.MCP_PATH}`,
+      ];
+      // A Cloudflare prefix route also matches unrelated suffixes; preserve the application's origin for those paths.
+      if (!paths.includes(url.pathname)) return fetch(request);
+    }
     return handler.fetch(request);
   },
 };

@@ -75,7 +75,8 @@ npm run dev
 
 Set `ZAMMAD_URL` and `PUBLIC_URL` in [`examples/cloudflare/wrangler.jsonc`](examples/cloudflare/wrangler.jsonc)
 and provision the three required secret bindings before deploying. `PUBLIC_URL` is the Worker origin;
-clients and the portal use `<PUBLIC_URL>/mcp`. Register `<PUBLIC_URL>/oauth/callback` in Zammad.
+clients and the portal use `<PUBLIC_URL>/mcp` by default. To route MCP on an existing application
+hostname while keeping its OAuth issuer stable, set `MCP_RESOURCE_URL` and follow the Worker guide. Register `<PUBLIC_URL>/oauth/callback` in Zammad.
 
 The deployment button copies the example as a separate repository. Its npm lockfile controls which
 released library it builds; editing this source repository does not update an existing Worker.

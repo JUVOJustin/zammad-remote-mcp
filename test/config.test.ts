@@ -127,3 +127,28 @@ describe('ZAMMAD_PUBLIC_URL', () => {
     assert.throws(() => loadConfig({ ...base, ZAMMAD_PUBLIC_URL: 'support.example.com' }));
   });
 });
+
+describe('separate MCP resource URL', () => {
+  const source = {
+    ...base,
+    ZAMMAD_AUTH_MODE: 'token',
+    ZAMMAD_API_TOKEN: 'test',
+    PUBLIC_URL: 'https://issuer.example.com',
+  };
+  it('keeps the OAuth callback on the issuer and the MCP audience on the resource host', () => {
+    const config = loadConfig({ ...source, MCP_RESOURCE_URL: 'https://support.example.com/mcp' });
+    assert.equal(config.resourceIdentifier, 'https://support.example.com/mcp');
+    assert.equal(config.oauthCallbackUrl, 'https://issuer.example.com/oauth/callback');
+  });
+  it('rejects insecure, mismatched or ambiguous canonical resources', () => {
+    for (const resource of [
+      'http://support.example.com/mcp',
+      'https://support.example.com/wrong',
+      'https://user:pass@support.example.com/mcp',
+      'https://support.example.com/mcp?other=1',
+      'https://support.example.com/mcp#fragment',
+    ]) {
+      assert.throws(() => loadConfig({ ...source, MCP_RESOURCE_URL: resource }), /MCP_RESOURCE_URL/);
+    }
+  });
+});

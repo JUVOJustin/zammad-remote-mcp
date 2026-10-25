@@ -1002,3 +1002,46 @@ describe('proxy consent and grant boundaries', () => {
     assert.equal((await response.json()).error.code, -32020);
   });
 });
+
+describe('separate resource and OAuth origins', () => {
+  it('publishes the canonical MCP resource with the existing issuer and verifies its tokens', async () => {
+    const resource = 'https://support.example.com/mcp';
+    const overrides = { MCP_RESOURCE_URL: resource };
+    const app = buildApp(overrides);
+    const discovery = await app.fetch(
+      new Request('https://support.example.com/.well-known/oauth-protected-resource/mcp'),
+    );
+    const metadata = await discovery.json();
+    assert.equal(metadata.resource, resource);
+    assert.deepEqual(metadata.authorization_servers, [PUBLIC_URL]);
+    const issuer = await (
+      await app.fetch(new Request(`${PUBLIC_URL}/.well-known/oauth-authorization-server`))
+    ).json();
+    assert.equal(issuer.issuer, PUBLIC_URL);
+    assert.equal(issuer.authorization_endpoint, `${PUBLIC_URL}/authorize`);
+    const unauthenticated = await app.fetch(new Request(resource));
+    assert.equal(unauthenticated.status, 401);
+    assert.match(
+      unauthenticated.headers.get('www-authenticate')!,
+      /resource_metadata="https:\/\/support.example.com\/\.well-known\/oauth-protected-resource\/mcp"/,
+    );
+    const request = modernRequest('server/discover');
+    const response = await app.fetch(
+      new Request(resource, {
+        method: 'POST',
+        headers: {
+          ...request.headers,
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+          Origin: 'https://support.example.com',
+          Authorization: `Bearer ${await testAccessToken('upstream', overrides)}`,
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'server/discover', params: request.params }),
+      }),
+    );
+    assert.equal(response.status, 200);
+    assert.ok((await readEnvelope(response)).result.supportedVersions.includes(PROTOCOL_VERSION));
+    const root = await (await app.fetch(new Request(PUBLIC_URL))).json();
+    assert.equal(root.mcp_endpoint, resource);
+  });
+});
