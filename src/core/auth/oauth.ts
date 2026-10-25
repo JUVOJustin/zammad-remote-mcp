@@ -18,7 +18,13 @@ import {
   registerClient,
   resolveClient,
 } from './clients.js';
-import { approvedParams, consentPage, consumeUpstreamState, trackUpstreamState } from './consent.js';
+import {
+  approvedParams,
+  consentHandoff,
+  consentPage,
+  consumeUpstreamState,
+  trackUpstreamState,
+} from './consent.js';
 import { sealWithExpiry, unsealWithExpiry } from './signing.js';
 import { issueCredential, issueTokens, type OAuthGrant, readCredential, requireResource } from './tokens.js';
 
@@ -129,13 +135,13 @@ export function createOAuthLayer(config: Config, logger: Logger): OAuthLayer | u
       return errorResponse(c, error, log);
     }
 
-    const refuse = (code: OAuthErrorCode, description: string) =>
-      c.redirect(
-        authorizationResponse(redirectUri, issuer, params.state, {
-          error: code,
-          error_description: description,
-        }),
-      );
+    const refuse = (code: OAuthErrorCode, description: string) => {
+      const target = authorizationResponse(redirectUri, issuer, params.state, {
+        error: code,
+        error_description: description,
+      });
+      return form?.consent_request ? consentHandoff(c, target) : c.redirect(target);
+    };
 
     if (params.response_type !== 'code') {
       return refuse(
@@ -207,7 +213,7 @@ export function createOAuthLayer(config: Config, logger: Logger): OAuthLayer | u
       client_id: client.client_id,
       redirect_uri: redirectUri,
     });
-    return c.redirect(target.toString());
+    return consentHandoff(c, target.toString());
   });
 
   // The single redirect URI that must be registered on the Zammad side.
