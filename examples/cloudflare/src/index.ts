@@ -1,4 +1,5 @@
-import { bootstrap } from 'zammad-remote-mcp';
+import { env } from 'cloudflare:workers';
+import { bootstrap, createLogger } from 'zammad-remote-mcp';
 import { createKvCacheStore, type KvNamespaceLike } from './kv-cache.js';
 
 // Re-exported so a hand-written Worker can reuse the KV store without reaching
@@ -11,19 +12,8 @@ export { createKvCacheStore, type KvNamespaceLike };
  * The whole runtime difference from the Node package: configuration comes from
  * the Worker's `env` binding instead of `process.env`, the lookup cache is
  * backed by KV instead of process memory, and the app is returned as a `fetch`
- * handler instead of being handed to a socket listener. Everything else —
- * routing, MCP, OAuth, the Zammad client — is `@zammad-mcp/core`.
+ * handler instead of being handed to a socket listener.
  */
-
-export interface WorkerEnv extends Record<string, unknown> {
-  /**
-   * Optional KV namespace for the lookup cache. Without it the Worker falls
-   * back to per-isolate memory, which still works but re-reads the instance's
-   * states, priorities and groups on every cold start.
-   */
-  LOOKUP_CACHE?: KvNamespaceLike;
-}
-
 /**
  * The app is rebuilt per request rather than cached in module scope.
  *
@@ -34,7 +24,7 @@ export interface WorkerEnv extends Record<string, unknown> {
  * caches.
  */
 export default {
-  fetch(request: Request, env: WorkerEnv): Response | Promise<Response> {
+  fetch(request: Request): Response | Promise<Response> {
     let handler: ReturnType<typeof bootstrap>;
     try {
       handler = bootstrap({
@@ -44,12 +34,14 @@ export default {
         cache: env.LOOKUP_CACHE ? createKvCacheStore(env.LOOKUP_CACHE) : undefined,
       });
     } catch (error) {
-      // A misconfigured Worker has no console the operator is watching, so the
-      // reason has to travel in the response or it is invisible.
+      // Configuration errors can contain submitted values; keep them out of public responses.
+      createLogger('error').error('Worker configuration failed', {
+        name: error instanceof Error ? error.name : 'unknown',
+      });
       return Response.json(
         {
           error: 'configuration_error',
-          error_description: error instanceof Error ? error.message : String(error),
+          error_description: 'Worker configuration is invalid. Check variables and required secret bindings.',
         },
         { status: 500 },
       );
@@ -58,9 +50,9 @@ export default {
   },
 };
 
-function stringVars(env: WorkerEnv): Record<string, string | undefined> {
+function stringVars(bindings: Cloudflare.Env): Record<string, string | undefined> {
   const vars: Record<string, string | undefined> = {};
-  for (const [key, value] of Object.entries(env)) {
+  for (const [key, value] of Object.entries(bindings)) {
     if (typeof value === 'string') vars[key] = value;
   }
   return vars;

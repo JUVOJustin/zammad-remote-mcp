@@ -56,25 +56,26 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "dev": "tsx watch src/node/index.ts",
     "start": "node dist/node/index.js",
-    "build:worker": "npm run build && cd examples/cloudflare && npm install ../.. --no-save --silent && npm run build",
+    "build:worker": "npm run build && cd examples/cloudflare && npm ci && npm install ../.. --no-save --package-lock=false && npm run typecheck && npm run build",
     "lint": "biome lint .",
     "format": "biome format --write .",
     "check": "biome check .",
     "check:fix": "biome check --write .",
     "test": "node --test --import tsx test/*.test.ts",
     "verify": "npm run check && npm run typecheck && npm test && npm run build:worker",
+    "check:deployment": "node scripts/check-deployment.mjs",
     "prepack": "npm run build",
     "zammad:up": "./test/integration/up.sh",
     "zammad:down": "./test/integration/down.sh",
     "test:integration": "node --test --test-concurrency=1 --import tsx test/integration/*.test.ts"
   },
   "dependencies": {
-    "@hono/node-server": "^2.1.1",
-    "@modelcontextprotocol/core": "^2.1.0",
-    "@modelcontextprotocol/server": "^2.1.0",
-    "hono": "^4.13.9",
+    "@hono/node-server": "^2.1.5",
+    "@modelcontextprotocol/core": "^2.4.0",
+    "@modelcontextprotocol/server": "^2.4.0",
+    "hono": "^4.13.14",
     "turndown": "^7.2.4",
-    "zod": "^4.6.5"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.14",

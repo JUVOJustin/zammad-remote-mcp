@@ -8,12 +8,13 @@
 ZAMMAD_OAUTH_CLIENT_ID = ""
 ZAMMAD_OAUTH_CLIENT_SECRET = ""
 
-# Signs the client_id and the OAuth state, which is what keeps the proxy
-# stateless. Must be stable and identical across deployments.
+# Signs registration/state and encrypts MCP credentials. Must be stable and
+# identical across deployments; rotation invalidates existing authorizations.
 #   openssl rand -base64 48
 OAUTH_STATE_SECRET = ""
 
 # --- ZAMMAD_AUTH_MODE=token (single-tenant instead) --------------------------
 # Set ZAMMAD_AUTH_MODE=token in wrangler.jsonc and supply a Zammad access token
-# instead of the three values above. OAuth then switches itself off.
+# instead of the three values above. OAuth then switches itself off. Also replace
+# secrets.required in wrangler.jsonc with ["ZAMMAD_API_TOKEN"].
 # ZAMMAD_API_TOKEN = ""

@@ -8,13 +8,17 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "build": "wrangler deploy --dry-run --outdir .wrangler/dry-run",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "types": "wrangler types worker-configuration.d.ts",
+    "typecheck": "npm run types && tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "zammad-remote-mcp": "^4.0.0"
   },
   "devDependencies": {
     "typescript": "^7.0.2",
-    "wrangler": "^4.137.0"
+    "wrangler": "^4.152.0"
+  },
+  "overrides": {
+    "undici": "^7.30.1"
   }
 }

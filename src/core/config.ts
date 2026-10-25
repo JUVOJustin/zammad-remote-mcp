@@ -1,8 +1,8 @@
 import { z } from 'zod';
 
 /**
- * All runtime configuration comes from the environment. The schema below is the
- * single source of truth — `.env.example` is generated from the same field list.
+ * All runtime configuration comes from the environment. Keep `.env.example`
+ * consistent with the validated field list below.
  *
  * The server is designed to be stateless, so nothing here is mutated at runtime.
  */
@@ -51,8 +51,8 @@ const EnvSchema = z
       .default('/mcp')
       .transform((v) => (v.startsWith('/') ? v : `/${v}`)),
     LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error', 'silent']).default('info'),
-    /** Comma-separated allowlist for browser CORS. `*` allows any origin. */
-    CORS_ORIGINS: csv.default(['*']),
+    /** Trusted browser origins in addition to PUBLIC_URL. Requests without Origin are accepted. */
+    CORS_ORIGINS: csv.default([]),
 
     // ---------------------------------------------------------------- zammad
     /**
@@ -73,8 +73,8 @@ const EnvSchema = z
     ZAMMAD_PUBLIC_URL: url.optional(),
     /**
      * How the server authenticates against the Zammad REST API.
-     *  - `oauth` : per-request Bearer token supplied by the MCP client (default,
-     *              fully multi-tenant, nothing is stored server-side)
+     *  - `oauth` : per-user MCP token (proxy mode), decrypted to the upstream
+     *              Zammad credential; no server-side token database
      *  - `token` : one fixed Zammad access token for every request
      *  - `basic` : HTTP basic auth with a fixed username/password
      */
@@ -136,9 +136,17 @@ const EnvSchema = z
      * domain instead and are listed so the server works without configuration;
      * remove them if you only ever connect local clients.
      */
-    OAUTH_ALLOWED_REDIRECT_HOSTS: csv.default(['localhost', '127.0.0.1', '[::1]', 'claude.ai', 'claude.com']),
-    /** Also allow custom-scheme redirects such as `vscode://` or `cursor://`. */
-    OAUTH_ALLOWED_REDIRECT_SCHEMES: csv.default(['http', 'https', 'vscode', 'cursor', 'claude']),
+    OAUTH_ALLOWED_REDIRECT_HOSTS: csv.default([
+      'localhost',
+      '127.0.0.1',
+      '[::1]',
+      'claude.ai',
+      'claude.com',
+      'dash.cloudflare.com',
+      'oauth-callbacks.cloudflareaccess.com',
+    ]),
+    /** HTTP is restricted to loopback by redirectProblem; hosted clients require HTTPS. */
+    OAUTH_ALLOWED_REDIRECT_SCHEMES: csv.default(['http', 'https']),
     /**
      * Accept Client ID Metadata Documents in proxy mode: a client whose
      * `client_id` is an HTTPS URL is resolved by fetching the document there.
@@ -147,13 +155,15 @@ const EnvSchema = z
      * clients then register dynamically as before.
      */
     OAUTH_CLIENT_ID_METADATA_DOCUMENTS: booleanish.default(true),
+    OAUTH_ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().max(86_400).default(3600),
+    OAUTH_REFRESH_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().default(2_592_000),
 
     // ------------------------------------------------------------------ misc
     /**
-     * Verify the incoming Bearer token with `GET /api/v1/users/me` before
-     * running the MCP handshake. Costs one extra round trip per request; off by
-     * default because an invalid token is surfaced by the first tool call
-     * anyway (mapped back to a 401 with the right WWW-Authenticate header).
+     * Verify the upstream credential with `GET /api/v1/users/me` before MCP
+     * dispatch, in addition to the proxy's local audience/scope/expiry checks.
+     * Costs one upstream round trip per request; off by default. Zammad still
+     * enforces upstream validity when a tool calls its API.
      */
     VALIDATE_TOKEN_EAGERLY: booleanish.default(false),
     /**

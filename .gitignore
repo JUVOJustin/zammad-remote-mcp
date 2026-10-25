@@ -11,6 +11,7 @@ coverage/
 .dev.vars.*
 !.dev.vars.example
 .wrangler/
+examples/cloudflare/worker-configuration.d.ts
 packages/*/dist/
 
 # TypeScript incremental build state — committing it makes a fresh clone

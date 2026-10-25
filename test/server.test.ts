@@ -3,6 +3,7 @@ import { after, before, describe, it } from 'node:test';
 import { serve } from '@hono/node-server';
 import manifest from '../package.json' with { type: 'json' };
 import { createApp } from '../src/core/app.js';
+import { issueCredential, readCredential } from '../src/core/auth/tokens.js';
 import { loadConfig } from '../src/core/config.js';
 import { createLogger } from '../src/core/util/logger.js';
 import { modernRequest, PROTOCOL_VERSION, readEnvelope } from './mcp-request.js';
@@ -47,20 +48,72 @@ const realFetch = globalThis.fetch;
  * The app as configured for these tests, in proxy mode against a Zammad that
  * is never dialled; `overrides` adds or replaces environment variables.
  */
+function testConfig(overrides: Record<string, string> = {}) {
+  return loadConfig({
+    ZAMMAD_URL,
+    ZAMMAD_OAUTH_CLIENT_ID: 'zammad-client-id',
+    ZAMMAD_OAUTH_CLIENT_SECRET: 'zammad-client-secret',
+    OAUTH_STATE_SECRET: 'test-secret-that-is-long-enough',
+    PUBLIC_URL,
+    LOG_LEVEL: 'silent',
+    DYNAMIC_TOOL_SCHEMAS: 'false',
+    CORS_ORIGINS: 'https://inspector.example',
+    ...overrides,
+  });
+}
+
 function buildApp(overrides: Record<string, string> = {}) {
-  return createApp(
-    loadConfig({
-      ZAMMAD_URL,
-      ZAMMAD_OAUTH_CLIENT_ID: 'zammad-client-id',
-      ZAMMAD_OAUTH_CLIENT_SECRET: 'zammad-client-secret',
-      OAUTH_STATE_SECRET: 'test-secret-that-is-long-enough',
-      PUBLIC_URL,
-      LOG_LEVEL: 'silent',
-      DYNAMIC_TOOL_SCHEMAS: 'false',
-      ...overrides,
-    } as NodeJS.ProcessEnv),
-    createLogger('silent'),
+  return createApp(testConfig(overrides), createLogger('silent'));
+}
+
+async function testAccessToken(upstream = 'good-token', overrides: Record<string, string> = {}) {
+  const config = testConfig(overrides);
+  return issueCredential(
+    config,
+    'access',
+    {
+      client_id: 'test-client',
+      redirect_uri: 'http://localhost/callback',
+      resource: config.resourceIdentifier,
+      scope: 'full',
+    },
+    upstream,
+    60,
   );
+}
+
+function cookies(response: Response): string {
+  return response.headers
+    .getSetCookie()
+    .filter((cookie) => !cookie.includes('Max-Age=0'))
+    .map((cookie) => cookie.split(';')[0])
+    .join('; ');
+}
+
+async function authorize(url: string): Promise<Response> {
+  const consent = await fetch(url, { redirect: 'manual' });
+  if (consent.status !== 200 || !consent.headers.get('content-type')?.includes('text/html')) return consent;
+  const html = await consent.text();
+  const token = /name="consent_request" value="([^"]+)"/.exec(html)?.[1];
+  assert.ok(token, html);
+  return fetch(`http://127.0.0.1:${appPort}/authorize`, {
+    method: 'POST',
+    redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Cookie: cookies(consent) },
+    body: new URLSearchParams({ consent_request: token, decision: 'allow' }),
+  });
+}
+
+async function testCode(clientId: string): Promise<string> {
+  const response = await authorize(authorizeUrl({ client_id: clientId }));
+  assert.equal(response.status, 302);
+  const state = new URL(response.headers.get('location')!).searchParams.get('state')!;
+  const callback = await fetch(
+    `http://127.0.0.1:${appPort}/oauth/callback?${new URLSearchParams({ code: 'zammad-auth-code', state })}`,
+    { redirect: 'manual', headers: { Cookie: cookies(response) } },
+  );
+  assert.equal(callback.status, 302);
+  return new URL(callback.headers.get('location')!).searchParams.get('code')!;
 }
 
 /** Issue one MCP JSON-RPC call over Streamable HTTP, as a 2026-07-28 or a 2025-era client. */
@@ -76,7 +129,7 @@ async function mcp(
     Accept: 'application/json, text/event-stream',
     ...request.headers,
   };
-  const token = options.token === undefined ? 'good-token' : options.token;
+  const token = options.token === undefined ? await testAccessToken() : options.token;
   if (token) headers.Authorization = `Bearer ${token}`;
 
   const response = await fetch(`http://127.0.0.1:${appPort}/mcp`, {
@@ -187,7 +240,7 @@ describe('dynamic client registration', () => {
 
     // The registration must survive a round trip through /authorize with no
     // server-side storage in between.
-    const authorize = await fetch(
+    const authorization = await authorize(
       `http://127.0.0.1:${appPort}/authorize?` +
         new URLSearchParams({
           client_id: body.client_id,
@@ -197,11 +250,10 @@ describe('dynamic client registration', () => {
           code_challenge_method: 'S256',
           state: 'client-state',
         }),
-      { redirect: 'manual' },
     );
 
-    assert.equal(authorize.status, 302);
-    const location = new URL(authorize.headers.get('location')!);
+    assert.equal(authorization.status, 302);
+    const location = new URL(authorization.headers.get('location')!);
     assert.equal(location.origin, ZAMMAD_URL);
     assert.equal(location.pathname, '/oauth/authorize');
     assert.equal(
@@ -224,13 +276,16 @@ describe('dynamic client registration', () => {
     const callback = await fetch(
       `http://127.0.0.1:${appPort}/oauth/callback?` +
         new URLSearchParams({ code: 'zammad-auth-code', state: location.searchParams.get('state')! }),
-      { redirect: 'manual' },
+      { redirect: 'manual', headers: { Cookie: cookies(authorization) } },
     );
     assert.equal(callback.status, 302);
 
     const back = new URL(callback.headers.get('location')!);
     assert.equal(back.origin + back.pathname, 'http://localhost:33418/callback');
-    assert.equal(back.searchParams.get('code'), 'zammad-auth-code');
+    assert.equal(
+      (await readCredential(testConfig(), 'code', back.searchParams.get('code')!, body.client_id)).upstream,
+      'zammad-auth-code',
+    );
     assert.equal(
       back.searchParams.get('state'),
       'client-state',
@@ -354,9 +409,8 @@ describe('client ID metadata documents', () => {
     const before = upstreamCalls.length;
 
     for (let attempt = 0; attempt < 2; attempt++) {
-      const response = await fetch(
+      const response = await authorize(
         authorizeUrl({ client_id: clientId, redirect_uri: 'http://localhost:4567/callback', state: 's' }),
-        { redirect: 'manual' },
       );
       assert.equal(response.status, 302);
       const location = new URL(response.headers.get('location')!);
@@ -378,9 +432,8 @@ describe('client ID metadata documents', () => {
       token_endpoint_auth_method: 'none',
     });
 
-    const response = await fetch(
+    const response = await authorize(
       authorizeUrl({ client_id: clientId, redirect_uri: 'http://localhost:51234/callback' }),
-      { redirect: 'manual' },
     );
     assert.equal(response.status, 302);
     assert.equal(new URL(response.headers.get('location')!).origin, ZAMMAD_URL);
@@ -474,7 +527,7 @@ describe('client ID metadata documents', () => {
     const before = upstreamCalls.length;
 
     const responses = await Promise.all(
-      [1, 2, 3].map(() => fetch(authorizeUrl({ client_id: clientId }), { redirect: 'manual' })),
+      [1, 2, 3].map(() => authorize(authorizeUrl({ client_id: clientId }))),
     );
     for (const response of responses) assert.equal(response.status, 302);
     assert.equal(upstreamCalls.length - before, 1);
@@ -511,7 +564,7 @@ describe('token endpoint', () => {
       body: new URLSearchParams({
         grant_type: 'authorization_code',
         client_id: clientId,
-        code: 'zammad-auth-code',
+        code: clientId === 'zmcp_forged.signature' ? 'forged-code' : await testCode(clientId),
         code_verifier: 'the-verifier',
         redirect_uri: 'http://localhost:33418/callback',
       }),
@@ -528,7 +581,16 @@ describe('token endpoint', () => {
     const response = await exchange(clientId);
     assert.equal(response.status, 200);
     assert.equal(response.headers.get('cache-control'), 'no-store');
-    assert.equal((await response.json()).access_token, 'zammad-access');
+    const tokens = await response.json();
+    assert.notEqual(tokens.access_token, 'zammad-access');
+    assert.equal(
+      (await readCredential(testConfig(), 'access', tokens.access_token)).upstream,
+      'zammad-access',
+    );
+    assert.equal(
+      (await readCredential(testConfig(), 'refresh', tokens.refresh_token, clientId)).upstream,
+      'zammad-refresh',
+    );
 
     assert.equal(upstreamCalls.length - before, 1);
     const sent = new URLSearchParams(await upstreamCalls.at(-1)!.text());
@@ -581,6 +643,7 @@ describe('mcp endpoint', () => {
 
   it('confirms the token with Zammad first when asked to, and says whose fault a refusal is', async () => {
     const eager = buildApp({ VALIDATE_TOKEN_EAGERLY: 'true' });
+    const token = await testAccessToken('dead-token');
     const request = modernRequest('server/discover');
     const discover = () =>
       eager.fetch(
@@ -589,7 +652,7 @@ describe('mcp endpoint', () => {
           headers: {
             'Content-Type': 'application/json',
             Accept: 'application/json, text/event-stream',
-            Authorization: 'Bearer dead-token',
+            Authorization: `Bearer ${token}`,
             ...request.headers,
           },
           body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'server/discover', params: request.params }),
@@ -695,5 +758,241 @@ describe('mcp endpoint', () => {
     for (const header of ['mcp-method', 'mcp-name', 'mcp-protocol-version', 'authorization']) {
       assert.ok(allowed.includes(header), `${header} is missing from ${allowed}`);
     }
+  });
+});
+
+describe('Cloudflare portal registration', () => {
+  it('accepts both dashboard and shared per-user callbacks without widening to arbitrary hosts', async () => {
+    for (const redirect of [
+      'https://dash.cloudflare.com/account/one/access-controls/ai-controls/mcp-server/oauth-callback/server',
+      'https://oauth-callbacks.cloudflareaccess.com/cdn-cgi/access/outbound-oauth-callback',
+    ]) {
+      const clientId = await registerTestClient(redirect);
+      const response = await authorize(authorizeUrl({ client_id: clientId, redirect_uri: redirect }));
+      assert.equal(response.status, 302);
+      assert.equal(new URL(response.headers.get('location')!).origin, ZAMMAD_URL);
+    }
+  });
+
+  it('requires explicitly allowing a portal-specific callback host', async () => {
+    const app = buildApp();
+    const register = (redirect: string) =>
+      app.fetch(
+        new Request(`${PUBLIC_URL}/register`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ redirect_uris: [redirect] }),
+        }),
+      );
+    for (const redirect of [
+      'https://portal.example.com/servers-callback',
+      'http://dash.cloudflare.com/callback',
+      'https://dash.cloudflare.com/callback#fragment',
+    ]) {
+      const response = await register(redirect);
+      assert.equal(response.status, 400, redirect);
+    }
+  });
+});
+
+describe('proxy consent and grant boundaries', () => {
+  it('requires browser consent before redirecting to Zammad and rejects a forged approval', async () => {
+    const clientId = await registerTestClient();
+    const page = await fetch(authorizeUrl({ client_id: clientId }), { redirect: 'manual' });
+    assert.equal(page.status, 200);
+    assert.match(page.headers.get('content-security-policy')!, /frame-ancestors 'none'/);
+    assert.equal(page.headers.get('cache-control'), 'no-store');
+    const text = await page.text();
+    assert.match(text, /Test MCP Client/);
+    assert.match(text, /http:\/\/localhost:33418\/callback/);
+    assert.match(text, /full/);
+    const token = /name="consent_request" value="([^"]+)"/.exec(text)![1]!;
+    for (const headers of [{}, { Cookie: cookies(page), Origin: 'https://attacker.example' }]) {
+      const response = await fetch(`http://127.0.0.1:${appPort}/authorize`, {
+        method: 'POST',
+        redirect: 'manual',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...headers },
+        body: new URLSearchParams({ consent_request: token, decision: 'allow' }),
+      });
+      assert.equal(response.status, 400);
+      assert.equal(response.headers.get('location'), null);
+    }
+  });
+
+  it('binds the upstream callback to the browser that approved it', async () => {
+    const response = await authorize(authorizeUrl({ client_id: await registerTestClient() }));
+    const state = new URL(response.headers.get('location')!).searchParams.get('state')!;
+    const callback = await fetch(
+      `http://127.0.0.1:${appPort}/oauth/callback?${new URLSearchParams({ code: 'stolen', state })}`,
+      { redirect: 'manual' },
+    );
+    assert.equal(callback.status, 400);
+    assert.equal(callback.headers.get('location'), null);
+  });
+
+  it('rejects an authorization request for another resource', async () => {
+    const response = await authorize(
+      authorizeUrl({ client_id: await registerTestClient(), resource: 'https://foreign.example/mcp' }),
+    );
+    assert.equal(response.status, 302);
+    const location = new URL(response.headers.get('location')!);
+    assert.equal(location.hostname, 'localhost');
+    assert.equal(location.searchParams.get('error'), 'invalid_request');
+  });
+
+  it('binds codes to the original client, redirect URI and resource before contacting Zammad', async () => {
+    const clientId = await registerTestClient();
+    const code = await testCode(clientId);
+    const otherClient = await registerTestClient('http://localhost:33418/other');
+    for (const changes of [
+      { client_id: otherClient },
+      { redirect_uri: 'http://localhost:33418/wrong' },
+      { resource: 'https://foreign.example/mcp' },
+      { code: 'raw-upstream-code' },
+    ]) {
+      const before = upstreamCalls.length;
+      const response = await fetch(`http://127.0.0.1:${appPort}/token`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          client_id: clientId,
+          redirect_uri: 'http://localhost:33418/callback',
+          code,
+          code_verifier: 'verifier',
+          ...changes,
+        }),
+      });
+      assert.equal(response.status, 400);
+      assert.equal(upstreamCalls.length, before);
+    }
+  });
+
+  it('refreshes and revokes only the decrypted upstream token for the bound client', async () => {
+    const clientId = await registerTestClient();
+    const config = testConfig();
+    const refresh = await issueCredential(
+      config,
+      'refresh',
+      {
+        client_id: clientId,
+        redirect_uri: 'http://localhost:33418/callback',
+        resource: config.resourceIdentifier,
+        scope: 'full',
+      },
+      'upstream-refresh',
+      600,
+    );
+    const url = `${ZAMMAD_URL}/oauth/token`;
+    upstream.set(url, () =>
+      Response.json({
+        access_token: 'new-upstream-access',
+        token_type: 'Bearer',
+        expires_in: 120,
+        refresh_token: 'rotated-upstream-refresh',
+        scope: 'full',
+      }),
+    );
+    const post = (path: string, fields: Record<string, string>) =>
+      fetch(`http://127.0.0.1:${appPort}/${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ client_id: clientId, ...fields }),
+      });
+    const before = upstreamCalls.length;
+    const wrong = await post('token', {
+      grant_type: 'refresh_token',
+      refresh_token: refresh,
+      client_id: await registerTestClient('http://localhost/other'),
+    });
+    assert.equal(wrong.status, 400);
+    const expanded = await post('token', {
+      grant_type: 'refresh_token',
+      refresh_token: refresh,
+      scope: 'admin',
+    });
+    assert.equal(expanded.status, 400);
+    assert.equal(upstreamCalls.length, before);
+    const response = await post('token', {
+      grant_type: 'refresh_token',
+      refresh_token: refresh,
+      resource: config.resourceIdentifier,
+    });
+    assert.equal(response.status, 200);
+    const tokens = await response.json();
+    assert.equal(tokens.expires_in, 120);
+    assert.equal(
+      new URLSearchParams(await upstreamCalls.at(-1)!.text()).get('refresh_token'),
+      'upstream-refresh',
+    );
+    assert.equal(
+      (await readCredential(config, 'access', tokens.access_token)).upstream,
+      'new-upstream-access',
+    );
+    assert.equal(
+      (await readCredential(config, 'refresh', tokens.refresh_token, clientId)).upstream,
+      'rotated-upstream-refresh',
+    );
+    upstream.set(`${ZAMMAD_URL}/oauth/revoke`, () => Response.json({}));
+    const revoked = await post('revoke', { token: tokens.refresh_token });
+    assert.equal(revoked.status, 200);
+    assert.equal(
+      new URLSearchParams(await upstreamCalls.at(-1)!.text()).get('token'),
+      'rotated-upstream-refresh',
+    );
+    const revokedBefore = upstreamCalls.length;
+    assert.equal((await post('revoke', { token: 'unknown' })).status, 200);
+    assert.equal(upstreamCalls.length, revokedBefore);
+    upstream.delete(url);
+    upstream.delete(`${ZAMMAD_URL}/oauth/revoke`);
+  });
+
+  it('rejects raw, expired, tampered, foreign-audience and wrong-purpose bearer tokens', async () => {
+    const grant = {
+      client_id: 'test-client',
+      redirect_uri: 'http://localhost/callback',
+      resource: `${PUBLIC_URL}/mcp`,
+      scope: 'full',
+    };
+    const valid = await testAccessToken();
+    const config = testConfig();
+    for (const token of [
+      'raw-zammad-token',
+      `${valid.slice(0, -8)}deadbeef`,
+      await issueCredential(config, 'access', grant, 'expired', -1),
+      await testAccessToken('foreign', { PUBLIC_URL: 'http://localhost:39998' }),
+      await issueCredential(config, 'refresh', grant, 'refresh', 60),
+    ]) {
+      const response = await mcp('server/discover', {}, { token, modern: true });
+      assert.equal(response.status, 401);
+      assert.match(response.headers.get('www-authenticate')!, /invalid_token/);
+    }
+  });
+
+  it('rejects untrusted and malformed browser origins before executing MCP', async () => {
+    for (const origin of ['https://attacker.example', 'null', 'not-an-origin']) {
+      const response = await fetch(`http://127.0.0.1:${appPort}/mcp`, {
+        method: 'POST',
+        headers: { Origin: origin, Authorization: `Bearer ${await testAccessToken()}` },
+      });
+      assert.equal(response.status, 403);
+    }
+  });
+
+  it('validates modern routing headers against the body', async () => {
+    const request = modernRequest('server/discover');
+    const response = await fetch(`http://127.0.0.1:${appPort}/mcp`, {
+      method: 'POST',
+      headers: {
+        ...request.headers,
+        'Mcp-Method': 'tools/list',
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream',
+        Authorization: `Bearer ${await testAccessToken()}`,
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'server/discover', params: request.params }),
+    });
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).error.code, -32020);
   });
 });

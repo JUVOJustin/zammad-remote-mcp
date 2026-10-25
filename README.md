@@ -8,9 +8,9 @@ A remote [MCP](https://modelcontextprotocol.io) server for [Zammad](https://zamm
 - **Stateless.** No sessions, no token store, no sticky routing — see [below](#is-the-server-stateless).
 - **Runtime-agnostic core.** All the logic lives in `src/core`, which imports no Node built-ins. The two
   hosts differ only in where the environment comes from and how the app is served.
-- **OAuth 2.1 against Zammad.** Zammad's own Doorkeeper provider is the authorization server; this
-  server proxies the flow and adds the client registration Doorkeeper lacks — client ID metadata
-  documents and dynamic registration.
+- **OAuth 2.1 against Zammad.** The proxy authenticates users with Zammad and issues encrypted,
+  audience-bound MCP credentials. It supports client ID metadata documents and dynamic registration,
+  including Cloudflare MCP Portals.
 - **MCP 2026-07-28.** Built on the MCP TypeScript SDK v2. Clients that still negotiate with the 2025
   `initialize` handshake are answered too, by the same tools.
 - **Full ticket coverage.** Create, read, update, delete, merge, mass-update, macros, articles,
@@ -33,7 +33,7 @@ version and a single publish.
 
 Both hosts call the same `bootstrap({ env, cache })` and serve the same `fetch` handler. Anything
 runtime-specific that could not be avoided — reading a file from disk, binding a port — lives in
-`src/node` or `src/cloudflare` and nowhere else.
+`src/node` or `examples/cloudflare` and nowhere else.
 
 ## Quick start — Node.js
 
@@ -63,34 +63,33 @@ authorization server on its own.
 
 ## Quick start — Cloudflare Workers
 
-```bash
-cp .dev.vars.example .dev.vars   # fill in the secrets
-npm run dev:cf
-```
-
-Edit `vars` in [`wrangler.jsonc`](wrangler.jsonc) — at minimum `ZAMMAD_URL` and
-`PUBLIC_URL`, which must match the URL clients actually dial. Then push the secrets and deploy:
+The Worker host lives in [`examples/cloudflare`](examples/cloudflare), with its own package and
+Wrangler configuration. Follow the [Cloudflare deployment and MCP Portal guide](examples/cloudflare/README.md)
+for installation, secrets, the KV binding, portal callbacks and verification.
 
 ```bash
-npx wrangler secret put ZAMMAD_OAUTH_CLIENT_ID
-npx wrangler secret put ZAMMAD_OAUTH_CLIENT_SECRET
-npx wrangler secret put OAUTH_STATE_SECRET
-npm run deploy
+cd examples/cloudflare
+npm ci
+npm run dev
 ```
 
-`OAUTH_STATE_SECRET` must be stable across deployments — rotating it invalidates registered clients
-and in-flight logins. Generate one with `openssl rand -base64 48`.
+Set `ZAMMAD_URL` and `PUBLIC_URL` in [`examples/cloudflare/wrangler.jsonc`](examples/cloudflare/wrangler.jsonc)
+and provision the three required secret bindings before deploying. `PUBLIC_URL` is the Worker origin;
+clients and the portal use `<PUBLIC_URL>/mcp`. Register `<PUBLIC_URL>/oauth/callback` in Zammad.
 
-### One-click deploy
+The deployment button copies the example as a separate repository. Its npm lockfile controls which
+released library it builds; editing this source repository does not update an existing Worker.
 
-The button at the top of this README clones the repository into your own Cloudflare account,
-**provisions the KV namespace** for the lookup cache, prompts for the secrets listed in
-`.dev.vars.example`, and deploys. The `id` committed in `wrangler.jsonc` is a placeholder and is
-rewritten with the newly created namespace.
+### Upgrading an existing deployment
 
-You still have to set `ZAMMAD_URL` and `PUBLIC_URL` afterwards — `PUBLIC_URL` cannot be known before
-the Worker has a hostname, and it must match what clients dial, since it forms the OAuth issuer and
-the callback URL. Set both under the Worker's **Settings → Variables**, then redeploy.
+Proxy mode now accepts only MCP-issued credentials. Reauthorize every client after upgrading; old
+raw Zammad access and refresh tokens are rejected. Keep `OAUTH_STATE_SECRET` stable. The browser now
+shows a client-specific consent page before Zammad login, using secure cookies that require HTTPS
+for a remote deployment.
+
+Browser origins are restricted to `PUBLIC_URL` by default. Set `CORS_ORIGINS` to a comma-separated
+list of additional trusted origins for browser clients; portal backend requests need no CORS entry.
+An explicit `*` permits every syntactically valid origin and should be avoided.
 
 ## Docker
 
@@ -221,7 +220,7 @@ npx @modelcontextprotocol/inspector --cli http://localhost:3000/mcp --transport 
 For nested arguments (`tags`, `created_at`, `article`, …) `--tool-arg` is too flat — use the curl form
 above with a JSON body instead.
 
-If the server runs with `ZAMMAD_AUTH_MODE=oauth`, pass the token through:
+If the server runs with `ZAMMAD_AUTH_MODE=oauth`, supply the MCP access token obtained from the proxy (a raw Zammad token is not accepted):
 
 ```bash
 npx @modelcontextprotocol/inspector --cli http://localhost:3000/mcp --transport http --header "Authorization: Bearer YOUR_ZAMMAD_TOKEN" --method tools/list
@@ -295,33 +294,30 @@ The endpoint is the SDK's `createMcpHandler`, which builds a fresh `McpServer` f
 discards it once the response is written. Clients that still speak a 2025 revision negotiate with
 `initialize`; the SDK answers them through its stateless fallback, which issues no session either.
 
-**2. Credentials are never stored.** In the default `oauth` mode the MCP client sends its Zammad
-access token on every request, and the server forwards it to the Zammad API unchanged. Zammad is the
-authorization server and the source of truth for identity; this server holds no token database and
-no refresh-token bookkeeping. It also means Zammad's own permission model applies unchanged — an
-agent sees agent tickets, a customer sees their own.
+**2. Credentials are carried in encrypted envelopes.** In default OAuth proxy mode, the MCP client
+sends a credential issued by this server. The server verifies its audience, client, expiry and scope,
+then decrypts the enclosed Zammad credential for the upstream API call. Raw Zammad tokens are rejected
+at `/mcp`. There is no token database; Zammad continues to enforce user permissions and revocation.
+MCP access tokens expire within one hour by default, capped by the upstream lifetime. Refresh
+envelopes expire after 30 days by default, and each refresh rewraps the token returned by Zammad.
 
-**3. The OAuth proxy carries its state in signed parameters.** Doorkeeper registers no clients on the
-fly and a Zammad application is pinned to fixed redirect URIs, which does not fit MCP clients that
-identify themselves on the fly and listen on an ephemeral localhost port. Instead of a client
-database:
+**3. The OAuth proxy carries browser state in signed parameters and secure cookies.** Client ID
+Metadata Documents are preferred; dynamic registration remains available for older clients and
+Cloudflare MCP Portals. The browser approves a page showing the client, scopes and redirect URI.
+The proxy then sets a short-lived, HttpOnly, Secure, SameSite=Lax state cookie before redirecting to
+Zammad. The callback must match both the signed state and that browser cookie, which is then cleared.
+Cookies carry the browser's transient state; no replica-local login store or sticky routing is needed.
 
-- A client with a Client ID Metadata Document needs no registration: its `client_id` is the HTTPS
-  URL of a JSON document listing its redirect URIs, fetched on first use and cached per process.
-  This needs outbound HTTPS to the client's host; set `OAUTH_CLIENT_ID_METADATA_DOCUMENTS=false`
-  where the server has none, and clients fall back to dynamic registration.
-- Dynamic registration mints a `client_id` of the form `zmcp_<payload>.<hmac>`, where the payload
-  *is* the registration record (the client's redirect URIs and name), verified and decoded on use.
-- `/authorize` swaps the client's redirect URI for this server's single `/oauth/callback` — the one
-  URI registered in Zammad — and packs the original URI plus the client's `state` into an
-  HMAC-signed `state`.
-- `/oauth/callback` verifies that signature and bounces the code back to the client's own URI,
-  naming this server as the issuer (`iss`, RFC 9207).
-- `/token` and `/revoke` substitute the real Zammad client credentials.
+The callback returns an encrypted authorization code bound to the original MCP client, redirect URI
+and server audience. `/token` checks those bindings and exchanges the underlying one-time Zammad
+code using the original PKCE verifier. Access, refresh and code envelopes use separate encryption
+contexts, so they cannot be substituted for each other or used on another deployment. `/revoke`
+unwraps the client-bound credential and revokes it at Zammad.
 
-PKCE flows through untouched: the client's `code_challenge` reaches Doorkeeper directly and its
-`code_verifier` is forwarded on exchange, so the proxy is never trusted with proof of possession.
-All replicas need is the same `OAUTH_STATE_SECRET`.
+All replicas need the same `OAUTH_STATE_SECRET`. Rotation invalidates registrations, in-flight logins
+and encrypted credentials. Revocation is enforced by Zammad when its API is called; set
+`VALIDATE_TOKEN_EAGERLY=true` to check upstream validity before discovery as well. Browser state
+cookies are cleared on use; upstream code reuse and refresh-token rotation remain enforced by Zammad.
 
 ### The one caveat
 
@@ -360,8 +356,8 @@ silently issuing tokens the request path would discard.
 | Mode | Behaviour |
 |---|---|
 | `proxy` *(default under `oauth`)* | This server is the authorization server from the client's perspective and proxies to Zammad. Supports client ID metadata documents, dynamic client registration and ephemeral redirect URIs. One callback URL to register in Zammad. |
-| `passthrough` | Clients talk to Zammad directly. Every client redirect URI must be registered in Zammad by hand, and Doorkeeper publishes no authorization-server metadata, so this server publishes it on Zammad's behalf — which requires an HTTPS `ZAMMAD_PUBLIC_URL` outside localhost. Brittle with clients that self-register. |
-| `disabled` *(automatic under `token`/`basic`)* | No OAuth metadata is served. Worth setting explicitly under `oauth` only when an API gateway in front already handles discovery and just forwards the bearer token. |
+| `passthrough` | Legacy compatibility only; lacks MCP audience validation and is unsuitable for a standards-compliant deployment. Clients talk to Zammad directly. Every client redirect URI must be registered in Zammad by hand, and Doorkeeper publishes no authorization-server metadata, so this server publishes it on Zammad's behalf — which requires an HTTPS `ZAMMAD_PUBLIC_URL` outside localhost. Brittle with clients that self-register. |
+| `disabled` *(automatic under `token`/`basic`)* | No OAuth metadata is served. Under `oauth`, this is legacy gateway integration with raw Zammad tokens and lacks MCP audience validation. Use `proxy` for a standards-compliant deployment. |
 
 Tools accept an optional `on_behalf_of` argument, which maps to Zammad's `X-On-Behalf-Of` header for
 impersonation (requires admin rights).

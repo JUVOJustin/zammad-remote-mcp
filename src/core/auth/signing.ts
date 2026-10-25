@@ -108,8 +108,65 @@ export async function unsealWithExpiry<T extends { exp?: number }>(
   prefix = '',
 ): Promise<T> {
   const data = await unseal<T>(secret, token, prefix);
-  if (typeof data.exp === 'number' && data.exp < Math.floor(Date.now() / 1000)) {
+  if (typeof data.exp !== 'number' || data.exp <= Math.floor(Date.now() / 1000)) {
     throw new SignatureError('Token has expired');
   }
   return data;
+}
+
+const cipherKeys = new Map<string, Promise<CryptoKey>>();
+
+function cipherKey(secret: string): Promise<CryptoKey> {
+  let key = cipherKeys.get(secret);
+  if (!key) {
+    key = crypto.subtle
+      .importKey('raw', encoder.encode(secret) as BufferSource, 'HKDF', false, ['deriveKey'])
+      .then((material) =>
+        crypto.subtle.deriveKey(
+          {
+            name: 'HKDF',
+            hash: 'SHA-256',
+            salt: encoder.encode('zammad-remote-mcp/oauth/v1') as BufferSource,
+            info: encoder.encode('credential-encryption') as BufferSource,
+          },
+          material,
+          { name: 'AES-GCM', length: 256 },
+          false,
+          ['encrypt', 'decrypt'],
+        ),
+      );
+    cipherKeys.set(secret, key);
+  }
+  return key;
+}
+
+// Upstream credentials must stay confidential even when the envelope is held by an MCP client.
+// The context binds ciphertext to its purpose and deployment, independently of its contents.
+export async function encrypt(secret: string, data: unknown, context: string): Promise<string> {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const encrypted = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv, additionalData: encoder.encode(context) as BufferSource },
+    await cipherKey(secret),
+    encoder.encode(JSON.stringify(data)) as BufferSource,
+  );
+  return `${bytesToBase64Url(iv)}.${bytesToBase64Url(new Uint8Array(encrypted))}`;
+}
+
+export async function decrypt(secret: string, token: string, context: string): Promise<unknown> {
+  try {
+    const [iv, payload, extra] = token.split('.');
+    if (!iv || !payload || extra !== undefined) throw new Error('malformed');
+    const plaintext = await crypto.subtle.decrypt(
+      {
+        name: 'AES-GCM',
+        iv: base64UrlToBytes(iv) as BufferSource,
+        additionalData: encoder.encode(context) as BufferSource,
+      },
+      await cipherKey(secret),
+      base64UrlToBytes(payload) as BufferSource,
+    );
+    return JSON.parse(new TextDecoder().decode(plaintext));
+  } catch {
+    throw new SignatureError('Credential is invalid or belongs to another deployment');
+  }
 }
