@@ -26,6 +26,9 @@
   },
 
   "observability": { "enabled": true },
+  "secrets": {
+    "required": ["ZAMMAD_OAUTH_CLIENT_ID", "ZAMMAD_OAUTH_CLIENT_SECRET", "OAUTH_STATE_SECRET"]
+  },
 
   // Lookup cache. Without it each isolate caches in its own memory and re-reads
   // the instance's states, priorities and groups on every cold start.
@@ -33,7 +36,7 @@
   // The id below is a placeholder. "Deploy to Cloudflare" provisions a fresh
   // namespace and rewrites it automatically; deploying by hand means creating
   // one first and pasting its id here:
-  //   npx wrangler kv namespace create LOOKUP_CACHE
+  //   npx wrangler kv namespace create LOOKUP_CACHE --jurisdiction=eu
   "kv_namespaces": [
     {
       "binding": "LOOKUP_CACHE",
@@ -51,6 +54,9 @@
     "ZAMMAD_AUTH_MODE": "oauth",
     "MCP_PATH": "/mcp",
     "LOG_LEVEL": "info",
+    // Dashboard authorization and shared per-user callback hosts. Append the
+    // exact portal hostname when using portal-scoped callbacks instead.
+    "OAUTH_ALLOWED_REDIRECT_HOSTS": "localhost,127.0.0.1,[::1],claude.ai,claude.com,dash.cloudflare.com,oauth-callbacks.cloudflareaccess.com",
 
     // How long states, priorities, groups and resolved users stay cached. With
     // the KV binding above this is shared across isolates, so the lists are read

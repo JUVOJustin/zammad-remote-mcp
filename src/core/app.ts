@@ -9,6 +9,7 @@ import {
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { createOAuthLayer } from './auth/oauth.js';
+import { readCredential } from './auth/tokens.js';
 import type { Config } from './config.js';
 import { createMcpServer } from './mcp/server.js';
 import type { Logger } from './util/logger.js';
@@ -32,11 +33,34 @@ function safeHost(url: string): string | undefined {
 
 export function createApp(config: Config, logger: Logger): Hono {
   const app = new Hono();
+  const publicOrigin = new URL(config.publicUrl).origin;
+  const originAllowed = (origin: string): boolean => {
+    try {
+      if (new URL(origin).origin !== origin || origin === 'null') return false;
+      return (
+        origin === publicOrigin || config.CORS_ORIGINS.includes('*') || config.CORS_ORIGINS.includes(origin)
+      );
+    } catch {
+      return false;
+    }
+  };
+
+  // CORS headers alone do not stop a request from executing. Reject untrusted browser origins before auth or dispatch.
+  app.use(config.MCP_PATH, async (c, next) => {
+    const origin = c.req.header('Origin');
+    if (origin !== undefined && !originAllowed(origin)) {
+      return c.json(
+        { error: 'forbidden_origin', error_description: 'Origin is not allowed by CORS_ORIGINS.' },
+        403,
+      );
+    }
+    await next();
+  });
 
   app.use(
     '*',
     cors({
-      origin: config.CORS_ORIGINS.includes('*') ? '*' : config.CORS_ORIGINS,
+      origin: (origin) => (originAllowed(origin) ? origin : undefined),
       // `Mcp-Method` and `Mcp-Name` accompany every 2026-07-28 request; a browser
       // client whose preflight does not allow them cannot reach the server at all.
       allowHeaders: ['Content-Type', 'Authorization', 'MCP-Protocol-Version', 'Mcp-Method', 'Mcp-Name'],
@@ -106,6 +130,7 @@ export function createApp(config: Config, logger: Logger): Hono {
     verifier: zammadTokenVerifier(config),
     requiredScopes: config.ZAMMAD_OAUTH_SCOPES,
     resourceMetadataUrl: oauth?.resourceMetadataUrl,
+    expectedResource: config.ZAMMAD_OAUTH_MODE === 'proxy' ? new URL(config.resourceIdentifier) : undefined,
   });
 
   // One handler for the process. It builds a fresh server per request from the
@@ -162,21 +187,19 @@ export function createApp(config: Config, logger: Logger): Hono {
 }
 
 /**
- * Accepts a Zammad access token as the credential for one request.
- *
- * Zammad tokens are opaque: this server can read neither their scope nor their
- * expiry, and Zammad enforces both on every API call anyway. With
- * VALIDATE_TOKEN_EAGERLY the token is first confirmed against Zammad, so a dead
- * one is refused with a challenge before any tool runs rather than on the first
- * tool call. The SDK refuses a token without an expiry; the answer is given
- * again on every request, so it only has to hold for this one.
+ * Proxy tokens carry authenticated audience, client, scope and expiry claims.
+ * Only their decrypted upstream credential reaches Zammad. Legacy modes accept
+ * opaque upstream tokens and cannot provide the same audience guarantee.
  */
 function zammadTokenVerifier(config: Config): OAuthTokenVerifier {
   return {
     async verifyAccessToken(token) {
+      const grant =
+        config.ZAMMAD_OAUTH_MODE === 'proxy' ? await readCredential(config, 'access', token) : undefined;
+      const upstreamToken = grant?.upstream ?? token;
       if (config.VALIDATE_TOKEN_EAGERLY) {
         const response = await fetch(`${config.ZAMMAD_URL}/api/v1/users/me`, {
-          headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+          headers: { Authorization: `Bearer ${upstreamToken}`, Accept: 'application/json' },
           signal: AbortSignal.timeout(config.ZAMMAD_TIMEOUT_MS),
         }).catch(() => undefined);
         await response?.body?.cancel();
@@ -193,9 +216,11 @@ function zammadTokenVerifier(config: Config): OAuthTokenVerifier {
       }
       return {
         token,
-        clientId: 'zammad',
-        scopes: config.ZAMMAD_OAUTH_SCOPES,
-        expiresAt: Math.floor(Date.now() / 1000) + 60,
+        clientId: grant?.client_id ?? 'zammad',
+        scopes: grant ? grant.scope.split(' ').filter(Boolean) : config.ZAMMAD_OAUTH_SCOPES,
+        expiresAt: grant?.exp ?? Math.floor(Date.now() / 1000) + 60,
+        resource: grant ? new URL(grant.resource) : undefined,
+        extra: { upstreamToken },
       };
     },
   };
@@ -210,7 +235,9 @@ function credentialFor(config: Config, authInfo: AuthInfo | undefined): Credenti
     // The bearer gate hands every oauth request over with its AuthInfo; one
     // without it is a wiring fault, and must not reach Zammad as an empty token.
     if (!authInfo) throw new Error('An oauth-mode MCP request reached the server without a verified token.');
-    return { kind: 'bearer', token: authInfo.token };
+    const token = authInfo.extra?.upstreamToken;
+    if (typeof token !== 'string') throw new Error('Verified token is missing its upstream credential.');
+    return { kind: 'bearer', token };
   }
   if (config.ZAMMAD_AUTH_MODE === 'token') return { kind: 'token', token: config.ZAMMAD_API_TOKEN! };
   return { kind: 'basic', username: config.ZAMMAD_USERNAME!, password: config.ZAMMAD_PASSWORD! };

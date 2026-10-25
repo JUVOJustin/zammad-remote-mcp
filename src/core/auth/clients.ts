@@ -187,6 +187,12 @@ export function redirectProblem(config: Config, raw: string): string | undefined
   if (!url) return `redirect_uri "${raw}" is not a valid absolute URI`;
 
   const scheme = url.protocol.replace(/:$/, '').toLowerCase();
+  if (url.hash || url.username || url.password) {
+    return 'redirect_uri must not contain a fragment or credentials';
+  }
+  if (scheme === 'http' && !LOOPBACK_HOSTS.has(url.hostname)) {
+    return 'http redirect_uri is only allowed for loopback hosts; use https for hosted clients';
+  }
   if (!config.OAUTH_ALLOWED_REDIRECT_SCHEMES.includes(scheme)) {
     return (
       `redirect_uri scheme "${scheme}" is not allowed. Permitted schemes: ${config.OAUTH_ALLOWED_REDIRECT_SCHEMES.join(', ')}. ` +

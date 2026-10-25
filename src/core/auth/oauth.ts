@@ -8,6 +8,7 @@ import {
   type OAuthTokens,
 } from '@modelcontextprotocol/server';
 import { type Context, Hono } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
 import type { Config } from '../config.js';
 import type { Logger } from '../util/logger.js';
 import {
@@ -17,39 +18,23 @@ import {
   registerClient,
   resolveClient,
 } from './clients.js';
+import { approvedParams, consentPage, consumeUpstreamState, trackUpstreamState } from './consent.js';
 import { sealWithExpiry, unsealWithExpiry } from './signing.js';
+import { issueCredential, issueTokens, type OAuthGrant, readCredential, requireResource } from './tokens.js';
 
 /**
- * Zammad's own OAuth2 provider is Doorkeeper (`/oauth/authorize`, `/oauth/token`,
- * `/oauth/revoke`, default scope `full`, refresh tokens enabled). Doorkeeper
- * implements neither client ID metadata documents nor dynamic registration, and
- * a Zammad "third-party application" is registered with a fixed set of redirect
- * URIs — none of which fits MCP clients that identify themselves on the fly and
- * listen on an ephemeral localhost port.
- *
- * In proxy mode this server is the authorization server MCP clients see, and it
- * bridges the gap without server-side state:
- *
- *  - Clients are resolved from their `client_id` alone (see `clients.ts`).
- *  - `/authorize` swaps the client's redirect URI for this server's single
- *    `/oauth/callback` (the one URI that has to be registered in Zammad) and
- *    packs the original URI plus the client's `state` into a signed `state`.
- *  - `/oauth/callback` verifies that signature and bounces the authorization
- *    code back to the client's own redirect URI.
- *  - `/token` and `/revoke` swap in the real Zammad client credentials. PKCE
- *    flows straight through: the client's `code_challenge` reaches Doorkeeper
- *    untouched and its `code_verifier` is forwarded on exchange, so this proxy
- *    never has to be trusted with proof of possession.
- *
- * The result is that every replica can serve every leg of the flow, provided
- * they share OAUTH_STATE_SECRET.
+ * Bridges Zammad's fixed OAuth application to dynamically identified MCP clients.
+ * Registrations and browser state are signed; codes and tokens are encrypted and
+ * bound to this resource and client. Zammad retains the one-time code, PKCE,
+ * permission and revocation checks. Replicas share only OAUTH_STATE_SECRET.
  */
 
-interface SignedStatePayload {
+interface SignedStatePayload extends OAuthGrant {
   /** The MCP client's own redirect URI. */
   redirect_uri: string;
   /** The MCP client's original `state`, if it sent one. */
   state?: string;
+  nonce: string;
   exp?: number;
 }
 
@@ -65,6 +50,15 @@ export function createOAuthLayer(config: Config, logger: Logger): OAuthLayer | u
 
   const log = logger.child({ component: 'oauth' });
   const router = new Hono();
+  for (const path of ['/authorize', '/oauth/callback', '/token', '/register', '/revoke']) {
+    router.use(path, bodyLimit({ maxSize: 64 * 1024 }));
+  }
+  router.use('*', async (c, next) => {
+    c.header('Cache-Control', 'no-store');
+    c.header('Pragma', 'no-cache');
+    c.header('Referrer-Policy', 'no-referrer');
+    await next();
+  });
 
   if (config.ZAMMAD_OAUTH_MODE === 'passthrough') {
     // The MCP client talks to Zammad directly. Doorkeeper does not publish
@@ -113,7 +107,15 @@ export function createOAuthLayer(config: Config, logger: Logger): OAuthLayer | u
 
   router.on(['GET', 'POST'], '/authorize', async (c) => {
     c.header('Cache-Control', 'no-store');
-    const params = c.req.method === 'POST' ? await formParams(c) : c.req.query();
+    const form = c.req.method === 'POST' ? await formParams(c) : undefined;
+    let params: Record<string, string | undefined>;
+    try {
+      params = form?.consent_request
+        ? await approvedParams(c, config, form.consent_request)
+        : (form ?? c.req.query());
+    } catch (error) {
+      return errorResponse(c, error, log);
+    }
 
     // Until the client and its redirect URI are established, an error must not
     // be sent to the redirect URI — that would be the open redirect these
@@ -141,21 +143,48 @@ export function createOAuthLayer(config: Config, logger: Logger): OAuthLayer | u
         'Only the authorization code flow (response_type=code) is supported.',
       );
     }
-    if (!params.code_challenge || params.code_challenge_method !== 'S256') {
+    if (
+      !params.code_challenge ||
+      !/^[A-Za-z0-9_-]{43}$/.test(params.code_challenge) ||
+      params.code_challenge_method !== 'S256'
+    ) {
       return refuse(
         OAuthErrorCode.InvalidRequest,
         'PKCE is required: send code_challenge with code_challenge_method=S256.',
       );
     }
-    if (params.resource !== undefined && !URL.canParse(params.resource)) {
-      return refuse(OAuthErrorCode.InvalidRequest, 'resource must be an absolute URI.');
+    try {
+      requireResource(config, params.resource);
+    } catch {
+      return refuse(OAuthErrorCode.InvalidRequest, 'resource must identify this MCP endpoint.');
     }
 
     const requested = params.scope?.split(' ').filter(Boolean) ?? [];
     const permitted = new Set(client.scope.split(' '));
-    const unregistered = requested.find((scope) => !permitted.has(scope));
+    const unregistered = requested.find(
+      (scope) => !permitted.has(scope) || !config.ZAMMAD_OAUTH_SCOPES.includes(scope),
+    );
     if (unregistered)
       return refuse(OAuthErrorCode.InvalidScope, `The client was not registered with scope ${unregistered}.`);
+
+    if (!form?.consent_request) return consentPage(c, config, client, redirectUri, params);
+    if (form.decision !== 'allow') return refuse(OAuthErrorCode.AccessDenied, 'Authorization was cancelled.');
+
+    const scopes = requested.length ? requested : config.ZAMMAD_OAUTH_SCOPES;
+    const nonce = crypto.randomUUID();
+    const state = await sealWithExpiry(
+      config.OAUTH_STATE_SECRET!,
+      {
+        redirect_uri: redirectUri,
+        state: params.state,
+        nonce,
+        client_id: client.client_id,
+        resource: config.resourceIdentifier,
+        scope: scopes.join(' '),
+      } satisfies Omit<SignedStatePayload, 'exp'>,
+      config.OAUTH_STATE_TTL_SECONDS,
+    );
+    trackUpstreamState(c, config, nonce, state);
 
     const search = new URLSearchParams({
       client_id: config.ZAMMAD_OAUTH_CLIENT_ID!,
@@ -165,15 +194,10 @@ export function createOAuthLayer(config: Config, logger: Logger): OAuthLayer | u
       // at exchange time — this server only relays it.
       code_challenge: params.code_challenge,
       code_challenge_method: 'S256',
-      state: await sealWithExpiry(
-        config.OAUTH_STATE_SECRET!,
-        { redirect_uri: redirectUri, state: params.state } satisfies Omit<SignedStatePayload, 'exp'>,
-        config.OAUTH_STATE_TTL_SECONDS,
-      ),
+      state,
     });
     // Doorkeeper's default scope is `full`; honour what the client asked for
     // and otherwise fall back to the configured default.
-    const scopes = requested.length ? requested : config.ZAMMAD_OAUTH_SCOPES;
     if (scopes.length) search.set('scope', scopes.join(' '));
 
     const target = new URL(config.zammadAuthorizeUrl);
@@ -196,6 +220,7 @@ export function createOAuthLayer(config: Config, logger: Logger): OAuthLayer | u
     let payload: SignedStatePayload;
     try {
       payload = await unsealWithExpiry<SignedStatePayload>(config.OAUTH_STATE_SECRET!, query.state);
+      consumeUpstreamState(c, config, payload.nonce, query.state);
     } catch (error) {
       log.warn('rejected oauth callback with an unverifiable state', {
         error: error instanceof Error ? error.message : String(error),
@@ -216,9 +241,20 @@ export function createOAuthLayer(config: Config, logger: Logger): OAuthLayer | u
 
     // Relay whatever Zammad sent — success (`code`) or failure (`error`).
     const relayed: Record<string, string> = {};
-    for (const key of ['code', 'error', 'error_description', 'error_uri'] as const) {
+    for (const key of ['error', 'error_description', 'error_uri'] as const) {
       const value = query[key];
       if (value) relayed[key] = value;
+    }
+    if (query.code && !query.error) {
+      relayed.code = await issueCredential(
+        config,
+        'code',
+        payload,
+        query.code,
+        config.OAUTH_STATE_TTL_SECONDS,
+      );
+    } else if (!query.error) {
+      return errorResponse(c, new OAuthError(OAuthErrorCode.InvalidRequest, 'Missing code or error.'), log);
     }
     return c.redirect(authorizationResponse(payload.redirect_uri, issuer, payload.state, relayed));
   });
@@ -227,17 +263,26 @@ export function createOAuthLayer(config: Config, logger: Logger): OAuthLayer | u
     c.header('Cache-Control', 'no-store');
     try {
       const params = await requestParams(c);
-      await requireClient(config, params.client_id);
+      const client = await requireClient(config, params.client_id);
+      requireResource(config, params.resource);
 
       let fields: Record<string, string> & { grant_type: string };
+      let grant: Awaited<ReturnType<typeof readCredential>>;
       switch (params.grant_type) {
         case 'authorization_code':
           if (!params.code || !params.code_verifier) {
             throw new OAuthError(OAuthErrorCode.InvalidRequest, 'code and code_verifier are required.');
           }
+          grant = await readCredential(config, 'code', params.code, client.client_id);
+          if (params.redirect_uri !== grant.redirect_uri) {
+            throw new OAuthError(
+              OAuthErrorCode.InvalidGrant,
+              'redirect_uri must match the authorization request.',
+            );
+          }
           fields = {
             grant_type: 'authorization_code',
-            code: params.code,
+            code: grant.upstream,
             // Must match the redirect URI Doorkeeper recorded with the code —
             // this server's callback, never the MCP client's.
             redirect_uri: config.oauthCallbackUrl,
@@ -248,9 +293,17 @@ export function createOAuthLayer(config: Config, logger: Logger): OAuthLayer | u
           if (!params.refresh_token) {
             throw new OAuthError(OAuthErrorCode.InvalidRequest, 'refresh_token is required.');
           }
+          grant = await readCredential(config, 'refresh', params.refresh_token, client.client_id);
+          if (params.scope?.split(' ').some((scope) => scope && !grant.scope.split(' ').includes(scope))) {
+            throw new OAuthError(
+              OAuthErrorCode.InvalidScope,
+              'A refresh request cannot expand the granted scopes.',
+            );
+          }
+          if (params.scope) grant = { ...grant, scope: params.scope };
           fields = {
             grant_type: 'refresh_token',
-            refresh_token: params.refresh_token,
+            refresh_token: grant.upstream,
             ...(params.scope ? { scope: params.scope } : {}),
           };
           break;
@@ -260,8 +313,7 @@ export function createOAuthLayer(config: Config, logger: Logger): OAuthLayer | u
             'Supported grant types: authorization_code, refresh_token.',
           );
       }
-      if (params.resource) fields.resource = params.resource;
-      return c.json(await zammadToken(config, log, fields));
+      return c.json(await issueTokens(config, grant, await zammadToken(config, log, fields)));
     } catch (error) {
       return errorResponse(c, error, log);
     }
@@ -286,12 +338,20 @@ export function createOAuthLayer(config: Config, logger: Logger): OAuthLayer | u
     c.header('Cache-Control', 'no-store');
     try {
       const params = await requestParams(c);
-      await requireClient(config, params.client_id);
+      const client = await requireClient(config, params.client_id);
       if (!params.token) throw new OAuthError(OAuthErrorCode.InvalidRequest, 'token is required.');
 
+      let credential: Awaited<ReturnType<typeof readCredential>>;
+      const kind = params.token.startsWith('zmcp_refresh_') ? 'refresh' : 'access';
+      try {
+        credential = await readCredential(config, kind, params.token, client.client_id);
+      } catch {
+        return c.json({}); // RFC 7009: an unknown or expired token is already revoked.
+      }
+
       await zammadRequest(config, log, config.zammadRevokeUrl, 'revocation', {
-        token: params.token,
-        ...(params.token_type_hint ? { token_type_hint: params.token_type_hint } : {}),
+        token: credential.upstream,
+        token_type_hint: kind === 'refresh' ? 'refresh_token' : 'access_token',
       });
       return c.json({});
     } catch (error) {
@@ -386,7 +446,7 @@ async function zammadToken(
   const tokens = OAuthTokensSchema.safeParse(parseJson(text));
   if (tokens.success) return tokens.data;
 
-  log.warn('zammad token endpoint returned no usable tokens', { kind, body: text.slice(0, 300) });
+  log.warn('zammad token endpoint returned no usable tokens', { kind });
   throw new OAuthError(
     OAuthErrorCode.ServerError,
     `Zammad's token endpoint returned no access token for the ${kind} exchange.`,
@@ -440,7 +500,6 @@ async function zammadRequest(
   log.warn('zammad oauth endpoint rejected the request', {
     kind,
     status: response.status,
-    body: text.slice(0, 500),
   });
   throw new OAuthError(
     OAuthErrorCode.ServerError,

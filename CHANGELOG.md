@@ -4,6 +4,26 @@ Notable changes per release. The section matching a tag is used as that release'
 notes, with the pull-request list appended automatically — see
 `.github/workflows/deploy.yml`.
 
+## Unreleased
+
+### Cloudflare MCP Portals and OAuth hardening
+
+- Accept Cloudflare dashboard and shared OAuth callbacks by default. Portal-specific callback hosts
+  remain an explicit allowlist entry. Add a deployment probe and a complete Worker/portal guide.
+- Update the MCP SDK to 2.4.0 and patched Hono/Zod releases. Refresh the Worker toolchain and pin its
+  Undici dependency to a patched compatible release.
+- **Reauthorization required:** proxy mode now issues encrypted access/refresh tokens for its own
+  MCP audience and rejects raw Zammad tokens. Codes and refresh grants are bound to their original
+  client; code exchange also checks the original redirect URI. Resource indicators are validated.
+- Require client-specific browser consent, CSRF protection and a secure browser-bound callback state.
+  Hosted OAuth requires HTTPS. Preserve `OAUTH_STATE_SECRET`; rotation invalidates all authorizations.
+- **Browser configuration change:** reject untrusted MCP Origins. The default permits the public
+  server origin; add explicit browser client origins in `CORS_ORIGINS` as needed.
+- Generate Worker bindings from Wrangler, declare required secrets, and include Worker typechecking
+  in `build:worker`. Public error responses no longer include configuration values.
+- Existing deployments must update their own dependency lock and Worker host/configuration after a
+  library release. This source change does not automatically update a deployed Worker.
+
 ## 4.0.1
 
 ### A signature of the model's own is checked against the group's first
