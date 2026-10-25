@@ -223,7 +223,7 @@ above with a JSON body instead.
 If the server runs with `ZAMMAD_AUTH_MODE=oauth`, supply the MCP access token obtained from the proxy (a raw Zammad token is not accepted):
 
 ```bash
-npx @modelcontextprotocol/inspector --cli http://localhost:3000/mcp --transport http --header "Authorization: Bearer YOUR_ZAMMAD_TOKEN" --method tools/list
+npx @modelcontextprotocol/inspector --cli http://localhost:3000/mcp --transport http --header "Authorization: Bearer YOUR_MCP_ACCESS_TOKEN" --method tools/list
 ```
 
 ### With Claude Code
@@ -267,10 +267,13 @@ which is exactly how a client discovers where to authorize:
 curl -si -X POST http://localhost:3000/mcp -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | grep -i www-authenticate
 ```
 
-Once you hold a Zammad access token, pass it directly and skip the browser flow:
+For authenticated proxy requests, complete OAuth with a compatible MCP client and use the MCP access
+token returned by this server's `/token` endpoint. The placeholder settings above test discovery only;
+a complete login needs the real Zammad application settings. For a local shortcut without browser
+OAuth, use token mode as described above. With a proxy-issued token:
 
 ```bash
-curl -s -X POST http://localhost:3000/mcp -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -H 'Authorization: Bearer YOUR_ZAMMAD_TOKEN' -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"zammad_get_user","arguments":{"user":"me"}}}'
+curl -s -X POST http://localhost:3000/mcp -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -H 'Authorization: Bearer YOUR_MCP_ACCESS_TOKEN' -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"zammad_get_user","arguments":{"user":"me"}}}'
 ```
 
 ### Without any Zammad at all

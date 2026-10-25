@@ -50,7 +50,9 @@ export function createOAuthLayer(config: Config, logger: Logger): OAuthLayer | u
 
   const log = logger.child({ component: 'oauth' });
   const router = new Hono();
-  router.use('*', bodyLimit({ maxSize: 64 * 1024 }));
+  for (const path of ['/authorize', '/oauth/callback', '/token', '/register', '/revoke']) {
+    router.use(path, bodyLimit({ maxSize: 64 * 1024 }));
+  }
   router.use('*', async (c, next) => {
     c.header('Cache-Control', 'no-store');
     c.header('Pragma', 'no-cache');

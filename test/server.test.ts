@@ -796,6 +796,12 @@ describe('Cloudflare portal registration', () => {
 });
 
 describe('proxy consent and grant boundaries', () => {
+  it('keeps the OAuth form size limit off MCP requests', async () => {
+    const response = await mcp('server/discover', { padding: 'x'.repeat(70 * 1024) }, { modern: true });
+    assert.equal(response.status, 200);
+    assert.ok(response.body.result.supportedVersions.includes(PROTOCOL_VERSION));
+  });
+
   it('requires browser consent before redirecting to Zammad and rejects a forged approval', async () => {
     const clientId = await registerTestClient();
     const page = await fetch(authorizeUrl({ client_id: clientId }), { redirect: 'manual' });
