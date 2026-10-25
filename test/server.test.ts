@@ -110,14 +110,24 @@ async function authorize(url: string): Promise<Response> {
 
 async function testCode(clientId: string): Promise<string> {
   const response = await authorize(authorizeUrl({ client_id: clientId }));
-  assert.equal(response.status, 302);
-  const state = new URL(response.headers.get('location')!).searchParams.get('state')!;
+  assert.equal(response.status, 200);
+  const state = authorizationTarget(response).searchParams.get('state')!;
   const callback = await fetch(
     `http://127.0.0.1:${appPort}/oauth/callback?${new URLSearchParams({ code: 'zammad-auth-code', state })}`,
     { redirect: 'manual', headers: { Cookie: cookies(response) } },
   );
   assert.equal(callback.status, 302);
   return new URL(callback.headers.get('location')!).searchParams.get('code')!;
+}
+
+function authorizationTarget(response: Response): URL {
+  const refresh = response.headers.get('refresh');
+  if (refresh) {
+    assert.equal(response.status, 200);
+    assert.match(refresh, /^0;url=/);
+    return new URL(refresh.slice('0;url='.length));
+  }
+  return new URL(response.headers.get('location')!);
 }
 
 /** Issue one MCP JSON-RPC call over Streamable HTTP, as a 2026-07-28 or a 2025-era client. */
@@ -256,8 +266,8 @@ describe('dynamic client registration', () => {
         }),
     );
 
-    assert.equal(authorization.status, 302);
-    const location = new URL(authorization.headers.get('location')!);
+    assert.equal(authorization.status, 200);
+    const location = authorizationTarget(authorization);
     assert.equal(location.origin, ZAMMAD_URL);
     assert.equal(location.pathname, '/oauth/authorize');
     assert.equal(
@@ -416,8 +426,8 @@ describe('client ID metadata documents', () => {
       const response = await authorize(
         authorizeUrl({ client_id: clientId, redirect_uri: 'http://localhost:4567/callback', state: 's' }),
       );
-      assert.equal(response.status, 302);
-      const location = new URL(response.headers.get('location')!);
+      assert.equal(response.status, 200);
+      const location = authorizationTarget(response);
       assert.equal(location.origin, ZAMMAD_URL);
       assert.equal(location.searchParams.get('client_id'), 'zammad-client-id');
     }
@@ -439,8 +449,8 @@ describe('client ID metadata documents', () => {
     const response = await authorize(
       authorizeUrl({ client_id: clientId, redirect_uri: 'http://localhost:51234/callback' }),
     );
-    assert.equal(response.status, 302);
-    assert.equal(new URL(response.headers.get('location')!).origin, ZAMMAD_URL);
+    assert.equal(response.status, 200);
+    assert.equal(authorizationTarget(response).origin, ZAMMAD_URL);
   });
 
   it('refuses a document that names a different client_id', async () => {
@@ -533,7 +543,7 @@ describe('client ID metadata documents', () => {
     const responses = await Promise.all(
       [1, 2, 3].map(() => authorize(authorizeUrl({ client_id: clientId }))),
     );
-    for (const response of responses) assert.equal(response.status, 302);
+    for (const response of responses) assert.equal(response.status, 200);
     assert.equal(upstreamCalls.length - before, 1);
   });
 
@@ -773,8 +783,8 @@ describe('Cloudflare portal registration', () => {
     ]) {
       const clientId = await registerTestClient(redirect);
       const response = await authorize(authorizeUrl({ client_id: clientId, redirect_uri: redirect }));
-      assert.equal(response.status, 302);
-      assert.equal(new URL(response.headers.get('location')!).origin, ZAMMAD_URL);
+      assert.equal(response.status, 200);
+      assert.equal(authorizationTarget(response).origin, ZAMMAD_URL);
     }
   });
 
@@ -800,6 +810,52 @@ describe('Cloudflare portal registration', () => {
 });
 
 describe('proxy consent and grant boundaries', () => {
+  it('finishes consent POSTs before approval or cancellation starts a new browser navigation', async () => {
+    const redirect = 'https://oauth-callbacks.cloudflareaccess.com/cdn-cgi/access/outbound-oauth-callback';
+    const clientId = await registerTestClient(redirect);
+    for (const decision of ['allow', 'deny']) {
+      const page = await fetch(
+        authorizeUrl({ client_id: clientId, redirect_uri: redirect, state: '<client-state>' }),
+        { redirect: 'manual' },
+      );
+      const token = /name="consent_request" value="([^"]+)"/.exec(await page.text())![1]!;
+      const response = await fetch(`http://127.0.0.1:${appPort}/authorize`, {
+        method: 'POST',
+        redirect: 'manual',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          Cookie: cookies(page),
+          Origin: PUBLIC_URL,
+        },
+        body: new URLSearchParams({ consent_request: token, decision }),
+      });
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get('location'), null);
+      assert.equal(response.headers.get('cache-control'), 'no-store');
+      assert.equal(response.headers.get('referrer-policy'), 'strict-origin');
+      assert.match(
+        response.headers.get('content-security-policy')!,
+        /default-src 'none'; form-action 'none';/,
+      );
+      assert.match(response.headers.get('content-type')!, /text\/html/);
+      const target = authorizationTarget(response);
+      const body = await response.text();
+      assert.match(body, /Continue if you are not redirected/);
+      assert.ok(body.includes(target.href.replaceAll('&', '&amp;')));
+      assert.ok(!body.includes('<client-state>'));
+      assert.match(response.headers.getSetCookie().join(';'), /__Host-zmcp-consent-[^;]+;[^\n]*Max-Age=0/);
+      if (decision === 'allow') {
+        assert.equal(target.origin, ZAMMAD_URL);
+        assert.equal(target.pathname, '/oauth/authorize');
+        assert.ok(cookies(response).includes('__Host-zmcp-state-'));
+      } else {
+        assert.equal(target.origin + target.pathname, redirect);
+        assert.equal(target.searchParams.get('error'), 'access_denied');
+        assert.equal(target.searchParams.get('state'), '<client-state>');
+      }
+    }
+  });
+
   it('keeps the OAuth form size limit off MCP requests', async () => {
     const response = await mcp('server/discover', { padding: 'x'.repeat(70 * 1024) }, { modern: true });
     assert.equal(response.status, 200);
@@ -811,10 +867,7 @@ describe('proxy consent and grant boundaries', () => {
     const page = await fetch(authorizeUrl({ client_id: clientId }), { redirect: 'manual' });
     assert.equal(page.status, 200);
     assert.match(page.headers.get('content-security-policy')!, /frame-ancestors 'none'/);
-    assert.match(
-      page.headers.get('content-security-policy')!,
-      /form-action 'self' http:\/\/zammad\.invalid http:\/\/localhost:33418;/,
-    );
+    assert.match(page.headers.get('content-security-policy')!, /form-action 'self';/);
     assert.equal(page.headers.get('cache-control'), 'no-store');
     assert.equal(page.headers.get('referrer-policy'), 'strict-origin');
     const text = await page.text();
@@ -840,7 +893,7 @@ describe('proxy consent and grant boundaries', () => {
 
   it('binds the upstream callback to the browser that approved it', async () => {
     const response = await authorize(authorizeUrl({ client_id: await registerTestClient() }));
-    const state = new URL(response.headers.get('location')!).searchParams.get('state')!;
+    const state = authorizationTarget(response).searchParams.get('state')!;
     const callback = await fetch(
       `http://127.0.0.1:${appPort}/oauth/callback?${new URLSearchParams({ code: 'stolen', state })}`,
       { redirect: 'manual' },

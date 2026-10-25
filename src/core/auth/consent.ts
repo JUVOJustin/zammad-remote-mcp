@@ -37,12 +37,9 @@ export async function consentPage(
     'consent_',
   );
   setCookie(c, `__Host-zmcp-consent-${nonce}`, nonce, cookieOptions(config));
-  // Chromium applies form-action to the redirect chain, including Zammad and the registered client.
-  const redirect = new URL(redirectUri);
-  const redirectSource = redirect.origin === 'null' ? redirect.protocol : redirect.origin;
   c.header(
     'Content-Security-Policy',
-    `default-src 'none'; form-action 'self' ${new URL(config.zammadAuthorizeUrl).origin} ${redirectSource}; frame-ancestors 'none'; base-uri 'none'`,
+    "default-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
   );
   c.header('X-Frame-Options', 'DENY');
   // no-referrer makes browser form POSTs send Origin: null, failing the consent CSRF check.
@@ -58,6 +55,23 @@ export async function consentPage(
     <form method="post" action="/authorize"><input type="hidden" name="consent_request" value="${token}">
     <button name="decision" value="allow" type="submit">Continue to Zammad</button>
     <button name="decision" value="deny" type="submit">Cancel</button></form></main></body></html>`);
+}
+
+/** Only call after validating the client, callback and browser consent. */
+export async function consentHandoff(c: Context, target: string): Promise<Response> {
+  // Chromium applies a form's CSP to every HTTP redirect, even redirects made by the client or its IdP.
+  // Finish the POST first; Refresh starts a separate navigation without broadening form-action.
+  c.header('Refresh', `0;url=${target}`);
+  c.header('Cache-Control', 'no-store');
+  c.header('Referrer-Policy', 'strict-origin');
+  c.header(
+    'Content-Security-Policy',
+    "default-src 'none'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'",
+  );
+  c.header('X-Frame-Options', 'DENY');
+  return c.html(html`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Continuing authorization</title><body><main>
+    <p>Continuing authorization…</p><p><a href="${target}">Continue if you are not redirected</a></p>
+  </main></body></html>`);
 }
 
 export async function approvedParams(

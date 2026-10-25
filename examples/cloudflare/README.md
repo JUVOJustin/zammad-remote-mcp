@@ -99,11 +99,18 @@ This checks public discovery, the audience, the 401 challenge, PKCE advertisemen
 registration and the consent page. It never logs in or calls a tool. A successful probe still needs
 a real portal browser login and a read-only identity check before acceptance.
 
+Consent approval and cancellation finish with HTTP 200 HTML and an immediate `Refresh` navigation,
+with a continuation link as a fallback. This ends the form submission before following Zammad,
+SSO and client redirects. The consent form's CSP permits only same-origin submissions; it does not
+need to allow every hostname in the later login flow. Test the complete browser flow, because an
+HTTP-only probe cannot detect a browser blocking a later redirect.
+
 | Symptom | Check |
 | --- | --- |
 | “An error occurred while registering the MCP server” | POST `/register` with Cloudflare's callback. `invalid_redirect_uri` naming `dash.cloudflare.com` means the Worker's allowlist is missing the administrator callback host. |
 | Discovery redirects to Access or returns HTML | Inspect the Access/WAF rule blocking the portal backend; verify the URLs from a cookie-free client. |
 | User login fails after administrator setup works | Allow the shared callback host or the exact portal hostname; per-user callbacks differ from the dashboard callback. |
+| First consent click leaves the page visible; second click says consent expired | Upgrade the deployed runtime to 5.0.2 or later. Check the browser console for a blocked `form-action` redirect, then start a fresh authorization. |
 | Zammad rejects the callback | Its application must list the Worker's `/oauth/callback`, not Cloudflare's callback. |
 | `invalid_client` after a restart | Check secret stability and the Zammad application's ID/secret; re-register after a state-secret rotation. |
 | Old bearer token gets 401 after an upgrade | Reauthorize. Proxy mode accepts only encrypted MCP-issued credentials. |

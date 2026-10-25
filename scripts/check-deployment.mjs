@@ -97,20 +97,18 @@ try {
     },
     body: new URLSearchParams({ consent_request: token, decision: 'allow' }),
   });
-  assert.equal(approval.status, 302, 'Same-browser approval must redirect to Zammad');
-  const upstream = new URL(approval.headers.get('location'));
+  assert.equal(approval.status, 200, 'Same-browser approval must finish the form submission');
+  assert.match(approval.headers.get('refresh') ?? '', /^0;url=/, 'Missing browser navigation handoff');
+  assert.equal(approval.headers.get('location'), null, 'A form redirect would retain the form CSP');
+  assert.match(approval.headers.get('content-type') ?? '', /text\/html/);
+  const upstream = new URL(approval.headers.get('refresh').slice('0;url='.length));
   assert.equal(upstream.searchParams.get('redirect_uri'), `${issuer}/oauth/callback`);
   const sources =
     /(?:^|;)\s*form-action\s+([^;]+)/
       .exec(consent.headers.get('content-security-policy') ?? '')?.[1]
       .split(/\s+/) ?? [];
-  for (const url of [upstream, new URL(redirectUri)]) {
-    const source = url.origin === 'null' ? url.protocol : url.origin;
-    assert.ok(
-      sources.includes(source) || (source === new URL(issuer).origin && sources.includes("'self'")),
-      'CSP must permit the OAuth redirect chain',
-    );
-  }
+  assert.deepEqual(sources, ["'self'"], 'Consent forms must submit only to their own origin');
+  assert.match(await approval.text(), /Continue if you are not redirected/);
   process.stdout.write(
     `PASS: discovery, unauthenticated challenge, PKCE, DCR and consent approval at ${endpoint}\n`,
   );

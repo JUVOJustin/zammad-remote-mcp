@@ -4,6 +4,14 @@ Notable changes per release. The section matching a tag is used as that release'
 notes, with the pull-request list appended automatically — see
 `.github/workflows/deploy.yml`.
 
+## 5.0.2
+
+- Finish browser consent with an HTML continuation before navigating to Zammad or the client.
+  Chromium previously applied the consent form's CSP to later redirects, including Cloudflare's
+  shared callback redirect back to the portal. A blocked redirect left the consumed consent form
+  visible, so clicking again produced a misleading expired-consent error. Approval and cancellation
+  now start a separate navigation without widening the form destination policy or relaxing CSRF checks.
+
 ## 5.0.1
 
 - Fix browser consent submission: use an origin-only referrer policy so the browser preserves the
