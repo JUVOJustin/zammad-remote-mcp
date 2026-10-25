@@ -12,7 +12,7 @@
     "typecheck": "npm run types && tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "zammad-remote-mcp": "^4.0.0"
+    "zammad-remote-mcp": "^5.0.0"
   },
   "devDependencies": {
     "typescript": "^7.0.2",
