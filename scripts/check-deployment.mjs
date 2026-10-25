@@ -33,11 +33,6 @@ async function json(url, init) {
 }
 
 try {
-  const url = new URL(endpoint);
-  const root = await json(new URL('/', url));
-  assert.equal(root.mcp_endpoint, endpoint, 'PUBLIC_URL/MCP_PATH does not match the requested endpoint');
-  assert.equal(root.auth_mode, 'oauth', 'Use oauth mode for per-user portal authorization');
-  assert.equal(root.oauth_mode, 'proxy', 'This probe checks the proxy deployment');
   const challenge = await request(endpoint);
   assert.equal(challenge.status, 401, 'Unauthenticated MCP must return 401, not a browser login redirect');
   const metadataUrl = /resource_metadata="([^"]+)"/.exec(
@@ -46,9 +41,12 @@ try {
   assert.ok(metadataUrl, 'Missing resource_metadata in WWW-Authenticate');
   const resource = await json(metadataUrl);
   assert.equal(resource.resource, endpoint, 'Protected-resource audience does not match the endpoint');
-  assert.ok(resource.authorization_servers?.includes(url.origin), 'Proxy issuer must match PUBLIC_URL');
-  const metadata = await json(new URL('/.well-known/oauth-authorization-server', url));
-  assert.equal(metadata.issuer, url.origin, 'Authorization server issuer must match PUBLIC_URL');
+  const issuer = resource.authorization_servers?.[0];
+  assert.ok(issuer && URL.canParse(issuer), 'Missing authorization server issuer');
+  const metadataUrlForIssuer = new URL('/.well-known/oauth-authorization-server', issuer);
+  metadataUrlForIssuer.pathname += new URL(issuer).pathname.replace(/\/$/, '');
+  const metadata = await json(metadataUrlForIssuer);
+  assert.equal(metadata.issuer, issuer, 'Authorization server issuer does not match discovery');
   assert.ok(metadata.code_challenge_methods_supported?.includes('S256'), 'Missing S256 PKCE support');
   assert.ok(
     metadata.token_endpoint_auth_methods_supported?.includes('none'),

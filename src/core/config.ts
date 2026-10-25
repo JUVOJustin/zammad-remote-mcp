@@ -41,10 +41,12 @@ const EnvSchema = z
     PORT: port.default(3000),
     /**
      * Externally reachable base URL of *this* MCP server. Used for the OAuth
-     * protected-resource metadata, the proxy callback URL and the `resource`
-     * indicator (RFC 8707). Must match what MCP clients actually dial.
+     * proxy issuer and callback URL. Also identifies the MCP resource unless
+     * MCP_RESOURCE_URL selects a separately routed endpoint.
      */
     PUBLIC_URL: url.optional(),
+    /** Canonical MCP endpoint when its host differs from the OAuth issuer at PUBLIC_URL. */
+    MCP_RESOURCE_URL: url.optional(),
     /** Path the Streamable HTTP transport is mounted on. */
     MCP_PATH: z
       .string()
@@ -216,6 +218,29 @@ const EnvSchema = z
 
     const oauthMode = resolveOAuthMode(env.ZAMMAD_AUTH_MODE, env.ZAMMAD_OAUTH_MODE);
 
+    if (env.MCP_RESOURCE_URL) {
+      try {
+        const resource = new URL(env.MCP_RESOURCE_URL);
+        if (
+          resource.username ||
+          resource.password ||
+          resource.search ||
+          resource.hash ||
+          resource.pathname !== env.MCP_PATH
+        ) {
+          fail('MCP_RESOURCE_URL', 'must have the MCP_PATH pathname and no credentials, query or fragment');
+        }
+        if (
+          resource.protocol !== 'https:' &&
+          !['localhost', '127.0.0.1', '[::1]'].includes(resource.hostname)
+        ) {
+          fail('MCP_RESOURCE_URL', 'must use HTTPS outside loopback');
+        }
+      } catch {
+        fail('MCP_RESOURCE_URL', 'must be an absolute endpoint URL');
+      }
+    }
+
     if (oauthMode !== 'disabled' && !env.ZAMMAD_OAUTH_CLIENT_ID) {
       fail('ZAMMAD_OAUTH_CLIENT_ID', `is required when ZAMMAD_OAUTH_MODE=${oauthMode}`);
     }
@@ -309,6 +334,6 @@ export function loadConfig(source: EnvSource): Config {
     zammadRevokeUrl: `${env.ZAMMAD_URL}${env.ZAMMAD_OAUTH_REVOKE_PATH}`,
     zammadPublicTokenUrl: `${zammadPublicUrl}${env.ZAMMAD_OAUTH_TOKEN_PATH}`,
     zammadPublicRevokeUrl: `${zammadPublicUrl}${env.ZAMMAD_OAUTH_REVOKE_PATH}`,
-    resourceIdentifier: `${publicUrl}${env.MCP_PATH}`,
+    resourceIdentifier: env.MCP_RESOURCE_URL ?? `${publicUrl}${env.MCP_PATH}`,
   };
 }

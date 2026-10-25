@@ -4,9 +4,12 @@ Notable changes per release. The section matching a tag is used as that release'
 notes, with the pull-request list appended automatically — see
 `.github/workflows/deploy.yml`.
 
-## Unreleased
+## 5.0.0
 
 ### Cloudflare MCP Portals and OAuth hardening
+
+- Support a separately routed MCP endpoint through `MCP_RESOURCE_URL`, keeping OAuth endpoints and
+  the registered Zammad callback on `PUBLIC_URL`. Deployment checks follow the discovered issuer.
 
 - Accept Cloudflare dashboard and shared OAuth callbacks by default. Portal-specific callback hosts
   remain an explicit allowlist entry. Add a deployment probe and a complete Worker/portal guide.
